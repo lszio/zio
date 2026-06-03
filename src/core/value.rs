@@ -1,5 +1,16 @@
 use im::{Vector, HashMap};
 use std::hash::{Hash, Hasher};
+use std::sync::Arc;
+use crate::core::env::Env;
+
+pub type NativeFn = fn(Vector<Value>) -> Result<Value, String>;
+
+#[derive(Debug, Clone)]
+pub struct Function {
+    pub params: Vector<String>,
+    pub body: Arc<Value>,
+    pub env: Arc<Env>,
+}
 
 #[derive(Debug, Clone)]
 pub enum Value {
@@ -13,6 +24,8 @@ pub enum Value {
     List(Vector<Value>),
     Vector(Vector<Value>),
     Map(HashMap<Value, Value>),
+    Function(Arc<Function>),
+    NativeFunction(NativeFn),
 }
 
 impl PartialEq for Value {
@@ -28,6 +41,8 @@ impl PartialEq for Value {
             (Value::List(a), Value::List(b)) => a == b,
             (Value::Vector(a), Value::Vector(b)) => a == b,
             (Value::Map(a), Value::Map(b)) => a == b,
+            (Value::Function(a), Value::Function(b)) => Arc::ptr_eq(a, b),
+            (Value::NativeFunction(a), Value::NativeFunction(b)) => *a as usize == *b as usize,
             _ => false,
         }
     }
@@ -49,6 +64,8 @@ impl Hash for Value {
             Value::List(l) => l.hash(state),
             Value::Vector(v) => v.hash(state),
             Value::Map(m) => m.hash(state),
+            Value::Function(f) => Arc::as_ptr(f).hash(state),
+            Value::NativeFunction(f) => (*f as usize).hash(state),
         }
     }
 }
