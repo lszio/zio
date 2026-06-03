@@ -70,6 +70,52 @@ impl Hash for Value {
     }
 }
 
+impl std::fmt::Display for Value {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Value::Nil => write!(f, "nil"),
+            Value::Boolean(b) => write!(f, "{}", b),
+            Value::Integer(i) => write!(f, "{}", i),
+            Value::Float(fl) => write!(f, "{}", fl),
+            Value::String(s) => write!(f, "{:?}", s),
+            Value::Symbol(s) => write!(f, "{}", s),
+            Value::Keyword(k) => write!(f, ":{}", k),
+            Value::List(l) => {
+                write!(f, "(")?;
+                for (i, val) in l.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, " ")?;
+                    }
+                    write!(f, "{}", val)?;
+                }
+                write!(f, ")")
+            }
+            Value::Vector(v) => {
+                write!(f, "[")?;
+                for (i, val) in v.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, " ")?;
+                    }
+                    write!(f, "{}", val)?;
+                }
+                write!(f, "]")
+            }
+            Value::Map(m) => {
+                write!(f, "{{")?;
+                for (i, (k, v)) in m.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{} {}", k, v)?;
+                }
+                write!(f, "}}")
+            }
+            Value::Function(_) => write!(f, "#<function>"),
+            Value::NativeFunction(_) => write!(f, "#<native-function>"),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
