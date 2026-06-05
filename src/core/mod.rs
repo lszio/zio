@@ -3,3 +3,7 @@ pub mod reader;
 pub mod env;
 pub mod eval;
 pub mod builtins;
+pub mod error;
+pub mod sexp;
+pub mod special;
+pub mod macros;

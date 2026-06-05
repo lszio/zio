@@ -2,6 +2,7 @@ pub mod core;
 
 use std::io::{self, Write};
 use std::sync::Arc;
+
 use crate::core::env::Env;
 use crate::core::reader;
 use crate::core::eval;
@@ -9,7 +10,7 @@ use crate::core::builtins;
 
 fn main() {
     let env = Arc::new(Env::new(None));
-    builtins::setup_env(env.clone());
+    builtins::setup_env(&env);
 
     println!("Zio REPL");
     println!("Press Ctrl+D or type (exit) to quit");
@@ -35,8 +36,8 @@ fn main() {
                 }
 
                 match reader::read(input) {
-                    Ok(val) => {
-                        match eval::eval(val, env.clone()) {
+                    Ok(sexp) => {
+                        match eval::eval(&sexp, &env) {
                             Ok(res) => println!("{}", res),
                             Err(e) => println!("Error: {}", e),
                         }

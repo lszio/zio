@@ -1,18 +1,14 @@
-use thiserror::Error;
-use crate::core::value::Value;
+use im::{vector, Vector};
 
-#[derive(Error, Debug, PartialEq, Eq)]
-pub enum ReaderError {
-    #[error("Unexpected EOF")]
-    UnexpectedEOF,
-    #[error("Unexpected token: {0}")]
-    UnexpectedToken(String),
-}
+use crate::core::error::ReaderError;
+use crate::core::sexp::Sexp;
 
-pub fn read(input: &str) -> Result<Value, ReaderError> {
+/// Read a single S-expression from the input string.
+pub fn read(input: &str) -> Result<Sexp, ReaderError> {
     let tokens = tokenize(input);
     let mut tokens = tokens.into_iter().peekable();
-    read_from_tokens(&mut tokens)
+    let (sexp, _) = read_from_tokens(&mut tokens)?;
+    Ok(sexp)
 }
 
 fn tokenize(input: &str) -> Vec<String> {
@@ -21,7 +17,7 @@ fn tokenize(input: &str) -> Vec<String> {
 
     while let Some(&c) = chars.peek() {
         match c {
-            '(' | ')' | '[' | ']' | '{' | '}' => {
+            '(' | ')' | '[' | ']' | '{' | '}' | '\'' => {
                 tokens.push(c.to_string());
                 chars.next();
             }
@@ -61,7 +57,7 @@ fn tokenize(input: &str) -> Vec<String> {
             _ => {
                 let mut atom = String::new();
                 while let Some(&c) = chars.peek() {
-                    if c.is_whitespace() || "()[]{}".contains(c) || c == '"' || c == ';' {
+                    if c.is_whitespace() || "()[]{}'\"".contains(c) || c == ';' {
                         break;
                     }
                     atom.push(chars.next().unwrap());
@@ -75,15 +71,27 @@ fn tokenize(input: &str) -> Vec<String> {
     tokens
 }
 
+/// Read from tokens using an explicit stack.
+/// Returns (Sexp, bool) where bool indicates if more tokens were available.
 fn read_from_tokens(
     tokens: &mut std::iter::Peekable<std::vec::IntoIter<String>>,
-) -> Result<Value, ReaderError> {
-    let mut stack: Vec<(String, im::Vector<Value>)> = Vec::new();
+) -> Result<(Sexp, bool), ReaderError> {
+    let mut stack: Vec<(String, Vector<Sexp>)> = Vec::new();
 
     while let Some(token) = tokens.next() {
         match token.as_str() {
+            "'" => {
+                // Reader macro: 'x → (quote x)
+                let (inner, _) = read_from_tokens(tokens)?;
+                let quoted = Sexp::List(vector![Sexp::Symbol("quote".into()), inner]);
+                if let Some(parent) = stack.last_mut() {
+                    parent.1.push_back(quoted);
+                } else {
+                    return Ok((quoted, tokens.peek().is_some()));
+                }
+            }
             "(" | "[" | "{" => {
-                stack.push((token, im::Vector::new()));
+                stack.push((token, Vector::new()));
             }
             ")" | "]" | "}" => {
                 let (open, items) = stack
@@ -96,13 +104,11 @@ fn read_from_tokens(
                     return Err(ReaderError::UnexpectedToken(token));
                 }
                 let val = match open.as_str() {
-                    "(" => Value::List(items),
-                    "[" => Value::Vector(items),
+                    "(" => Sexp::List(items),
+                    "[" => Sexp::Vector(items),
                     "{" => {
                         if items.len() % 2 != 0 {
-                            return Err(ReaderError::UnexpectedToken(
-                                "Map must have even number of elements".to_string(),
-                            ));
+                            return Err(ReaderError::OddMapElements);
                         }
                         let mut map = im::HashMap::new();
                         let mut iter = items.into_iter();
@@ -110,14 +116,14 @@ fn read_from_tokens(
                             let val = iter.next().unwrap();
                             map.insert(key, val);
                         }
-                        Value::Map(map)
+                        Sexp::Map(map)
                     }
                     _ => unreachable!(),
                 };
                 if let Some(parent) = stack.last_mut() {
                     parent.1.push_back(val);
                 } else {
-                    return Ok(val);
+                    return Ok((val, tokens.peek().is_some()));
                 }
             }
             _ => {
@@ -125,7 +131,7 @@ fn read_from_tokens(
                 if let Some(parent) = stack.last_mut() {
                     parent.1.push_back(val);
                 } else {
-                    return Ok(val);
+                    return Ok((val, tokens.peek().is_some()));
                 }
             }
         }
@@ -134,11 +140,12 @@ fn read_from_tokens(
     if !stack.is_empty() {
         Err(ReaderError::UnexpectedEOF)
     } else {
-        Err(ReaderError::UnexpectedEOF) // Should have returned an atom or popped the last collection
+        // Input was empty or all whitespace — return Nil
+        Ok((Sexp::Nil, false))
     }
 }
 
-fn parse_atom(token: &str) -> Value {
+fn parse_atom(token: &str) -> Sexp {
     if token.starts_with('"') && token.ends_with('"') && token.len() >= 2 {
         // Basic unescaping for common characters
         let s = &token[1..token.len() - 1];
@@ -160,21 +167,21 @@ fn parse_atom(token: &str) -> Value {
                 unescaped.push(c);
             }
         }
-        Value::String(unescaped)
+        Sexp::String(unescaped)
     } else if token.starts_with(':') {
-        Value::Keyword(token[1..].to_string())
+        Sexp::Keyword(token[1..].to_string())
     } else {
         match token {
-            "nil" => Value::Nil,
-            "true" => Value::Boolean(true),
-            "false" => Value::Boolean(false),
+            "nil" => Sexp::Nil,
+            "true" => Sexp::Boolean(true),
+            "false" => Sexp::Boolean(false),
             _ => {
                 if let Ok(i) = token.parse::<i64>() {
-                    Value::Integer(i)
+                    Sexp::Integer(i)
                 } else if let Ok(f) = token.parse::<f64>() {
-                    Value::Float(f)
+                    Sexp::Float(f)
                 } else {
-                    Value::Symbol(token.to_string())
+                    Sexp::Symbol(token.to_string())
                 }
             }
         }
@@ -187,26 +194,25 @@ mod tests {
 
     #[test]
     fn test_read_integer() {
-        assert_eq!(read("42"), Ok(Value::Integer(42)));
+        assert_eq!(read("42"), Ok(Sexp::Integer(42)));
     }
 
     #[test]
     fn test_read_symbol() {
-        assert_eq!(read("foo"), Ok(Value::Symbol("foo".into())));
+        assert_eq!(read("foo"), Ok(Sexp::Symbol("foo".into())));
     }
 
     #[test]
     fn test_read_nested_list() {
-        use im::vector;
         assert_eq!(
             read("(+ 1 (* 2 3))"),
-            Ok(Value::List(vector![
-                Value::Symbol("+".into()),
-                Value::Integer(1),
-                Value::List(vector![
-                    Value::Symbol("*".into()),
-                    Value::Integer(2),
-                    Value::Integer(3)
+            Ok(Sexp::List(vector![
+                Sexp::Symbol("+".into()),
+                Sexp::Integer(1),
+                Sexp::List(vector![
+                    Sexp::Symbol("*".into()),
+                    Sexp::Integer(2),
+                    Sexp::Integer(3)
                 ])
             ]))
         );
@@ -214,18 +220,18 @@ mod tests {
 
     #[test]
     fn test_read_float() {
-        assert_eq!(read("3.14"), Ok(Value::Float(3.14)));
+        assert_eq!(read("3.14"), Ok(Sexp::Float(3.14)));
     }
 
     #[test]
     fn test_read_nil() {
-        assert_eq!(read("nil"), Ok(Value::Nil));
+        assert_eq!(read("nil"), Ok(Sexp::Nil));
     }
 
     #[test]
     fn test_read_boolean() {
-        assert_eq!(read("true"), Ok(Value::Boolean(true)));
-        assert_eq!(read("false"), Ok(Value::Boolean(false)));
+        assert_eq!(read("true"), Ok(Sexp::Boolean(true)));
+        assert_eq!(read("false"), Ok(Sexp::Boolean(false)));
     }
 
     #[test]
@@ -243,32 +249,25 @@ mod tests {
 
     #[test]
     fn test_read_string() {
-        assert_eq!(read("\"hello (world)\""), Ok(Value::String("hello (world)".into())));
+        assert_eq!(
+            read("\"hello (world)\""),
+            Ok(Sexp::String("hello (world)".into()))
+        );
     }
 
     #[test]
     fn test_read_keyword() {
-        // Current implementation treats :foo as a symbol
-        assert_eq!(read(":foo"), Ok(Value::Keyword("foo".into())));
-    }
-
-    #[test]
-    fn test_robust_tokenizer() {
-        // (1)2 should be read as (1) followed by 2, but read() only reads one Value.
-        // If we read (1)2, it should probably be an error or just read (1).
-        // Standard Lisps usually stop at the first complete expression.
-        assert_eq!(read("(1)2"), Ok(Value::List(im::vector![Value::Integer(1)])));
+        assert_eq!(read(":foo"), Ok(Sexp::Keyword("foo".into())));
     }
 
     #[test]
     fn test_read_vector() {
-        use im::vector;
         assert_eq!(
             read("[1 2 3]"),
-            Ok(Value::Vector(vector![
-                Value::Integer(1),
-                Value::Integer(2),
-                Value::Integer(3)
+            Ok(Sexp::Vector(vector![
+                Sexp::Integer(1),
+                Sexp::Integer(2),
+                Sexp::Integer(3)
             ]))
         );
     }
@@ -278,9 +277,9 @@ mod tests {
         use im::hashmap;
         assert_eq!(
             read("{:a 1 :b 2}"),
-            Ok(Value::Map(hashmap! {
-                Value::Keyword("a".into()) => Value::Integer(1),
-                Value::Keyword("b".into()) => Value::Integer(2)
+            Ok(Sexp::Map(hashmap! {
+                Sexp::Keyword("a".into()) => Sexp::Integer(1),
+                Sexp::Keyword("b".into()) => Sexp::Integer(2)
             }))
         );
     }
@@ -296,5 +295,51 @@ mod tests {
             deep.push_str(")");
         }
         assert!(read(&deep).is_ok());
+    }
+
+    #[test]
+    fn test_quote_reader_macro() {
+        assert_eq!(
+            read("'42"),
+            Ok(Sexp::List(vector![
+                Sexp::Symbol("quote".into()),
+                Sexp::Integer(42)
+            ]))
+        );
+    }
+
+    #[test]
+    fn test_quote_list() {
+        assert_eq!(
+            read("'(1 2 3)"),
+            Ok(Sexp::List(vector![
+                Sexp::Symbol("quote".into()),
+                Sexp::List(vector![
+                    Sexp::Integer(1),
+                    Sexp::Integer(2),
+                    Sexp::Integer(3)
+                ])
+            ]))
+        );
+    }
+
+    #[test]
+    fn test_quote_nested() {
+        assert_eq!(
+            read("''x"),
+            Ok(Sexp::List(vector![
+                Sexp::Symbol("quote".into()),
+                Sexp::List(vector![
+                    Sexp::Symbol("quote".into()),
+                    Sexp::Symbol("x".into())
+                ])
+            ]))
+        );
+    }
+
+    #[test]
+    fn test_empty_input() {
+        assert_eq!(read(""), Ok(Sexp::Nil));
+        assert_eq!(read("   "), Ok(Sexp::Nil));
     }
 }
