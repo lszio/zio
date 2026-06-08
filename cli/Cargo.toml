@@ -1,0 +1,9 @@
+[package]
+name = "zio"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+zio-core = { path = "../core" }
+zio-reader = { path = "../reader" }

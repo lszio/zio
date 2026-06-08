@@ -3,12 +3,6 @@
 version = 4
 
 [[package]]
-name = "anyhow"
-version = "1.0.102"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7f202df86484c868dbad7eaa557ef785d5c66295e41b460ef922eca0723b842c"
-
-[[package]]
 name = "bitmaps"
 version = "2.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -140,10 +134,26 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "zio"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
- "anyhow",
+ "zio-core",
+ "zio-reader",
+]
+
+[[package]]
+name = "zio-core"
+version = "0.2.0"
+dependencies = [
  "im",
  "itertools",
  "thiserror",
+]
+
+[[package]]
+name = "zio-reader"
+version = "0.2.0"
+dependencies = [
+ "im",
+ "thiserror",
+ "zio-core",
 ]
