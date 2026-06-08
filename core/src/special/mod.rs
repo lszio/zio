@@ -11,6 +11,7 @@ mod bindings;
 mod control;
 mod letloop;
 mod data;
+mod module_forms;
 
 /// Type for the recursive eval function passed to special forms.
 pub type EvalFn<'a> = dyn Fn(&Sexp, &Arc<Env>, bool) -> Result<TailResult, EvalError> + 'a;
@@ -56,6 +57,8 @@ pub fn eval_special_form<'a>(
         "and" => Some(control::do_and(args, env, tail, eval_fn)?),
         "or" => Some(control::do_or(args, env, tail, eval_fn)?),
         "cond" => Some(control::do_cond(args, env, tail, eval_fn)?),
+        "module" => Some(module_forms::do_module(args, env, eval_fn)?),
+        "require" => Some(module_forms::do_require(args, env, eval_fn)?),
         _ => None,
     };
     Ok(result)

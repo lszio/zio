@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "skills": {
+    "architect": {
+      "source": "lszio/aimen",
+      "sourceType": "github",
+      "skillPath": "skills/architect/SKILL.md",
+      "computedHash": "7ed70100910fd7ec73481d327d0991a66f8724cf1acbef74f687f9d9695e27a7"
+    }
+  }
+}
