@@ -7,6 +7,7 @@ use zio_core::error::EvalError;
 use zio_core::eval;
 use zio_core::builtins;
 use zio_core::im;
+use zio_core::module;
 use zio_core::value::{Value, NativeFn};
 use zio_reader::reader;
 
@@ -89,6 +90,39 @@ pub fn make_global_env() -> Arc<Env> {
     let env = Arc::new(Env::new(None));
     builtins::setup_env(&env);
     register_load_fn(&env);
+
+    // Register the require loader: resolves module name → file path → parse → eval
+    module::set_require_loader(|mod_name, _source, parent_env| {
+        let name_str = mod_name.join(".");
+
+        // Resolve path from module name (e.g. "zio.math" → "./zio/math.zio")
+        let path = module::resolve_module_path(&name_str)?;
+
+        // Check for circular requires
+        module::begin_loading(&path)?;
+
+        // Read source
+        let source = std::fs::read_to_string(&path)
+            .map_err(|e| EvalError::Custom(format!("cannot read {}: {e}", path.display())))?;
+
+        // Parse
+        let sexp = zio_reader::reader::read(&source)
+            .map_err(|e| EvalError::Custom(format!("parse error in {}: {e}", path.display())))?;
+
+        // Eval in a module-scoped env (child of parent_env)
+        let module_env = Arc::new(Env::new(Some(parent_env.clone())));
+        let _ = eval::eval(&sexp, &module_env);
+
+        module::end_loading(&path);
+
+        Ok(zio_core::module::Module {
+            name: mod_name.to_vec(),
+            env: module_env.clone(),
+            exports: Vec::new(),
+            source: None,
+        })
+    });
+
     env
 }
 

@@ -1,4 +1,5 @@
-use std::path::PathBuf;
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crate::env::Env;
@@ -63,17 +64,81 @@ impl ModuleRegistry {
         self.modules.iter().find(|m| m.name == name)
     }
 
+    pub fn find_mut(&mut self, name: &[String]) -> Option<&mut Module> {
+        self.modules.iter_mut().find(|m| m.name == name)
+    }
+
     /// Remove a module (for cleanup).
     pub fn remove(&mut self, name: &[String]) {
         self.modules.retain(|m| m.name != name);
     }
+
+    /// Check if a module is already loaded.
+    pub fn is_loaded(&self, name: &[String]) -> bool {
+        self.modules.iter().any(|m| m.name == name)
+    }
 }
 
-/// A module reference stored as a runtime Value.
-/// This wraps an index into a global ModuleRegistry.
-#[derive(Debug, Clone)]
-pub struct ModuleRef {
-    pub index: usize,
+/// Thread-local tracking of files being loaded, to detect circular requires.
+use std::cell::RefCell;
+thread_local! {
+    static LOADING_STACK: RefCell<Vec<PathBuf>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Push a path onto the loading stack. Returns error if already loading (circular).
+pub fn begin_loading(path: &Path) -> Result<(), EvalError> {
+    LOADING_STACK.with(|cell| {
+        let read = cell.borrow();
+        if read.iter().any(|p| p == path) {
+            let chain: Vec<String> = read.iter().map(|p| p.display().to_string()).collect();
+            return Err(EvalError::Custom(format!(
+                "circular require detected: {} → {}",
+                chain.join(" → "),
+                path.display()
+            )));
+        }
+        // Explicit drop of the immutable borrow before mutable borrow
+        drop(read);
+        cell.borrow_mut().push(path.to_path_buf());
+        Ok(())
+    })
+}
+
+/// Pop a path from the loading stack after loading completes.
+pub fn end_loading(path: &Path) {
+    LOADING_STACK.with(|stack| {
+        stack.borrow_mut().retain(|p| p != path);
+    });
+}
+
+/// Type for the injectable module loader function.
+/// Given: (module_name_parts, source_content, parent_env) → Result<Module, EvalError>
+pub type ModuleLoader = dyn Fn(&[String], &str, &Arc<Env>) -> Result<Module, EvalError> + Send + Sync;
+
+thread_local! {
+    static REQUIRE_LOADER: RefCell<Option<Box<ModuleLoader>>> = const { RefCell::new(None) };
+}
+
+/// Set the require loader hook (called from CLI layer).
+pub fn set_require_loader<F>(loader: F)
+where
+    F: Fn(&[String], &str, &Arc<Env>) -> Result<Module, EvalError> + Send + Sync + 'static,
+{
+    REQUIRE_LOADER.with(|cell| {
+        *cell.borrow_mut() = Some(Box::new(loader));
+    });
+}
+
+/// Call the registered require loader, if any.
+pub fn call_require_loader(
+    name: &[String],
+    source: &str,
+    parent_env: &Arc<Env>,
+) -> Option<Result<Module, EvalError>> {
+    REQUIRE_LOADER.with(|cell| {
+        let guard = cell.borrow();
+        guard.as_ref().map(|loader| loader(name, source, parent_env))
+    })
 }
 
 /// Resolve a module path like "zio/math" to a file path.
@@ -81,7 +146,6 @@ pub struct ModuleRef {
 ///   1. Current directory (./{path}.zio)
 ///   2. ZIO_PATH env var directories
 pub fn resolve_module_path(path: &str) -> Result<PathBuf, EvalError> {
-    // Normalise: "zio.math" → "zio/math.zio"
     let file_stem = path.replace('.', "/");
     let filename = format!("{}.zio", file_stem);
 
@@ -156,5 +220,19 @@ mod tests {
         let sym = Value::Symbol("core.utils".into());
         let name = parse_module_name(&sym).unwrap();
         assert_eq!(name, vec!["core", "utils"]);
+    }
+
+    #[test]
+    fn test_loading_stack() {
+        let p1 = PathBuf::from("/test/a.zio");
+        let p2 = PathBuf::from("/test/b.zio");
+        assert!(begin_loading(&p1).is_ok());
+        assert!(begin_loading(&p2).is_ok());
+        // Circular: loading a again
+        let result = begin_loading(&p1);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("circular"));
+        end_loading(&p2);
+        end_loading(&p1);
     }
 }
