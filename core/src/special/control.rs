@@ -1,30 +1,28 @@
 use std::sync::Arc;
 
+use crate::context::EvalEngine;
 use crate::env::Env;
 use crate::error::EvalError;
 use crate::sexp::Sexp;
-use crate::special::{EvalFn, TailResult};
+use crate::special::{eval_last_body, TailResult};
 use crate::value::{is_truthy, Value};
 
 // ── if ────────────────────────────────────────────────────────────
 
-pub fn do_if<'a>(
+pub fn do_if(
     args: &[Sexp],
     env: &Arc<Env>,
     tail: bool,
-    eval_fn: &'a EvalFn<'a>,
+    engine: &dyn EvalEngine,
 ) -> Result<TailResult, EvalError> {
     if args.len() < 2 || args.len() > 3 {
-        return Err(EvalError::WrongArgCountMin {
-            min: 2,
-            got: args.len(),
-        });
+        return Err(EvalError::wrong_arg_count(2, args.len()));
     }
-    let cond = eval_fn(&args[0], env, false)?.into_value();
-    if is_truthy(&cond) {
-        eval_fn(&args[1], env, tail)
+    let test = engine.eval_expr(&args[0], env, false)?;
+    if is_truthy(&test.into_value()) {
+        engine.eval_expr(&args[1], env, tail)
     } else if args.len() == 3 {
-        eval_fn(&args[2], env, tail)
+        engine.eval_expr(&args[2], env, tail)
     } else {
         Ok(TailResult::Value(Value::Nil))
     }
@@ -32,116 +30,92 @@ pub fn do_if<'a>(
 
 // ── do ────────────────────────────────────────────────────────────
 
-pub fn do_do<'a>(
+pub fn do_do(
     args: &[Sexp],
     env: &Arc<Env>,
     tail: bool,
-    eval_fn: &'a EvalFn<'a>,
+    engine: &dyn EvalEngine,
 ) -> Result<TailResult, EvalError> {
-    if args.is_empty() {
-        return Ok(TailResult::Value(Value::Nil));
-    }
-    let mut result = TailResult::Value(Value::Nil);
-    for (i, expr) in args.iter().enumerate() {
-        let is_last = i == args.len() - 1;
-        result = eval_fn(expr, env, tail && is_last)?;
-    }
-    Ok(result)
+    eval_last_body(args, env, tail, engine)
 }
 
 // ── and / or (short-circuit) ────────────────────────────────────
 
-pub fn do_and<'a>(
+pub fn do_and(
     args: &[Sexp],
     env: &Arc<Env>,
     tail: bool,
-    eval_fn: &'a EvalFn<'a>,
+    engine: &dyn EvalEngine,
 ) -> Result<TailResult, EvalError> {
     if args.is_empty() {
         return Ok(TailResult::Value(Value::Boolean(true)));
     }
-    for (i, expr) in args.iter().enumerate() {
-        let is_last = i == args.len() - 1;
-        let val = eval_fn(expr, env, tail && is_last)?;
-        if !is_last {
-            let v = match &val {
-                TailResult::Value(v) => v,
-                TailResult::Recur(_) => return Ok(val),
-            };
-            if !is_truthy(v) {
-                return Ok(val);
-            }
-        } else {
-            return Ok(val);
+    for (i, arg) in args.iter().enumerate() {
+        let result = engine.eval_expr(arg, env, tail && i == args.len() - 1)?;
+        let val = result.into_value();
+        if !is_truthy(&val) {
+            return Ok(TailResult::Value(val));
+        }
+        if i == args.len() - 1 {
+            return Ok(TailResult::Value(val));
         }
     }
-    unreachable!()
+    Ok(TailResult::Value(Value::Boolean(true)))
 }
 
-pub fn do_or<'a>(
+pub fn do_or(
     args: &[Sexp],
     env: &Arc<Env>,
     tail: bool,
-    eval_fn: &'a EvalFn<'a>,
+    engine: &dyn EvalEngine,
 ) -> Result<TailResult, EvalError> {
     if args.is_empty() {
         return Ok(TailResult::Value(Value::Nil));
     }
-    for (i, expr) in args.iter().enumerate() {
-        let is_last = i == args.len() - 1;
-        let val = eval_fn(expr, env, tail && is_last)?;
-        if !is_last {
-            let v = match &val {
-                TailResult::Value(v) => v,
-                TailResult::Recur(_) => return Ok(val),
-            };
-            if is_truthy(v) {
-                return Ok(val);
-            }
-        } else {
-            return Ok(val);
+    for (i, arg) in args.iter().enumerate() {
+        let result = engine.eval_expr(arg, env, tail && i == args.len() - 1)?;
+        let val = result.into_value();
+        if is_truthy(&val) {
+            return Ok(TailResult::Value(val));
+        }
+        if i == args.len() - 1 {
+            return Ok(TailResult::Value(val));
         }
     }
-    unreachable!()
+    Ok(TailResult::Value(Value::Nil))
 }
 
 // ── cond ─────────────────────────────────────────────────────────
 
-pub fn do_cond<'a>(
+pub fn do_cond(
     args: &[Sexp],
     env: &Arc<Env>,
     tail: bool,
-    eval_fn: &'a EvalFn<'a>,
+    engine: &dyn EvalEngine,
 ) -> Result<TailResult, EvalError> {
-    use crate::special::eval_last_body;
-
-    if args.is_empty() {
-        return Ok(TailResult::Value(Value::Nil));
-    }
-
-    for (clause_idx, clause) in args.iter().enumerate() {
-        let is_last_clause = clause_idx == args.len() - 1;
-        match clause {
-            Sexp::List(items) if !items.is_empty() => {
-                let test = &items[0];
-                let body_items: Vec<Sexp> = items.iter().skip(1).cloned().collect();
-                let test_val = eval_fn(test, env, false)?.into_value();
-                if is_truthy(&test_val) {
-                    if body_items.is_empty() {
-                        return Ok(TailResult::Value(test_val));
-                    }
-                    return eval_last_body(&body_items, env, tail && is_last_clause, eval_fn);
-                }
-            }
-            _ if is_last_clause => {
-                return eval_fn(clause, env, tail);
-            }
+    for clause in args {
+        let list = match clause {
+            Sexp::List(list) => list,
             other => {
-                return Err(EvalError::InvalidForm(format!(
-                    "cond clause must be a list, got {}",
-                    other
-                )));
+                return Err(EvalError::invalid_form(
+                    format!("cond clause must be a list, got {}", other.kind()),
+                ));
             }
+        };
+        if list.is_empty() {
+            return Err(EvalError::invalid_form("cond clause cannot be empty"));
+        }
+        let test = &list[0];
+        if let Sexp::Symbol(s) = test {
+            if s == "else" {
+                let body_slice = list.clone().into_iter().skip(1).collect::<Vec<Sexp>>();
+                return eval_last_body(&body_slice, env, tail, engine);
+            }
+        }
+        let test_result = engine.eval_expr(test, env, false)?.into_value();
+        if is_truthy(&test_result) {
+            let body_slice = list.clone().into_iter().skip(1).collect::<Vec<Sexp>>();
+            return eval_last_body(&body_slice, env, tail, engine);
         }
     }
     Ok(TailResult::Value(Value::Nil))
@@ -150,70 +124,153 @@ pub fn do_cond<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::context::EvalContext;
     use crate::env::Env;
-    use im::Vector;
+    use crate::builtins;
+    use crate::eval;
+    use crate::sexp::Sexp;
 
-    fn test_eval(expr: &Sexp, env: &Arc<Env>, _tail: bool) -> Result<TailResult, EvalError> {
-        match expr {
-            Sexp::Nil => Ok(TailResult::Value(Value::Nil)),
-            Sexp::Boolean(b) => Ok(TailResult::Value(Value::Boolean(*b))),
-            Sexp::Integer(i) => Ok(TailResult::Value(Value::Integer(*i))),
-            Sexp::Float(f) => Ok(TailResult::Value(Value::Float(*f))),
-            Sexp::String(s) => Ok(TailResult::Value(Value::String(s.clone()))),
-            Sexp::Keyword(k) => Ok(TailResult::Value(Value::Keyword(k.clone()))),
-            Sexp::Symbol(s) => env
-                .get(s)
-                .map(TailResult::Value)
-                .ok_or_else(|| EvalError::SymbolNotFound(s.clone())),
-            other => Err(EvalError::InvalidForm(format!(
-                "test_eval cannot handle {}",
-                other
-            ))),
+    fn make_ctx() -> EvalContext {
+        let env = Arc::new(Env::new(None));
+        builtins::setup_env(&env);
+        EvalContext::new(env)
+    }
+
+    fn parse(s: &str) -> Sexp {
+        // Minimal inline parser for tests — duplicates test_parse_atom from eval tests
+        fn test_tokenize(input: &str) -> Vec<String> {
+            let mut tokens = Vec::new();
+            let mut chars = input.chars().peekable();
+            while let Some(&c) = chars.peek() {
+                match c {
+                    '(' | ')' | '[' | ']' | '{' | '}' | '\'' => {
+                        tokens.push(c.to_string());
+                        chars.next();
+                    }
+                    '"' => {
+                        let mut s = String::new();
+                        s.push(chars.next().unwrap());
+                        while let Some(&c) = chars.peek() {
+                            match c { '\\' => { s.push(chars.next().unwrap()); if let Some(nc) = chars.next() { s.push(nc); } } '"' => { s.push(chars.next().unwrap()); break; } _ => { s.push(chars.next().unwrap()); } }
+                        }
+                        tokens.push(s);
+                    }
+                    _ if c.is_whitespace() => { chars.next(); }
+                    ';' => { while let Some(c) = chars.next() { if c == '\n' { break; } } }
+                    _ => {
+                        let mut atom = String::new();
+                        while let Some(&c) = chars.peek() {
+                            if c.is_whitespace() || "()[]{}'\"".contains(c) || c == ';' { break; }
+                            atom.push(chars.next().unwrap());
+                        }
+                        if !atom.is_empty() { tokens.push(atom); }
+                    }
+                }
+            }
+            tokens
         }
+        fn test_parse_atom(token: &str) -> Sexp {
+            if token.starts_with('"') && token.ends_with('"') && token.len() >= 2 {
+                let s = &token[1..token.len() - 1];
+                let mut unescaped = String::new();
+                let mut chars = s.chars();
+                while let Some(c) = chars.next() {
+                    if c == '\\' {
+                        if let Some(nc) = chars.next() {
+                            match nc { 'n' => unescaped.push('\n'), 'r' => unescaped.push('\r'), 't' => unescaped.push('\t'), '\\' => unescaped.push('\\'), '"' => unescaped.push('"'), _ => unescaped.push(nc), }
+                        }
+                    } else { unescaped.push(c); }
+                }
+                Sexp::String(unescaped)
+            } else if token.starts_with(':') { Sexp::Keyword(token[1..].to_string()) }
+            else { match token { "nil" => Sexp::Nil, "true" => Sexp::Boolean(true), "false" => Sexp::Boolean(false), _ => { if let Ok(i) = token.parse::<i64>() { Sexp::Integer(i) } else if let Ok(f) = token.parse::<f64>() { Sexp::Float(f) } else { Sexp::Symbol(token.to_string()) } } } }
+        }
+        fn read_sexp(tokens: &mut std::iter::Peekable<std::vec::IntoIter<String>>) -> Result<Sexp, ()> {
+            let mut stack: Vec<(String, im::Vector<Sexp>)> = Vec::new();
+            while let Some(token) = tokens.next() {
+                match token.as_str() {
+                    "'" => { let inner = read_sexp(tokens)?; let quoted = Sexp::List(im::vector![Sexp::Symbol("quote".into()), inner]); if let Some(parent) = stack.last_mut() { parent.1.push_back(quoted); } else { return Ok(quoted); } }
+                    "(" | "[" | "{" => { stack.push((token, im::Vector::new())); }
+                    ")" => { let (_, items) = stack.pop().ok_or(())?; let val = Sexp::List(items); if let Some(parent) = stack.last_mut() { parent.1.push_back(val); } else { return Ok(val); } }
+                    "]" => { let (_, items) = stack.pop().ok_or(())?; let val = Sexp::Vector(items); if let Some(parent) = stack.last_mut() { parent.1.push_back(val); } else { return Ok(val); } }
+                    "}" => { let (_, items) = stack.pop().ok_or(())?; return Err(()); }
+                    _ => { let val = test_parse_atom(&token); if let Some(parent) = stack.last_mut() { parent.1.push_back(val); } else { return Ok(val); } }
+                }
+            }
+            Err(())
+        }
+        let tokens = test_tokenize(s);
+        let mut tokens = tokens.into_iter().peekable();
+        read_sexp(&mut tokens).unwrap()
     }
 
     #[test]
     fn test_if_true() {
-        let env = Arc::new(Env::new(None));
-        let args = [Sexp::Boolean(true), Sexp::Integer(1), Sexp::Integer(2)];
-        let result = do_if(&args, &env, false, &test_eval).unwrap().into_value();
-        assert_eq!(result, Value::Integer(1));
+        let ctx = make_ctx();
+        let expr = parse("(if true 1 2)");
+        assert_eq!(eval::eval(&expr, &ctx).unwrap(), Value::Integer(1));
     }
 
     #[test]
     fn test_if_false() {
-        let env = Arc::new(Env::new(None));
-        let args = [Sexp::Boolean(false), Sexp::Integer(1), Sexp::Integer(2)];
-        let result = do_if(&args, &env, false, &test_eval).unwrap().into_value();
-        assert_eq!(result, Value::Integer(2));
+        let ctx = make_ctx();
+        let expr = parse("(if false 1 2)");
+        assert_eq!(eval::eval(&expr, &ctx).unwrap(), Value::Integer(2));
     }
 
     #[test]
-    fn test_and_or_short_circuit() {
-        let env = Arc::new(Env::new(None));
-        let args = [Sexp::Boolean(true), Sexp::Integer(42)];
-        let result = do_and(&args, &env, false, &test_eval).unwrap().into_value();
-        assert_eq!(result, Value::Integer(42));
+    fn test_if_no_else() {
+        let ctx = make_ctx();
+        let expr = parse("(if false 1)");
+        assert_eq!(eval::eval(&expr, &ctx).unwrap(), Value::Nil);
+    }
 
-        let args = [Sexp::Boolean(false), Sexp::Integer(42)];
-        let result = do_and(&args, &env, false, &test_eval).unwrap().into_value();
-        assert_eq!(result, Value::Boolean(false));
+    #[test]
+    fn test_do_sequence() {
+        let ctx = make_ctx();
+        let expr = parse("(do 1 2 3)");
+        assert_eq!(eval::eval(&expr, &ctx).unwrap(), Value::Integer(3));
+    }
 
-        let args = [Sexp::Boolean(false), Sexp::Integer(42)];
-        let result = do_or(&args, &env, false, &test_eval).unwrap().into_value();
-        assert_eq!(result, Value::Integer(42));
+    #[test]
+    fn test_and_empty() {
+        let ctx = make_ctx();
+        let expr = parse("(and)");
+        assert_eq!(eval::eval(&expr, &ctx).unwrap(), Value::Boolean(true));
+    }
+
+    #[test]
+    fn test_and_short_circuit() {
+        let ctx = make_ctx();
+        let expr = parse("(and true false true)");
+        assert_eq!(eval::eval(&expr, &ctx).unwrap(), Value::Boolean(false));
+    }
+
+    #[test]
+    fn test_or_empty() {
+        let ctx = make_ctx();
+        let expr = parse("(or)");
+        assert_eq!(eval::eval(&expr, &ctx).unwrap(), Value::Nil);
+    }
+
+    #[test]
+    fn test_or_short_circuit() {
+        let ctx = make_ctx();
+        let expr = parse("(or false 42)");
+        assert_eq!(eval::eval(&expr, &ctx).unwrap(), Value::Integer(42));
     }
 
     #[test]
     fn test_cond() {
-        let env = Arc::new(Env::new(None));
-        // (cond (false 1) (true 2) (false 3))
-        let args = [
-            Sexp::List(Vector::from(vec![Sexp::Boolean(false), Sexp::Integer(1)])),
-            Sexp::List(Vector::from(vec![Sexp::Boolean(true), Sexp::Integer(2)])),
-            Sexp::List(Vector::from(vec![Sexp::Boolean(false), Sexp::Integer(3)])),
-        ];
-        let result = do_cond(&args, &env, false, &test_eval).unwrap().into_value();
-        assert_eq!(result, Value::Integer(2));
+        let ctx = make_ctx();
+        let expr = parse("(cond (false 1) (true 2) (else 3))");
+        assert_eq!(eval::eval(&expr, &ctx).unwrap(), Value::Integer(2));
+    }
+
+    #[test]
+    fn test_cond_else() {
+        let ctx = make_ctx();
+        let expr = parse("(cond (false 1) (else 2 3))");
+        assert_eq!(eval::eval(&expr, &ctx).unwrap(), Value::Integer(3));
     }
 }

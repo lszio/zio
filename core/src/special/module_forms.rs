@@ -1,164 +1,137 @@
 use std::sync::Arc;
-
+use crate::context::EvalEngine;
 use crate::env::Env;
 use crate::error::EvalError;
-use crate::module::{Module, ModuleRegistry, call_require_loader};
 use crate::sexp::Sexp;
-use crate::special::{eval_last_body, EvalFn, TailResult};
+use crate::special::{eval_last_body, TailResult};
 use crate::value::Value;
 
-// Global module registry (thread-local)
-use std::cell::RefCell;
-thread_local! {
-    static MODULES: RefCell<ModuleRegistry> = RefCell::new(ModuleRegistry { modules: Vec::new() });
-}
-
-/// Register a module in the global registry.
-pub fn register_module(m: Module) {
-    MODULES.with(|cell| {
-        cell.borrow_mut().register(m);
-    });
-}
-
-/// Find a module by name in the global registry.
-pub fn find_module(name: &[String]) -> Option<Module> {
-    MODULES.with(|cell| {
-        cell.borrow().find(name).cloned()
-    })
-}
-
-/// Check if a module is already loaded in the global registry.
-pub fn is_module_loaded(name: &[String]) -> bool {
-    MODULES.with(|cell| {
-        cell.borrow().is_loaded(name)
-    })
-}
+// ── module ────────────────────────────────────────────────────────
 
 /// (module name ...)
 /// Declare a module: name must be a keyword or symbol.
 /// All top-level def/defn/defmacro after this go into the module's namespace.
-pub fn do_module<'a>(
+pub fn do_module(
     args: &[Sexp],
     env: &Arc<Env>,
-    eval_fn: &'a EvalFn<'a>,
+    engine: &dyn EvalEngine,
 ) -> Result<TailResult, EvalError> {
     if args.is_empty() {
-        return Err(EvalError::InvalidForm("module requires a name".into()));
+        return Err(EvalError::invalid_form("module requires a name"));
     }
 
-    let name_str = match &args[0] {
-        Sexp::Keyword(s) | Sexp::Symbol(s) => s.clone(),
-        other => return Err(EvalError::TypeError {
-            expected: "keyword or symbol",
-            got: other.kind().to_string(),
-        }),
+    // Extract module name (keyword or symbol)
+    let module_name = match &args[0] {
+        Sexp::Keyword(s) => s.split('.').map(|p| p.to_string()).collect::<Vec<_>>(),
+        Sexp::Symbol(s) => s.split('.').map(|p| p.to_string()).collect::<Vec<_>>(),
+        other => {
+            return Err(EvalError::invalid_form(
+                format!("module name must be a keyword or symbol, got {}", other.kind()),
+            ));
+        }
     };
 
-    let module_name: Vec<String> = name_str.split('.').map(|s| s.to_string()).collect();
-    let body = &args[1..];
+    if module_name.is_empty() {
+        return Err(EvalError::invalid_form("module name cannot be empty"));
+    }
 
+    // Create a module-local env
     let module_env = Arc::new(Env::new(Some(env.clone())));
 
+    // Evaluate body expressions in the module env
+    let body = &args[1..];
     let result = if body.is_empty() {
         TailResult::Value(Value::Nil)
     } else {
-        eval_last_body(body, &module_env, false, eval_fn)?
+        eval_last_body(body, &module_env, true, engine)?
     };
 
-    let module = Module {
-        name: module_name.clone(),
-        env: module_env.clone(),
+    // Register the module
+    let module = crate::module::Module {
+        name: module_name,
+        env: module_env,
         exports: Vec::new(),
         source: None,
     };
-
-    register_module(module);
+    engine.register_module(module);
 
     Ok(result)
 }
+
+// ── require ───────────────────────────────────────────────────────
 
 /// (require :module-name [:sym1 :sym2 ...])
 /// Require and import symbols from a module.
 /// Automatically loads from disk if not already loaded,
 /// using the injectable loader registered by CLI layer.
-pub fn do_require<'a>(
+pub fn do_require(
     args: &[Sexp],
     env: &Arc<Env>,
-    _eval_fn: &'a EvalFn<'a>,
+    engine: &dyn EvalEngine,
 ) -> Result<TailResult, EvalError> {
     if args.is_empty() {
-        return Err(EvalError::InvalidForm("require needs a module name".into()));
+        return Err(EvalError::invalid_form("require requires a module name"));
     }
 
-    let module_key = match &args[0] {
-        Sexp::Keyword(s) => s.clone(),
-        Sexp::Symbol(s) => s.clone(),
-        other => return Err(EvalError::TypeError {
-            expected: "keyword or symbol",
-            got: other.kind().to_string(),
-        }),
+    // Parse module name from first arg (keyword or symbol)
+    let module_name = match &args[0] {
+        Sexp::Keyword(s) => s.split('.').map(|p| p.to_string()).collect::<Vec<_>>(),
+        Sexp::Symbol(s) => s.split('.').map(|p| p.to_string()).collect::<Vec<_>>(),
+        other => {
+            return Err(EvalError::invalid_form(
+                format!("require requires a module name (keyword or symbol), got {}", other.kind()),
+            ));
+        }
     };
 
-    let module_name: Vec<String> = module_key.split('.').map(|s| s.to_string()).collect();
-    let name_str = module_name.join(".");
-
-    // Try to auto-load from disk if not yet loaded
-    if !is_module_loaded(&module_name) {
-        auto_load_module(&module_name, &name_str, env)?;
-    }
-
-    // Find the now-loaded module
-    let module = find_module(&module_name)
-        .ok_or_else(|| EvalError::Custom(format!("module not loaded: {name_str}")))?;
-
-    // If specific symbols requested, import those
-    let specific_syms: Vec<&Sexp> = args[1..].iter().collect();
-    if specific_syms.is_empty() {
-        // Import all exports
-        for sym in &module.exports {
-            if let Some(val) = module.env.get(sym) {
-                env.set(sym.clone(), val);
+    // Optional: specific symbols to import
+    let symbols: Option<Vec<String>> = if args.len() > 1 {
+        let mut syms = Vec::new();
+        for arg in &args[1..] {
+            match arg {
+                Sexp::Keyword(s) => syms.push(s.clone()),
+                Sexp::Symbol(s) => syms.push(s.clone()),
+                other => {
+                    return Err(EvalError::invalid_form(
+                        format!("require symbols must be keywords or symbols, got {}", other.kind()),
+                    ));
+                }
             }
         }
+        Some(syms)
     } else {
-        for sym_sexp in &specific_syms {
-            let sym_name = match sym_sexp {
-                Sexp::Keyword(s) | Sexp::Symbol(s) => s.clone(),
-                other => return Err(EvalError::TypeError {
-                    expected: "symbol or keyword",
-                    got: other.kind().to_string(),
-                }),
-            };
-            if let Some(val) = module.env.get(&sym_name) {
-                env.set(sym_name, val);
-            } else {
-                return Err(EvalError::Custom(format!(
-                    "symbol {sym_name} not exported by module {name_str}"
+        None
+    };
+
+    // Auto-load from disk if not already loaded (call the loader hook)
+    if !engine.is_module_loaded(&module_name) {
+        let name_str = module_name.join(".");
+        let result = engine.call_loader(&module_name, &name_str, env);
+        match result {
+            None => {
+                return Err(EvalError::custom(format!(
+                    "no loader registered for modules and module not found: {name_str}"
                 )));
             }
+            Some(Ok(module)) => {
+                engine.register_module(module);
+            }
+            Some(Err(e)) => return Err(e),
+        }
+    }
+
+    // Find the now-loaded module and import symbols
+    let module = engine.find_module(&module_name).ok_or_else(|| {
+        EvalError::custom(format!("module not found after load: {}", module_name.join(".")))
+    })?;
+
+    let target_syms = symbols.unwrap_or(module.exports.clone());
+
+    for sym_name in &target_syms {
+        if let Some(val) = module.env.get(sym_name) {
+            env.set(sym_name.clone(), val);
         }
     }
 
     Ok(TailResult::Value(Value::Nil))
-}
-
-/// Try to load a module from disk using the injectable loader (set by CLI layer).
-fn auto_load_module(
-    module_name: &[String],
-    _name_str: &str,
-    _parent_env: &Arc<Env>,
-) -> Result<(), EvalError> {
-    // Try the injectable loader (set by CLI layer, has access to reader + eval)
-    let result = call_require_loader(module_name, "", _parent_env);
-    match result {
-        Some(Ok(module)) => {
-            register_module(module);
-            Ok(())
-        }
-        Some(Err(e)) => Err(e),
-        None => Err(EvalError::Custom(format!(
-            "module not found: {} — use (load) or set up module path",
-            module_name.join(".")
-        ))),
-    }
 }

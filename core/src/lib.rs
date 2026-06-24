@@ -13,6 +13,4 @@ pub mod module;
 pub mod span;
 pub mod special;
 pub mod symbol;
-
-#[cfg(test)]
-pub mod test_read;
+pub mod context;

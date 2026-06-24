@@ -1,7 +1,5 @@
-use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-
 use crate::env::Env;
 use crate::error::EvalError;
 use crate::span::SourceId;
@@ -18,7 +16,7 @@ use crate::value::Value;
 pub struct Module {
     /// Hierarchical module name, e.g. ["zio", "math"]
     pub name: Vec<String>,
-    /// The module's own environment (child of global env)
+    /// The module's own environment (child of parent env)
     pub env: Arc<Env>,
     /// Symbols explicitly exported
     pub exports: Vec<String>,
@@ -47,11 +45,16 @@ impl Module {
 #[derive(Debug, Default)]
 pub struct ModuleRegistry {
     pub modules: Vec<Module>,
+    /// Stack of file paths being loaded (circular require detection).
+    pub loading_stack: Vec<PathBuf>,
 }
 
 impl ModuleRegistry {
     pub fn new() -> Self {
-        ModuleRegistry { modules: Vec::new() }
+        ModuleRegistry {
+            modules: Vec::new(),
+            loading_stack: Vec::new(),
+        }
     }
 
     /// Register a module.
@@ -64,6 +67,7 @@ impl ModuleRegistry {
         self.modules.iter().find(|m| m.name == name)
     }
 
+    #[allow(dead_code)]
     pub fn find_mut(&mut self, name: &[String]) -> Option<&mut Module> {
         self.modules.iter_mut().find(|m| m.name == name)
     }
@@ -77,68 +81,25 @@ impl ModuleRegistry {
     pub fn is_loaded(&self, name: &[String]) -> bool {
         self.modules.iter().any(|m| m.name == name)
     }
-}
 
-/// Thread-local tracking of files being loaded, to detect circular requires.
-use std::cell::RefCell;
-thread_local! {
-    static LOADING_STACK: RefCell<Vec<PathBuf>> = const { RefCell::new(Vec::new()) };
-}
-
-/// Push a path onto the loading stack. Returns error if already loading (circular).
-pub fn begin_loading(path: &Path) -> Result<(), EvalError> {
-    LOADING_STACK.with(|cell| {
-        let read = cell.borrow();
-        if read.iter().any(|p| p == path) {
-            let chain: Vec<String> = read.iter().map(|p| p.display().to_string()).collect();
-            return Err(EvalError::Custom(format!(
+    /// Push a path onto the loading stack. Returns error if already loading (circular).
+    pub fn begin_loading(&mut self, path: &Path) -> Result<(), EvalError> {
+        if self.loading_stack.iter().any(|p| p == path) {
+            let chain: Vec<String> = self.loading_stack.iter().map(|p| p.display().to_string()).collect();
+            return Err(EvalError::custom(format!(
                 "circular require detected: {} → {}",
                 chain.join(" → "),
                 path.display()
             )));
         }
-        // Explicit drop of the immutable borrow before mutable borrow
-        drop(read);
-        cell.borrow_mut().push(path.to_path_buf());
+        self.loading_stack.push(path.to_path_buf());
         Ok(())
-    })
-}
+    }
 
-/// Pop a path from the loading stack after loading completes.
-pub fn end_loading(path: &Path) {
-    LOADING_STACK.with(|stack| {
-        stack.borrow_mut().retain(|p| p != path);
-    });
-}
-
-/// Type for the injectable module loader function.
-/// Given: (module_name_parts, source_content, parent_env) → Result<Module, EvalError>
-pub type ModuleLoader = dyn Fn(&[String], &str, &Arc<Env>) -> Result<Module, EvalError> + Send + Sync;
-
-thread_local! {
-    static REQUIRE_LOADER: RefCell<Option<Box<ModuleLoader>>> = const { RefCell::new(None) };
-}
-
-/// Set the require loader hook (called from CLI layer).
-pub fn set_require_loader<F>(loader: F)
-where
-    F: Fn(&[String], &str, &Arc<Env>) -> Result<Module, EvalError> + Send + Sync + 'static,
-{
-    REQUIRE_LOADER.with(|cell| {
-        *cell.borrow_mut() = Some(Box::new(loader));
-    });
-}
-
-/// Call the registered require loader, if any.
-pub fn call_require_loader(
-    name: &[String],
-    source: &str,
-    parent_env: &Arc<Env>,
-) -> Option<Result<Module, EvalError>> {
-    REQUIRE_LOADER.with(|cell| {
-        let guard = cell.borrow();
-        guard.as_ref().map(|loader| loader(name, source, parent_env))
-    })
+    /// Pop a path from the loading stack after loading completes.
+    pub fn end_loading(&mut self, path: &Path) {
+        self.loading_stack.retain(|p| p != path);
+    }
 }
 
 /// Resolve a module path like "zio/math" to a file path.
@@ -151,7 +112,7 @@ pub fn resolve_module_path(path: &str) -> Result<PathBuf, EvalError> {
 
     // Check current directory first
     let cwd_path = std::env::current_dir()
-        .map_err(|e| EvalError::Custom(format!("cannot get cwd: {e}")))?;
+        .map_err(|e| EvalError::custom(format!("cannot get cwd: {e}")))?;
     let candidate = cwd_path.join(&filename);
     if candidate.exists() {
         return Ok(candidate);
@@ -167,7 +128,7 @@ pub fn resolve_module_path(path: &str) -> Result<PathBuf, EvalError> {
         }
     }
 
-    Err(EvalError::Custom(format!(
+    Err(EvalError::custom(format!(
         "module not found: {path} (searched ./{filename})"
     )))
 }
@@ -175,7 +136,7 @@ pub fn resolve_module_path(path: &str) -> Result<PathBuf, EvalError> {
 /// Read a file and return its content.
 pub fn read_source_file(path: &PathBuf) -> Result<String, EvalError> {
     std::fs::read_to_string(path)
-        .map_err(|e| EvalError::Custom(format!("cannot read {}: {e}", path.display())))
+        .map_err(|e| EvalError::custom(format!("cannot read {}: {e}", path.display())))
 }
 
 /// Parse a module name from a keyword or symbol.
@@ -194,45 +155,43 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_module_new() {
-        let parent = Arc::new(Env::new(None));
-        let m = Module::new(vec!["test".into()], &parent);
-        assert_eq!(m.display_name(), "test");
-        assert!(m.exports.is_empty());
-    }
-
-    #[test]
     fn test_module_registry() {
-        let parent = Arc::new(Env::new(None));
         let mut reg = ModuleRegistry::new();
-        let m = Module::new(vec!["foo".into(), "bar".into()], &parent);
+        let env = Arc::new(Env::new(None));
+        let m = Module::new(vec!["test".into()], &env);
         reg.register(m);
-        assert!(reg.find(&["foo".into(), "bar".into()]).is_some());
-        assert!(reg.find(&["foo".into()]).is_none());
+        assert!(reg.is_loaded(&["test".into()]));
+        assert!(!reg.is_loaded(&["nope".into()]));
     }
 
     #[test]
-    fn test_module_name_parse() {
-        let kw = Value::Keyword("zio.math".into());
-        let name = parse_module_name(&kw).unwrap();
+    fn test_resolve_module_valid_name() {
+        let name = parse_module_name(&Value::Keyword("zio.math".into())).unwrap();
         assert_eq!(name, vec!["zio", "math"]);
-
-        let sym = Value::Symbol("core.utils".into());
-        let name = parse_module_name(&sym).unwrap();
-        assert_eq!(name, vec!["core", "utils"]);
     }
 
     #[test]
-    fn test_loading_stack() {
-        let p1 = PathBuf::from("/test/a.zio");
-        let p2 = PathBuf::from("/test/b.zio");
-        assert!(begin_loading(&p1).is_ok());
-        assert!(begin_loading(&p2).is_ok());
-        // Circular: loading a again
-        let result = begin_loading(&p1);
+    fn test_begin_loading_ok() {
+        let mut reg = ModuleRegistry::new();
+        assert!(reg.begin_loading(Path::new("foo.zio")).is_ok());
+        assert!(reg.loading_stack.len() == 1);
+    }
+
+    #[test]
+    fn test_circular_require_detection() {
+        let mut reg = ModuleRegistry::new();
+        reg.begin_loading(Path::new("a.zio")).unwrap();
+        reg.begin_loading(Path::new("b.zio")).unwrap();
+        let result = reg.begin_loading(Path::new("a.zio"));
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("circular"));
-        end_loading(&p2);
-        end_loading(&p1);
+    }
+
+    #[test]
+    fn test_end_loading() {
+        let mut reg = ModuleRegistry::new();
+        reg.begin_loading(Path::new("a.zio")).unwrap();
+        reg.end_loading(Path::new("a.zio"));
+        assert!(reg.loading_stack.is_empty());
     }
 }

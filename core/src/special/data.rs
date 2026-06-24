@@ -7,10 +7,8 @@ use crate::value::Value;
 
 pub fn do_quote(args: &[Sexp]) -> Result<TailResult, EvalError> {
     if args.len() != 1 {
-        return Err(EvalError::WrongArgCount {
-            expected: 1,
-            got: args.len(),
-        });
+        return Err(EvalError::wrong_arg_count(1, args.len(),
+        ));
     }
     Ok(TailResult::Value(Value::from(args[0].clone())))
 }

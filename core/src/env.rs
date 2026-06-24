@@ -19,7 +19,6 @@ impl Env {
             outer,
         }
     }
-
     pub fn set(&self, key: String, value: Value) {
         self.data.borrow_mut().insert(key, value);
     }
@@ -43,10 +42,8 @@ impl Env {
         args: &Vector<Value>,
     ) -> Result<Arc<Env>, EvalError> {
         if params.len() != args.len() {
-            return Err(EvalError::WrongArgCount {
-                expected: params.len(),
-                got: args.len(),
-            });
+            return Err(EvalError::wrong_arg_count(params.len(), args.len(),
+            ));
         }
         let env = Arc::new(Env::new(Some(outer.clone())));
         for (p, a) in params.iter().zip(args.iter()) {
@@ -65,10 +62,8 @@ impl Env {
     ) -> Result<Arc<Env>, EvalError> {
         let min_args = params.len();
         if args.len() < min_args {
-            return Err(EvalError::WrongArgCountMin {
-                min: min_args,
-                got: args.len(),
-            });
+            return Err(EvalError::wrong_arg_count_min(min_args, args.len(),
+            ));
         }
         let env = Arc::new(Env::new(Some(outer.clone())));
         // Bind named params

@@ -2,9 +2,10 @@ use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
+use crate::context::EvalEngine;
+use crate::env::Env;
 use crate::error::EvalError;
 use crate::sexp::Sexp;
-use crate::env::Env;
 use im::{HashMap, Vector};
 
 /// User-defined function.
@@ -17,11 +18,13 @@ pub struct Function {
 }
 
 /// Native (Rust-implemented) function.
+/// The closure receives the args and a reference to the eval engine,
+/// which is needed by higher-order native functions like map/filter/reduce.
 #[derive(Clone)]
 pub struct NativeFn {
     id: usize,
     name: &'static str,
-    func: Arc<dyn Fn(Vector<Value>) -> Result<Value, EvalError> + Send + Sync>,
+    func: Arc<dyn Fn(Vector<Value>, &dyn EvalEngine) -> Result<Value, EvalError> + Send + Sync>,
 }
 
 impl std::fmt::Debug for NativeFn {
@@ -38,7 +41,7 @@ static NATIVE_ID_COUNTER: AtomicUsize = AtomicUsize::new(1);
 impl NativeFn {
     pub fn new(
         name: &'static str,
-        f: impl Fn(Vector<Value>) -> Result<Value, EvalError> + Send + Sync + 'static,
+        f: impl Fn(Vector<Value>, &dyn EvalEngine) -> Result<Value, EvalError> + Send + Sync + 'static,
     ) -> Self {
         let id = NATIVE_ID_COUNTER.fetch_add(1, Ordering::Relaxed);
         NativeFn {
@@ -48,8 +51,8 @@ impl NativeFn {
         }
     }
 
-    pub fn call(&self, args: Vector<Value>) -> Result<Value, EvalError> {
-        (self.func)(args)
+    pub fn call(&self, args: Vector<Value>, engine: &dyn EvalEngine) -> Result<Value, EvalError> {
+        (self.func)(args, engine)
     }
 
     pub fn name(&self) -> &str {
@@ -330,9 +333,29 @@ mod tests {
 
     #[test]
     fn test_nativefn_eq_hash() {
-        let a = NativeFn::new("test", |_| Ok(Value::Nil));
-        let b = NativeFn::new("test", |_| Ok(Value::Nil));
-        assert_ne!(a, b); // Different id = not equal
+        // Use a helper that provides a dummy engine
+        fn dummy_engine() -> &'static dyn EvalEngine {
+            // Used only in tests that don't need actual eval
+            struct DummyEngine;
+            impl crate::context::EvalEngine for DummyEngine {
+                fn eval_expr(&self, _: &Sexp, _: &Arc<Env>, _: bool) -> Result<crate::special::TailResult, EvalError> {
+                    unimplemented!()
+                }
+                fn env(&self) -> &Arc<Env> { panic!("DummyEngine has no env") }
+                fn register_module(&self, _: crate::module::Module) {}
+                fn find_module(&self, _: &[String]) -> Option<crate::module::Module> { None }
+                fn is_module_loaded(&self, _: &[String]) -> bool { false }
+                fn call_loader(&self, _: &[String], _: &str, _: &Arc<Env>) -> Option<Result<crate::module::Module, EvalError>> { None }
+                fn begin_loading(&self, _: &std::path::Path) -> Result<(), EvalError> { Ok(()) }
+                fn end_loading(&self, _: &std::path::Path) {}
+            }
+            static ENGINE: DummyEngine = DummyEngine;
+            &ENGINE
+        }
+
+        let a = NativeFn::new("test", |_, _| Ok(Value::Nil));
+        let b = NativeFn::new("test", |_, _| Ok(Value::Nil));
+        assert_ne!(a, b);
         assert_eq!(a, a);
     }
 }

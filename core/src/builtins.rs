@@ -1,141 +1,128 @@
-use std::io::Write;
 use std::sync::Arc;
-
-use im::{vector, Vector};
-
+use im::Vector;
+use im::vector;
+use crate::context::EvalEngine;
 use crate::env::Env;
 use crate::error::EvalError;
-use crate::eval;
+use crate::special::TailResult;
 use crate::value::{is_truthy, Value};
 
 // ── Arithmetic ─────────────────────────────────────────────────────
 
-/// Helper: run an integer op or float op depending on args.
-/// If any arg is Float, all are cast to f64 and the float op is used.
-fn with_numeric<F, G>(args: &Vector<Value>, int_op: F, float_op: G) -> Result<Value, EvalError>
-where
-    F: Fn(&[i64]) -> i64,
-    G: Fn(&[f64]) -> f64,
-{
-    let has_float = args.iter().any(|v| matches!(v, Value::Float(_)));
+fn extract_numeric(args: &Vector<Value>) -> Result<(Vec<i64>, Vec<f64>, bool), EvalError> {
+    let mut ints = Vec::new();
+    let mut floats = Vec::new();
+    let mut has_float = false;
+    for arg in args {
+        match arg {
+            Value::Integer(i) => {
+                ints.push(*i);
+                floats.push(*i as f64);
+            }
+            Value::Float(f) => {
+                ints.push(*f as i64);
+                floats.push(*f);
+                has_float = true;
+            }
+            other => {
+                return Err(EvalError::type_error("number", other.value_type()));
+            }
+        }
+    }
+    Ok((ints, floats, has_float))
+}
+
+pub fn add(args: Vector<Value>, _engine: &dyn EvalEngine) -> Result<Value, EvalError> {
+    let (ints, floats, has_float) = extract_numeric(&args)?;
     if has_float {
-        let mut nums = Vec::with_capacity(args.len());
-        for arg in args {
-            match arg {
-                Value::Integer(i) => nums.push(*i as f64),
-                Value::Float(f) => nums.push(*f),
-                other => return Err(EvalError::type_error("number", other.value_type())),
-            }
-        }
-        Ok(Value::Float(float_op(&nums)))
+        Ok(Value::Float(floats.iter().sum()))
     } else {
-        let mut nums = Vec::with_capacity(args.len());
-        for arg in args {
-            match arg {
-                Value::Integer(i) => nums.push(*i),
-                other => return Err(EvalError::type_error("integer", other.value_type())),
-            }
-        }
-        Ok(Value::Integer(int_op(&nums)))
+        Ok(Value::Integer(ints.iter().sum()))
     }
 }
 
-pub fn add(args: Vector<Value>) -> Result<Value, EvalError> {
-    with_numeric(&args,
-        |nums| nums.iter().sum(),
-        |nums| nums.iter().sum(),
-    )
-}
-
-pub fn sub(args: Vector<Value>) -> Result<Value, EvalError> {
+pub fn sub(args: Vector<Value>, _engine: &dyn EvalEngine) -> Result<Value, EvalError> {
+    let (ints, floats, has_float) = extract_numeric(&args)?;
     if args.is_empty() {
-        return Err(EvalError::WrongArgCountMin { min: 1, got: 0 });
+        return Err(EvalError::wrong_arg_count_min(1, 0));
     }
-    with_numeric(&args,
-        |nums| {
-            if nums.len() == 1 { -nums[0] } else {
-                let mut r = nums[0];
-                for n in &nums[1..] { r -= n; }
-                r
-            }
-        },
-        |nums| {
-            if nums.len() == 1 { -nums[0] } else {
-                let mut r = nums[0];
-                for n in &nums[1..] { r -= n; }
-                r
-            }
-        },
-    )
-}
-
-pub fn mul(args: Vector<Value>) -> Result<Value, EvalError> {
-    with_numeric(&args,
-        |nums| nums.iter().product(),
-        |nums| nums.iter().product(),
-    )
-}
-
-pub fn div(args: Vector<Value>) -> Result<Value, EvalError> {
-    if args.is_empty() {
-        return Err(EvalError::WrongArgCountMin { min: 1, got: 0 });
-    }
-    let has_float = args.iter().any(|v| matches!(v, Value::Float(_)));
     if has_float {
-        let first = match &args[0] {
-            Value::Integer(i) => *i as f64,
-            Value::Float(f) => *f,
-            other => return Err(EvalError::type_error("number", other.value_type())),
-        };
-        if args.len() == 1 {
-            return Ok(Value::Float(1.0 / first));
-        }
-        let mut res = first;
-        for arg in args.iter().skip(1) {
-            match arg {
-                Value::Integer(i) => {
-                    if *i == 0 { return Err(EvalError::DivisionByZero); }
-                    res /= *i as f64;
-                }
-                Value::Float(f) => {
-                    if *f == 0.0 { return Err(EvalError::DivisionByZero); }
-                    res /= f;
-                }
-                other => return Err(EvalError::type_error("number", other.value_type())),
-            }
-        }
-        Ok(Value::Float(res))
+        let init = floats[0];
+        let rest = &floats[1..];
+        Ok(Value::Float(if rest.is_empty() { -init } else { rest.iter().fold(init, |a, b| a - b) }))
     } else {
-        let first = match &args[0] {
-            Value::Integer(i) => *i,
-            other => return Err(EvalError::type_error("integer", other.value_type())),
-        };
-        if args.len() == 1 {
-            return Ok(Value::Integer(1 / first));
-        }
-        let mut res = first;
-        for arg in args.iter().skip(1) {
-            match arg {
-                Value::Integer(i) => {
-                    if *i == 0 { return Err(EvalError::DivisionByZero); }
-                    res /= i;
+        let init = ints[0];
+        let rest = &ints[1..];
+        Ok(Value::Integer(if rest.is_empty() { -init } else { rest.iter().fold(init, |a, b| a - b) }))
+    }
+}
+
+pub fn mul(args: Vector<Value>, _engine: &dyn EvalEngine) -> Result<Value, EvalError> {
+    let (ints, floats, has_float) = extract_numeric(&args)?;
+    if has_float {
+        Ok(Value::Float(floats.iter().product()))
+    } else {
+        Ok(Value::Integer(ints.iter().product()))
+    }
+}
+
+pub fn div(args: Vector<Value>, _engine: &dyn EvalEngine) -> Result<Value, EvalError> {
+    let (ints, floats, has_float) = extract_numeric(&args)?;
+    if args.is_empty() {
+        return Err(EvalError::wrong_arg_count_min(1, 0));
+    }
+    if has_float {
+        let init = floats[0];
+        let rest = &floats[1..];
+        if rest.is_empty() {
+            Ok(Value::Float(1.0 / init))
+        } else {
+            rest.iter().try_fold(init, |a, b| {
+                if *b == 0.0 {
+                    Err(EvalError::division_by_zero())
+                } else {
+                    Ok(a / b)
                 }
-                other => return Err(EvalError::type_error("integer", other.value_type())),
-            }
+            })
+            .map(Value::Float)
         }
-        Ok(Value::Integer(res))
+    } else {
+        let init = ints[0];
+        let rest = &ints[1..];
+        if rest.is_empty() {
+            if init == 0 {
+                Err(EvalError::division_by_zero())
+            } else {
+                Ok(Value::Float(1.0 / init as f64))
+            }
+        } else {
+            rest.iter().try_fold(init, |a, b| {
+                if *b == 0 {
+                    Err(EvalError::division_by_zero())
+                } else {
+                    Ok(a / b)
+                }
+            })
+            .map(|v| {
+                if v as f64 == v as f64 {
+                    Value::Integer(v)
+                } else {
+                    Value::Float(v as f64)
+                }
+            })
+        }
     }
 }
 
 // ── Comparison ─────────────────────────────────────────────────────
 
-pub fn eq(args: Vector<Value>) -> Result<Value, EvalError> {
+pub fn eq(args: Vector<Value>, _engine: &dyn EvalEngine) -> Result<Value, EvalError> {
     if args.len() < 2 {
         return Ok(Value::Boolean(true));
     }
     let first = &args[0];
-    for arg in args.iter().skip(1) {
-        if arg != first {
+    for other in args.iter().skip(1) {
+        if first != other {
             return Ok(Value::Boolean(false));
         }
     }
@@ -147,39 +134,32 @@ where
     F: Fn(i64, i64) -> bool,
 {
     if args.len() < 2 {
-        return Ok(Value::Boolean(true));
+        return Err(EvalError::wrong_arg_count_min(2, args.len()));
     }
-    for i in 0..args.len() - 1 {
-        match (&args[i], &args[i + 1]) {
-            (Value::Integer(a), Value::Integer(b)) => {
-                if !op(*a, *b) {
-                    return Ok(Value::Boolean(false));
-                }
-            }
-            (a, b) => {
-                return Err(EvalError::TypeError {
-                    expected: "integer",
-                    got: format!("{} and {}", a.value_type(), b.value_type()),
-                })
-            }
-        }
-    }
-    Ok(Value::Boolean(true))
+    let first = match &args[0] {
+        Value::Integer(i) => *i,
+        other => return Err(EvalError::type_error("integer", other.value_type())),
+    };
+    let second = match &args[1] {
+        Value::Integer(i) => *i,
+        other => return Err(EvalError::type_error("integer", other.value_type())),
+    };
+    Ok(Value::Boolean(op(first, second)))
 }
 
-pub fn lt(args: Vector<Value>) -> Result<Value, EvalError> {
+pub fn lt(args: Vector<Value>, _engine: &dyn EvalEngine) -> Result<Value, EvalError> {
     cmp_int(&args, |a, b| a < b)
 }
 
-pub fn gt(args: Vector<Value>) -> Result<Value, EvalError> {
+pub fn gt(args: Vector<Value>, _engine: &dyn EvalEngine) -> Result<Value, EvalError> {
     cmp_int(&args, |a, b| a > b)
 }
 
-pub fn le(args: Vector<Value>) -> Result<Value, EvalError> {
+pub fn le(args: Vector<Value>, _engine: &dyn EvalEngine) -> Result<Value, EvalError> {
     cmp_int(&args, |a, b| a <= b)
 }
 
-pub fn ge(args: Vector<Value>) -> Result<Value, EvalError> {
+pub fn ge(args: Vector<Value>, _engine: &dyn EvalEngine) -> Result<Value, EvalError> {
     cmp_int(&args, |a, b| a >= b)
 }
 
@@ -190,51 +170,48 @@ where
     P: Fn(&Value) -> bool,
 {
     if args.len() != 1 {
-        return Err(EvalError::WrongArgCount {
-            expected: 1,
-            got: args.len(),
-        });
+        return Err(EvalError::wrong_arg_count(1, args.len()));
     }
     Ok(Value::Boolean(pred(&args[0])))
 }
 
-pub fn is_nil(args: Vector<Value>) -> Result<Value, EvalError> {
+pub fn is_nil(args: Vector<Value>, _engine: &dyn EvalEngine) -> Result<Value, EvalError> {
     unary_pred(&args, |v| matches!(v, Value::Nil))
 }
 
-pub fn is_boolean(args: Vector<Value>) -> Result<Value, EvalError> {
+pub fn is_boolean(args: Vector<Value>, _engine: &dyn EvalEngine) -> Result<Value, EvalError> {
     unary_pred(&args, |v| matches!(v, Value::Boolean(_)))
 }
 
-pub fn is_number(args: Vector<Value>) -> Result<Value, EvalError> {
+pub fn is_number(args: Vector<Value>, _engine: &dyn EvalEngine) -> Result<Value, EvalError> {
     unary_pred(&args, |v| matches!(v, Value::Integer(_) | Value::Float(_)))
 }
 
-pub fn is_string(args: Vector<Value>) -> Result<Value, EvalError> {
+pub fn is_string(args: Vector<Value>, _engine: &dyn EvalEngine) -> Result<Value, EvalError> {
     unary_pred(&args, |v| matches!(v, Value::String(_)))
 }
 
-pub fn is_symbol(args: Vector<Value>) -> Result<Value, EvalError> {
+pub fn is_symbol(args: Vector<Value>, _engine: &dyn EvalEngine) -> Result<Value, EvalError> {
     unary_pred(&args, |v| matches!(v, Value::Symbol(_)))
 }
 
-pub fn is_keyword(args: Vector<Value>) -> Result<Value, EvalError> {
+pub fn is_keyword(args: Vector<Value>, _engine: &dyn EvalEngine) -> Result<Value, EvalError> {
     unary_pred(&args, |v| matches!(v, Value::Keyword(_)))
 }
 
-pub fn is_list(args: Vector<Value>) -> Result<Value, EvalError> {
+pub fn is_list(args: Vector<Value>, _engine: &dyn EvalEngine) -> Result<Value, EvalError> {
     unary_pred(&args, |v| matches!(v, Value::List(_)))
 }
 
-pub fn is_vector(args: Vector<Value>) -> Result<Value, EvalError> {
+pub fn is_vector(args: Vector<Value>, _engine: &dyn EvalEngine) -> Result<Value, EvalError> {
     unary_pred(&args, |v| matches!(v, Value::Vector(_)))
 }
 
-pub fn is_map(args: Vector<Value>) -> Result<Value, EvalError> {
+pub fn is_map(args: Vector<Value>, _engine: &dyn EvalEngine) -> Result<Value, EvalError> {
     unary_pred(&args, |v| matches!(v, Value::Map(_)))
 }
 
-pub fn is_fn(args: Vector<Value>) -> Result<Value, EvalError> {
+pub fn is_fn(args: Vector<Value>, _engine: &dyn EvalEngine) -> Result<Value, EvalError> {
     unary_pred(&args, |v| {
         matches!(v, Value::Function(_) | Value::NativeFunction(_) | Value::Macro(_))
     })
@@ -242,51 +219,35 @@ pub fn is_fn(args: Vector<Value>) -> Result<Value, EvalError> {
 
 // ── Cons / List Operations ─────────────────────────────────────────
 
-pub fn cons(args: Vector<Value>) -> Result<Value, EvalError> {
+pub fn cons(args: Vector<Value>, _engine: &dyn EvalEngine) -> Result<Value, EvalError> {
     if args.len() != 2 {
-        return Err(EvalError::WrongArgCount {
-            expected: 2,
-            got: args.len(),
-        });
+        return Err(EvalError::wrong_arg_count(2, args.len()));
     }
-    let x = args[0].clone();
-    let y = args[1].clone();
-    match y {
-        Value::List(v) => {
-            let mut new = v;
-            new.push_front(x);
-            Ok(Value::List(new))
-        }
-        _ => Ok(Value::List(vector![x, y])),
-    }
+    let mut list = match &args[1] {
+        Value::List(l) => l.clone(),
+        other => return Err(EvalError::type_error("list", other.value_type())),
+    };
+    list.push_front(args[0].clone());
+    Ok(Value::List(list))
 }
 
-pub fn car(args: Vector<Value>) -> Result<Value, EvalError> {
+pub fn car(args: Vector<Value>, _engine: &dyn EvalEngine) -> Result<Value, EvalError> {
     if args.len() != 1 {
-        return Err(EvalError::WrongArgCount {
-            expected: 1,
-            got: args.len(),
-        });
+        return Err(EvalError::wrong_arg_count(1, args.len()));
     }
     match &args[0] {
-        Value::List(v) => v
-            .front()
-            .cloned()
-            .ok_or_else(|| EvalError::InvalidForm("car of empty list".into())),
+        Value::List(l) => l.front().cloned().ok_or_else(|| EvalError::custom("cannot take car of empty list")),
         other => Err(EvalError::type_error("list", other.value_type())),
     }
 }
 
-pub fn cdr(args: Vector<Value>) -> Result<Value, EvalError> {
+pub fn cdr(args: Vector<Value>, _engine: &dyn EvalEngine) -> Result<Value, EvalError> {
     if args.len() != 1 {
-        return Err(EvalError::WrongArgCount {
-            expected: 1,
-            got: args.len(),
-        });
+        return Err(EvalError::wrong_arg_count(1, args.len()));
     }
     match &args[0] {
-        Value::List(v) => {
-            let mut rest = v.clone();
+        Value::List(l) => {
+            let mut rest = l.clone();
             rest.pop_front();
             Ok(Value::List(rest))
         }
@@ -294,18 +255,15 @@ pub fn cdr(args: Vector<Value>) -> Result<Value, EvalError> {
     }
 }
 
-pub fn list(args: Vector<Value>) -> Result<Value, EvalError> {
+pub fn list(args: Vector<Value>, _engine: &dyn EvalEngine) -> Result<Value, EvalError> {
     Ok(Value::List(args))
 }
 
 // ── Sequence Operations ────────────────────────────────────────────
 
-pub fn map_fn(args: Vector<Value>) -> Result<Value, EvalError> {
+pub fn map_fn(args: Vector<Value>, engine: &dyn EvalEngine) -> Result<Value, EvalError> {
     if args.len() != 2 {
-        return Err(EvalError::WrongArgCount {
-            expected: 2,
-            got: args.len(),
-        });
+        return Err(EvalError::wrong_arg_count(2, args.len()));
     }
     let func = args[0].clone();
     let coll = args[1].clone();
@@ -316,21 +274,18 @@ pub fn map_fn(args: Vector<Value>) -> Result<Value, EvalError> {
     };
     let mut result = Vector::new();
     for item in items {
-        let r = eval::apply(func.clone(), vector![item.clone()])?;
+        let r = crate::eval::apply(func.clone(), vector![item.clone()], engine)?;
         result.push_back(match r {
-            crate::special::TailResult::Value(v) => v,
-            _ => return Err(EvalError::Custom("unexpected recur in map".into())),
+            TailResult::Value(v) => v,
+            _ => return Err(EvalError::custom("unexpected recur in map")),
         });
     }
     Ok(Value::List(result))
 }
 
-pub fn filter_fn(args: Vector<Value>) -> Result<Value, EvalError> {
+pub fn filter_fn(args: Vector<Value>, engine: &dyn EvalEngine) -> Result<Value, EvalError> {
     if args.len() != 2 {
-        return Err(EvalError::WrongArgCount {
-            expected: 2,
-            got: args.len(),
-        });
+        return Err(EvalError::wrong_arg_count(2, args.len()));
     }
     let pred = args[0].clone();
     let coll = args[1].clone();
@@ -341,10 +296,10 @@ pub fn filter_fn(args: Vector<Value>) -> Result<Value, EvalError> {
     };
     let mut result = Vector::new();
     for item in items {
-        let r = eval::apply(pred.clone(), vector![item.clone()])?;
+        let r = crate::eval::apply(pred.clone(), vector![item.clone()], engine)?;
         let v = match r {
-            crate::special::TailResult::Value(v) => v,
-            _ => return Err(EvalError::Custom("unexpected recur in filter".into())),
+            TailResult::Value(v) => v,
+            _ => return Err(EvalError::custom("unexpected recur in filter")),
         };
         if is_truthy(&v) {
             result.push_back(item.clone());
@@ -353,12 +308,9 @@ pub fn filter_fn(args: Vector<Value>) -> Result<Value, EvalError> {
     Ok(Value::List(result))
 }
 
-pub fn reduce_fn(args: Vector<Value>) -> Result<Value, EvalError> {
+pub fn reduce_fn(args: Vector<Value>, engine: &dyn EvalEngine) -> Result<Value, EvalError> {
     if args.len() != 3 {
-        return Err(EvalError::WrongArgCount {
-            expected: 3,
-            got: args.len(),
-        });
+        return Err(EvalError::wrong_arg_count(3, args.len()));
     }
     let func = args[0].clone();
     let init = args[1].clone();
@@ -370,10 +322,10 @@ pub fn reduce_fn(args: Vector<Value>) -> Result<Value, EvalError> {
     };
     let mut acc = init;
     for item in items {
-        let r = eval::apply(func.clone(), vector![acc, item.clone()])?;
+        let r = crate::eval::apply(func.clone(), vector![acc, item.clone()], engine)?;
         acc = match r {
-            crate::special::TailResult::Value(v) => v,
-            _ => return Err(EvalError::Custom("unexpected recur in reduce".into())),
+            TailResult::Value(v) => v,
+            _ => return Err(EvalError::custom("unexpected recur in reduce")),
         };
     }
     Ok(acc)
@@ -381,7 +333,7 @@ pub fn reduce_fn(args: Vector<Value>) -> Result<Value, EvalError> {
 
 // ── I/O ────────────────────────────────────────────────────────────
 
-pub fn println(args: Vector<Value>) -> Result<Value, EvalError> {
+pub fn println(args: Vector<Value>, _engine: &dyn EvalEngine) -> Result<Value, EvalError> {
     let s: String = args
         .iter()
         .map(|v| format!("{v}"))
@@ -391,48 +343,32 @@ pub fn println(args: Vector<Value>) -> Result<Value, EvalError> {
     Ok(Value::Nil)
 }
 
-pub fn prn(args: Vector<Value>) -> Result<Value, EvalError> {
+pub fn prn(args: Vector<Value>, _engine: &dyn EvalEngine) -> Result<Value, EvalError> {
     let s: String = args
         .iter()
-        .map(|v| format!("{v}"))
+        .map(|v| format!("{v:?}"))
         .collect::<Vec<_>>()
         .join(" ");
-    print!("{s}");
-    std::io::stdout().flush().ok();
+    println!("{s}");
     Ok(Value::Nil)
 }
 
-pub fn read_line(args: Vector<Value>) -> Result<Value, EvalError> {
-    if !args.is_empty() {
-        let s: String = args
-            .iter()
-            .map(|v| format!("{v}"))
-            .collect::<Vec<_>>()
-            .join(" ");
-        print!("{s}");
-        std::io::stdout().flush().ok();
-    }
+pub fn read_line(_args: Vector<Value>, _engine: &dyn EvalEngine) -> Result<Value, EvalError> {
     let mut input = String::new();
     match std::io::stdin().read_line(&mut input) {
-        Ok(0) => Ok(Value::Nil),
+        Ok(0) | Err(_) => Ok(Value::Nil),
         Ok(_) => {
-            if input.ends_with('\n') {
-                input.pop();
-            }
-            Ok(Value::String(input))
+            // Trim trailing newline
+            let trimmed = input.trim_end_matches('\n').trim_end_matches('\r');
+            Ok(Value::String(trimmed.to_string()))
         }
-        Err(e) => Err(EvalError::Custom(format!("IO error: {e}"))),
     }
 }
 
 // ── Macroexpand ────────────────────────────────────────────────────
 
-pub fn macroexpand_fn(_args: Vector<Value>) -> Result<Value, EvalError> {
-    Err(EvalError::Custom(
-        "macroexpand is not available as a native function; \
-         use it directly in the REPL as a special form"
-            .into(),
-    ))
+pub fn macroexpand_fn(_args: Vector<Value>, _engine: &dyn EvalEngine) -> Result<Value, EvalError> {
+    todo!("macroexpand not implemented yet")
 }
 
 // ── Registration ───────────────────────────────────────────────────

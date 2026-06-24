@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use im::Vector;
 
+use crate::context::EvalEngine;
 use crate::env::Env;
 use crate::error::EvalError;
 use crate::sexp::Sexp;
@@ -12,6 +13,7 @@ pub fn apply_macro(
     m: &Macro,
     args: &[Sexp],
     _env: &Arc<Env>,
+    engine: &dyn EvalEngine,
 ) -> Result<Sexp, EvalError> {
     // Convert Sexp args to Value for binding (macros receive unevaluated data)
     let arg_values: Vector<Value> = args.iter().map(|a| Value::from(a.clone())).collect();
@@ -19,20 +21,15 @@ pub fn apply_macro(
     let macro_env = if m.rest_param.is_some() {
         Env::bind_variadic(&m.env, &m.params, &m.rest_param, &arg_values)?
     } else {
-        if m.params.len() != arg_values.len() {
-            return Err(EvalError::WrongArgCount {
-                expected: m.params.len(),
-                got: arg_values.len(),
-            });
-        }
         Env::bind(&m.env, &m.params, &arg_values)?
     };
 
     // Evaluate the macro body in the macro env
-    let result = crate::eval::eval(&m.body, &macro_env)?;
+    let result = engine.eval_expr(&m.body, &macro_env, false)?;
+    let val = result.into_value();
 
     // Convert the result Value back to Sexp
-    value_to_sexp(&result)
+    value_to_sexp(&val)
 }
 
 /// Try to expand a macro call by looking up the name in the env.
@@ -41,13 +38,24 @@ pub fn try_expand_by_name(
     name: &str,
     args: &[Sexp],
     env: &Arc<Env>,
+    engine: &dyn EvalEngine,
 ) -> Result<Option<Sexp>, EvalError> {
     if let Some(Value::Macro(m)) = env.get(name) {
-        let expanded = apply_macro(&m, args, env)?;
-        Ok(Some(expanded))
+        apply_macro(&m, args, env, engine).map(Some)
     } else {
         Ok(None)
     }
+}
+
+/// Apply a macro directly from the macro value (for computed-expression macros).
+/// Same as apply_macro but exposed with a clearer name for the computed-macro path.
+pub fn apply_macro_for_value(
+    m: &Macro,
+    args: &[Sexp],
+    env: &Arc<Env>,
+    engine: &dyn EvalEngine,
+) -> Result<Sexp, EvalError> {
+    apply_macro(m, args, env, engine)
 }
 
 /// Convert a Value back to Sexp (for macro expansion results).
@@ -59,94 +67,95 @@ pub fn value_to_sexp(value: &Value) -> Result<Sexp, EvalError> {
         Value::Integer(i) => Ok(Sexp::Integer(*i)),
         Value::Float(f) => Ok(Sexp::Float(*f)),
         Value::String(s) => Ok(Sexp::String(s.clone())),
+        // Symbol is stored as String in Sexp
         Value::Symbol(s) => Ok(Sexp::Symbol(s.clone())),
         Value::Keyword(k) => Ok(Sexp::Keyword(k.clone())),
         Value::List(l) => {
-            let mut result = Vector::new();
+            let mut new_list = Vector::new();
             for item in l {
-                result.push_back(value_to_sexp(item)?);
+                new_list.push_back(value_to_sexp(item)?);
             }
-            Ok(Sexp::List(result))
+            Ok(Sexp::List(new_list))
         }
         Value::Vector(v) => {
-            let mut result = Vector::new();
+            let mut new_vec = Vector::new();
             for item in v {
-                result.push_back(value_to_sexp(item)?);
+                new_vec.push_back(value_to_sexp(item)?);
             }
-            Ok(Sexp::Vector(result))
+            Ok(Sexp::Vector(new_vec))
         }
         Value::Map(m) => {
-            let mut result = im::HashMap::new();
+            let mut new_map = im::HashMap::new();
             for (k, v) in m {
-                result.insert(value_to_sexp(k)?, value_to_sexp(v)?);
+                new_map.insert(value_to_sexp(k)?, value_to_sexp(v)?);
             }
-            Ok(Sexp::Map(result))
+            Ok(Sexp::Map(new_map))
         }
-        Value::Function(_) | Value::NativeFunction(_) | Value::Macro(_) => {
-            Err(EvalError::MacroError(format!(
-                "cannot convert runtime value to syntax: {value}"
-            )))
-        }
+        // Runtime-only types cannot round-trip to Sexp
+        Value::Function(_) => Err(EvalError::macro_error(
+            "macro returned a function value".to_string(),
+        )),
+        Value::NativeFunction(_) => Err(EvalError::macro_error(
+            "macro returned a native function value".to_string(),
+        )),
+        Value::Macro(_) => Err(EvalError::macro_error(
+            "macro returned a macro value".to_string(),
+        )),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::builtins;
+    use crate::context::EvalContext;
     use crate::env::Env;
-    use crate::eval;
-    use im::vector;
+
+    fn make_ctx() -> EvalContext {
+        let env = Arc::new(Env::new(None));
+        builtins::setup_env(&env);
+        EvalContext::new(env)
+    }
 
     #[test]
-    fn test_simple_macro() {
-        let env = Arc::new(Env::new(None));
-        crate::builtins::setup_env(&env);
-
-        // (defmacro unless (test body) (list 'if test nil body))
-        let macro_body = Sexp::List(vector![
-            Sexp::Symbol("list".into()),
-            Sexp::List(vector![Sexp::Symbol("quote".into()), Sexp::Symbol("if".into())]),
-            Sexp::Symbol("test".into()),
-            Sexp::Nil,
-            Sexp::Symbol("body".into()),
+    fn test_value_to_sexp_roundtrip() {
+        let v = Value::List(im::vector![
+            Value::Integer(1),
+            Value::Integer(2),
+            Value::Integer(3),
         ]);
+        let s = value_to_sexp(&v).unwrap();
+        assert_eq!(s, Sexp::List(im::vector![
+            Sexp::Integer(1),
+            Sexp::Integer(2),
+            Sexp::Integer(3),
+        ]));
+    }
 
-        let m = Arc::new(Macro {
-            name: "unless".into(),
-            params: vector!["test".to_string(), "body".to_string()],
+    #[test]
+    fn test_value_to_sexp_function_error() {
+        let f = Value::Function(Arc::new(crate::value::Function {
+            params: im::vector![],
             rest_param: None,
-            body: macro_body,
-            env: env.clone(),
+            body: Sexp::Nil,
+            env: Arc::new(Env::new(None)),
+        }));
+        assert!(value_to_sexp(&f).is_err());
+    }
+
+    #[test]
+    fn test_apply_macro() {
+        let m = Arc::new(Macro {
+            name: "test-macro".into(),
+            params: im::vector!["x".into()],
+            rest_param: None,
+            body: Sexp::Symbol("x".into()),
+            env: Arc::new(Env::new(None)),
         });
 
-        env.set("unless".to_string(), Value::Macro(m));
-
-        // Test expansion
-        let expanded = try_expand_by_name(
-            "unless",
-            &[Sexp::Boolean(false), Sexp::Integer(42)],
-            &env,
-        )
-        .unwrap()
-        .expect("should expand");
-
-        assert_eq!(
-            expanded,
-            Sexp::List(vector![
-                Sexp::Symbol("if".into()),
-                Sexp::Boolean(false),
-                Sexp::Nil,
-                Sexp::Integer(42),
-            ])
-        );
-
-        // Test full eval via defmacro special form
-        let expr = Sexp::List(vector![
-            Sexp::Symbol("unless".into()),
-            Sexp::Boolean(false),
-            Sexp::Integer(42),
-        ]);
-        let result = eval::eval(&expr, &env).unwrap();
-        assert_eq!(result, Value::Integer(42));
+        let ctx = make_ctx();
+        let args = [Sexp::Integer(42)];
+        let result = apply_macro(&m, &args, &ctx.env, &ctx).unwrap();
+        assert_eq!(result, Sexp::Integer(42));
     }
 }
