@@ -2,22 +2,16 @@
 
 > A Modern Lisp for the Agent Era.
 
-Zio 是一门面向未来的通用 Lisp 语言，用 Rust 实现。当前处于 **v0.2 架构重组阶段**——从一个 REPL toy 演进为生产级语言。
+Zio 是一门面向未来的通用 Lisp 语言，用 Rust 实现。当前处于 **v0.2 架构重组完成阶段**——所有全局状态已显式化，核心可嵌入、可测试。
 
-## 当前状态
-
-| 组件 | 进度 | 说明 |
-|------|------|------|
-| Reader | ✅ | 基于栈的 S-expression 解析 |
-| Eval | ✅ | AST 解释器，词法作用域，闭包 |
-| Special Forms | ✅ | quote/def/if/do/fn/let/loop/recur/defmacro/and/or/cond |
-| Macros | ✅ | defmacro 可用，无 hygiene |
-| Builtins | ⚠️ | 仅整数算术，基础 list/seq 操作 |
-| 模块系统 | 🚧 | Phase 2 目标 |
-| 标准库 | ❌ | Phase 3 目标 |
-| Compiler/VM | ❌ | Phase 5 目标 |
-
-**62 测试通过 · ~2,700 LOC Rust**
+| **指标** | **值** |
+|----------|-------|
+| 测试 | 103 passing, 0 warnings |
+| 代码 | ~3,500 LOC Rust |
+| 线程局部全局变量 | **0** (已全部移除) |
+| Crates | `zio-core`, `zio-reader`, `zio` (CLI) |
+| 特殊形式 | 12 种 |
+| 内置函数 | 30 个 |
 
 ## 快速开始
 
@@ -39,49 +33,42 @@ zio> (defmacro unless [test body] (list 'if test nil body))
 #<macro unless (test body)>
 zio> (unless false 42)
 42
+zio> (load "program.zio")
+zio> (require :my.module)
 ```
 
-## 架构
+## 文档
 
-详细架构设计见 [docs/architecture-v0.2.md](docs/architecture-v0.2.md)。
+| 文档 | 说明 |
+|------|------|
+| [docs/architecture-handbook.md](docs/architecture-handbook.md) | 完整架构设计、设计定理、ADR、类型系统、两张应用蓝图 |
+| [docs/ROADMAP.md](docs/ROADMAP.md) | 分 Phase 路线图、交付标准、工程风险、时间线 |
+| [docs/architecture-v0.2.md](docs/architecture-v0.2.md) | 上一版本的架构文档（部分已过时） |
 
-```
-                    ┌─────────────┐
-                    │  CLI (zio)   │
-                    └──────┬──────┘
-          ┌────────────────┼────────────────┐
-          ▼                ▼                ▼
-    ┌──────────┐    ┌──────────┐    ┌──────────────┐
-    │  reader   │    │ compiler  │    │  std (stdlib) │
-    │  (parse)  │    │  (ZIR)   │    │  (Rust+Zio)  │
-    └────┬─────┘    └────┬─────┘    └──────┬───────┘
-         └───────────────┼─────────────────┘
-                         ▼
-                  ┌──────────┐
-                  │ core (vm) │
-                  │ Value·Env·│
-                  │ GC·Module │
-                  └──────────┘
-```
+## 设计定理
 
-## 路线图
+1. **所有 mutable 状态必须显式** — 无 thread-local 全局变量
+2. **Rust 是合同边界，Lisp 是组合层** — 性能关键路径用 NativeFn
+3. **宏是用户扩展 eval 的方式** — 同像性使一切可编程
+4. **模块系统是代码组织的唯一方式** — 包 + 命名空间
 
-| 阶段 | 时间 | 交付物 |
-|------|------|--------|
-| **Phase 1** — 架构重组 | 当前 | workspace 拆分、Span、special.rs 重构、浮点数 |
-| **Phase 2** — 模块系统 | 2 周后 | `zio run`、`load`/`module`/`require`、多文件 |
-| **Phase 3** — 标准库 | 4 周后 | math/string/seq/file/io/test 标准库 |
-| **Phase 4** — 语言特性 | 6 周后 | 模式匹配、协议、多分派、条件系统 |
-| **Phase 5** — VM | 10 周后 | ZIR 中间表示、字节码解释器 |
-| **Phase 6** — 并发 | 16 周后 | Actor、通道、FFI |
-| **Phase 7** — 生产化 | 24 周后 | LSP、调试器、Native 编译、WASM |
+## 路线图一览
 
-## 设计原则
+| Phase | 时间 | 交付物 |
+|-------|------|--------|
+| **Phase 1** — 核心稳定化 | 1-2 周 | Span 集成, Reader 扩展, TCO, macroexpand, 200+ tests |
+| **Phase 2** — 系统编程 | 2-4 周 | FFI, `#[zio_export]`, Buffer, File I/O, struct, try/catch |
+| **Phase 3** — 宏与元编程 | 2-3 周 | 卫生宏, Reader macro, Compiler macro |
+| **Phase 4** — 标准库+并发 | 2-3 周 | 懒序列, Future/Channel, async, 包管理器 |
+| **Phase 5** — CLOS/多方法 | 2-3 周 | Generic function, defmethod, condition system |
+| **Phase 6** — LLM/性能 | 3-4 周 | 向量原语, LLM API, Agent 框架, Baseline JIT |
+| **Phase 7** — 生产化 | 持续 | LSP, Debugger, WASM, Profiler |
 
-- **渐进式**：简单的脚本用 `(load)` 即可，复杂项目用 `(module)` + 类型注解
-- **嵌入友好**：core crate 最小依赖，可从 Rust 端直接调用
-- **Agent First**：程序结构可被运行时感知和查询
-- **同像性 (Homoiconic)**：代码即数据
+项目同时推进两个工程原型：
+- **Datomic 风格 Datalog 数据库** — 内存在, 时间旅行, 纯宏 API
+- **自学习模型框架** — 基于同像性的 AutoML + 程序搜索
+
+详见 [docs/ROADMAP.md](docs/ROADMAP.md)。
 
 ## License
 
