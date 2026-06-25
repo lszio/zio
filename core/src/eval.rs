@@ -162,7 +162,7 @@ fn eval_inner(expr: &Sexp, env: &Arc<Env>, tail: bool, engine: &dyn EvalEngine) 
 }
 
 /// Apply a function value to arguments.
-pub(crate) fn apply(func: Value, args: Vector<Value>, engine: &dyn EvalEngine) -> Result<TailResult, EvalError> {
+pub fn apply(func: Value, args: Vector<Value>, engine: &dyn EvalEngine) -> Result<TailResult, EvalError> {
     match func {
         Value::Function(f) => {
             let env = if f.rest_param.is_some() {
@@ -492,5 +492,32 @@ mod tests {
     #[test]
     fn test_eval_context_construction() {
         let _ctx = make_ctx();
+    }
+
+    #[test]
+    fn test_new_builtins() {
+        // apply
+        assert_eq!(run("(apply + (list 1 2 3))").unwrap(), Value::Integer(6));
+        assert_eq!(run("(apply list (list 1 2 3))").unwrap(), Value::List(vector![Value::Integer(1), Value::Integer(2), Value::Integer(3)]));
+
+        // get
+        assert_eq!(run("(get (list 10 20 30) 1)").unwrap(), Value::Integer(20));
+        assert_eq!(run("(get [1 2 3] 2)").unwrap(), Value::Integer(3));
+
+        // count
+        assert_eq!(run("(count (list 1 2 3))").unwrap(), Value::Integer(3));
+        assert_eq!(run("(count \"hello\")").unwrap(), Value::Integer(5));
+
+        // type
+        assert_eq!(run("(type 42)").unwrap(), Value::Keyword("integer".to_string()));
+        assert_eq!(run("(type \"hello\")").unwrap(), Value::Keyword("string".to_string()));
+        assert_eq!(run("(type true)").unwrap(), Value::Keyword("boolean".to_string()));
+        assert_eq!(run("(type nil)").unwrap(), Value::Keyword("nil".to_string()));
+        assert_eq!(run("(type (fn [x] x))").unwrap(), Value::Keyword("fn".to_string()));
+
+        // mod
+        assert_eq!(run("(mod 10 3)").unwrap(), Value::Integer(1));
+        assert_eq!(run("(mod 7 2)").unwrap(), Value::Integer(1));
+        assert_eq!(run("(mod 4 2)").unwrap(), Value::Integer(0));
     }
 }

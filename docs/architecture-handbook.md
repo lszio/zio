@@ -118,7 +118,7 @@ Zio = Lisp 核心
 |------|------|------|
 | `quote` | data.rs | 阻止求值 |
 | `def` | bindings.rs | 定义全局变量 |
-| `defn` | bindings.rs | 定义函数 |
+| `defun` | bindings.rs | 定义函数 |
 | `defmacro` | bindings.rs | 定义宏 |
 | `fn` | bindings.rs | 匿名函数 |
 | `if` | control.rs | 条件 |
@@ -328,7 +328,7 @@ Source text
 │    └─ apply()       │  match func type → bind env → eval body (or native)
 │                     │
 │  special::          │
-│  └─ bindings.rs     │  def, defn, fn, defmacro
+│  └─ bindings.rs     │  def, , fn, defmacro
 │  └─ control.rs      │  if, do, and, or, cond
 │  └─ letloop.rs      │  let, let*, loop, recur
 │  └─ module_forms.rs │  module, require
@@ -813,7 +813,7 @@ pub enum MutationStrategy {
 ```lisp
 ;; 在训练的循环中，模型读取自己的损失曲线并变换代码
 
-(defn self-improving-train [model-spec data]
+( self-improving-train [model-spec data]
   (loop [best-model model-spec
          best-loss infinity
          generation 0]
@@ -866,7 +866,7 @@ pub enum MutationStrategy {
 ;; 在"正常"语言中，架构搜索需求额外的图 IR
 ;; 在 Lisp 中，模型架构就是 Sexp，遍历 Sexp 就是遍历架构
 
-(defn generate-variants [model-spec strategies]
+( generate-variants [model-spec strategies]
   (let [layers (get-layers model-spec)]   ;; Sexp 上的 list 操作
     (mapcat (fn [strategy]
               (case strategy

@@ -51,6 +51,7 @@ fn register_load_fn(env: &Arc<Env>) {
 
 pub fn run_script(path: &str) -> Result<Value, EvalError> {
     let ctx = make_ctx();
+    load_stdlib(&ctx);
     let source = std::fs::read_to_string(path)
         .map_err(|e| EvalError::custom(format!("cannot read {}: {e}", path)))?;
     let sexp = reader::read(&source)
@@ -97,10 +98,32 @@ fn make_root_env() -> Arc<Env> {
     env
 }
 
+/// Load the core standard library at startup.
+fn load_stdlib(ctx: &EvalContext) {
+    let stdlib_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("stdlib/zio/core.zio");
+    match std::fs::read_to_string(&stdlib_path) {
+        Ok(source) => {
+            // Wrap entire file in a (do ...) since reader::read only parses one form
+            let wrapped = format!("(do\n{source}\n)");
+            match reader::read(&wrapped) {
+                Ok(sexp) => {
+                    if let Err(e) = eval::eval_in_context(&sexp, ctx) {
+                        eprintln!("Warning: stdlib eval error: {e}");
+                    }
+                }
+                Err(e) => eprintln!("Warning: stdlib parse error: {e}"),
+            }
+        }
+        Err(e) => eprintln!("Warning: cannot read stdlib ({}): {e}", stdlib_path.display()),
+    }
+}
+
 // ── REPL ────────────────────────────────────────────────────────
 
 fn run_repl() {
     let ctx = make_ctx();
+    load_stdlib(&ctx);
 
     println!("Zio REPL");
     println!("Press Ctrl+D or type (exit) to quit");

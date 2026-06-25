@@ -283,4 +283,19 @@ mod tests {
         assert_eq!(read(""), Ok(Sexp::Nil));
         assert_eq!(read("   "), Ok(Sexp::Nil));
     }
+    #[test]
+    fn test_read_core_stdlib_do_wrapped() {
+        let content = include_str!("../../cli/stdlib/zio/core.zio");
+        let wrapped = format!("(do\n{content}\n)");
+        let result = read(&wrapped);
+        assert!(result.is_ok(), "failed to parse do-wrapped stdlib: {:?}", result.err());
+        let sexp = result.unwrap();
+        match &sexp {
+            Sexp::List(v) => {
+                assert!(!v.is_empty(), "empty list from do wrapper");
+                assert_eq!(v[0], Sexp::Symbol("do".into()));
+            }
+            other => panic!("expected list (do ...), got {:?}", other),
+        }
+    }
 }

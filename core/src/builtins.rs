@@ -331,8 +331,122 @@ pub fn reduce_fn(args: Vector<Value>, engine: &dyn EvalEngine) -> Result<Value, 
     Ok(acc)
 }
 
-// ── I/O ────────────────────────────────────────────────────────────
+// ── apply ───────────────────────────────────────────────────────────
 
+pub fn apply_fn(args: Vector<Value>, engine: &dyn EvalEngine) -> Result<Value, EvalError> {
+    if args.is_empty() || args.len() > 2 {
+        return Err(EvalError::wrong_arg_count_range(1, 2, args.len()));
+    }
+    let func = args[0].clone();
+    let arg_list = if args.len() == 2 {
+        match &args[1] {
+            Value::List(v) => v.clone(),
+            Value::Vector(v) => v.clone(),
+            other => return Err(EvalError::type_error("list or vector", other.value_type())),
+        }
+    } else {
+        Vector::new()
+    };
+    let result = crate::eval::apply(func, arg_list, engine)?;
+    Ok(result.into_value())
+}
+
+// ── Collection Access ──────────────────────────────────────────────
+
+pub fn get_fn(args: Vector<Value>, _engine: &dyn EvalEngine) -> Result<Value, EvalError> {
+    if args.len() < 2 || args.len() > 3 {
+        return Err(EvalError::wrong_arg_count_range(2, 3, args.len()));
+    }
+    let coll = &args[0];
+    let key = &args[1];
+    let default = if args.len() == 3 {
+        Some(&args[2])
+    } else {
+        None
+    };
+    match coll {
+        Value::List(v) | Value::Vector(v) => {
+            let idx = match key {
+                Value::Integer(i) => *i as usize,
+                _ => return Err(EvalError::type_error("integer index", key.value_type())),
+            };
+            if let Some(val) = v.get(idx) {
+                Ok(val.clone())
+            } else {
+                default.cloned().ok_or_else(|| EvalError::index_out_of_bounds(idx, v.len()))
+            }
+        }
+        Value::Map(m) => {
+            if let Some(val) = m.get(key) {
+                Ok(val.clone())
+            } else {
+                default.cloned().ok_or_else(|| {
+                    EvalError::custom(format!("key not found in map: {key}"))
+                })
+            }
+        }
+        other => Err(EvalError::type_error("sequential or map", other.value_type())),
+    }
+}
+
+pub fn count_fn(args: Vector<Value>, _engine: &dyn EvalEngine) -> Result<Value, EvalError> {
+    if args.len() != 1 {
+        return Err(EvalError::wrong_arg_count(1, args.len()));
+    }
+    let result = match &args[0] {
+        Value::List(v) | Value::Vector(v) => v.len() as i64,
+        Value::Map(m) => m.len() as i64,
+        Value::String(s) => s.chars().count() as i64,
+        other => return Err(EvalError::type_error("countable", other.value_type())),
+    };
+    Ok(Value::Integer(result))
+}
+
+// ── Type Reflection ────────────────────────────────────────────────
+
+pub fn type_fn(args: Vector<Value>, _engine: &dyn EvalEngine) -> Result<Value, EvalError> {
+    if args.len() != 1 {
+        return Err(EvalError::wrong_arg_count(1, args.len()));
+    }
+    let kw = match &args[0] {
+        Value::Nil => "nil",
+        Value::Boolean(_) => "boolean",
+        Value::Integer(_) => "integer",
+        Value::Float(_) => "float",
+        Value::String(_) => "string",
+        Value::Symbol(_) => "symbol",
+        Value::Keyword(_) => "keyword",
+        Value::List(_) => "list",
+        Value::Vector(_) => "vector",
+        Value::Map(_) => "map",
+        Value::Function(_) => "fn",
+        Value::NativeFunction(_) => "native-fn",
+        Value::Macro(_) => "macro",
+    };
+    Ok(Value::Keyword(kw.to_string()))
+}
+
+// ── Arithmetic Extras ──────────────────────────────────────────────
+
+pub fn mod_fn(args: Vector<Value>, _engine: &dyn EvalEngine) -> Result<Value, EvalError> {
+    if args.len() != 2 {
+        return Err(EvalError::wrong_arg_count(2, args.len()));
+    }
+    let a = match &args[0] {
+        Value::Integer(i) => *i,
+        other => return Err(EvalError::type_error("integer", other.value_type())),
+    };
+    let b = match &args[1] {
+        Value::Integer(i) => *i,
+        other => return Err(EvalError::type_error("integer", other.value_type())),
+    };
+    if b == 0 {
+        return Err(EvalError::custom("division by zero in mod"));
+    }
+    Ok(Value::Integer(a % b))
+}
+
+// ── I/O ────────────────────────────────────────────────────────────
 pub fn println(args: Vector<Value>, _engine: &dyn EvalEngine) -> Result<Value, EvalError> {
     let s: String = args
         .iter()
@@ -410,13 +524,17 @@ pub fn setup_env(env: &Arc<Env>) {
     env.set("filter".into(), Value::NativeFunction(NativeFn::new("filter", filter_fn)));
     env.set("reduce".into(), Value::NativeFunction(NativeFn::new("reduce", reduce_fn)));
 
+    // New builtins
+    env.set("apply".into(), Value::NativeFunction(NativeFn::new("apply", apply_fn)));
+    env.set("get".into(), Value::NativeFunction(NativeFn::new("get", get_fn)));
+    env.set("count".into(), Value::NativeFunction(NativeFn::new("count", count_fn)));
+    env.set("type".into(), Value::NativeFunction(NativeFn::new("type", type_fn)));
+    env.set("mod".into(), Value::NativeFunction(NativeFn::new("mod", mod_fn)));
+
     // I/O
     env.set("println".into(), Value::NativeFunction(NativeFn::new("println", println)));
     env.set("prn".into(), Value::NativeFunction(NativeFn::new("prn", prn)));
     env.set("read-line".into(), Value::NativeFunction(NativeFn::new("read-line", read_line)));
-
-    // Macro
-    env.set("macroexpand".into(), Value::NativeFunction(NativeFn::new("macroexpand", macroexpand_fn)));
 }
 
 pub use crate::value::NativeFn;

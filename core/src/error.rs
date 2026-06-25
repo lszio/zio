@@ -81,6 +81,21 @@ pub enum EvalError {
         span: SpanContext,
     },
 
+    #[error("Wrong argument count: expected between {min} and {max}, got {got}")]
+    WrongArgCountRange {
+        min: usize,
+        max: usize,
+        got: usize,
+        span: SpanContext,
+    },
+
+    #[error("Index out of bounds: index {index} but length is {length}")]
+    IndexOutOfBounds {
+        index: usize,
+        length: usize,
+        span: SpanContext,
+    },
+
     #[error("Type error: expected {expected}, got {got}")]
     TypeError {
         expected: &'static str,
@@ -150,6 +165,23 @@ impl EvalError {
         }
     }
 
+    pub fn wrong_arg_count_range(min: usize, max: usize, got: usize) -> Self {
+        EvalError::WrongArgCountRange {
+            min,
+            max,
+            got,
+            span: SpanContext::DUMMY,
+        }
+    }
+
+    pub fn index_out_of_bounds(index: usize, length: usize) -> Self {
+        EvalError::IndexOutOfBounds {
+            index,
+            length,
+            span: SpanContext::DUMMY,
+        }
+    }
+
     pub fn not_a_function(value: impl Into<String>) -> Self {
         EvalError::NotAFunction {
             value: value.into(),
@@ -164,14 +196,14 @@ impl EvalError {
     }
 
     pub fn recur_not_tail() -> Self {
-            EvalError::RecurNotTail {
-                span: SpanContext::DUMMY,
-            }
-        }
-
-        pub fn recur_without_loop() -> Self {
-            EvalError::RecurWithoutLoop {
-                span: SpanContext::DUMMY,
-            }
+        EvalError::RecurNotTail {
+            span: SpanContext::DUMMY,
         }
     }
+
+    pub fn recur_without_loop() -> Self {
+        EvalError::RecurWithoutLoop {
+            span: SpanContext::DUMMY,
+        }
+    }
+}

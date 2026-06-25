@@ -1,0 +1,79 @@
+;; ── Zio Core Standard Library ──────────────────────────────────
+;; Auto-loaded at startup. Defines fundamental combinators,
+;; sequence operations, and type utilities.
+;;
+;; NOTE: loaded via CLI bootstrap, not via require.
+;; All code here must work with builtins only (no require).
+
+;; ── Basic Combinators ─────────────────────────────────────────
+
+(defn identity [x] x)
+(defn constantly [x] (fn [_] x))
+
+(defn inc [x] (+ x 1))
+(defn dec [x] (- x 1))
+
+;; ── Logical ──────────────────────────────────────────────────
+
+(defn not [x] (if x false true))
+
+(defn and [& args]
+  (if (= (count args) 0)
+    true
+    (if (first args)
+      (if (= (count args) 1)
+        (first args)
+        (apply and (rest args)))
+      false)))
+
+(defn or [& args]
+  (if (= (count args) 0)
+    nil
+    (if (first args)
+      (first args)
+      (apply or (rest args)))))
+
+;; ── Sequence ─────────────────────────────────────────────────
+
+(defn first [coll]
+  (if (list? coll) (car coll) (get coll 0)))
+
+(defn second [coll]
+  (first (rest coll)))
+
+(defn rest [coll]
+  (if (list? coll) (cdr coll) (get coll 1)))
+
+(defn last [coll]
+  (if (nil? (cdr coll))
+    (car coll)
+    (recur (cdr coll))))
+
+(defn nth [coll n]
+  (if (nil? coll)
+    nil
+    (if (= n 0) (first coll) (recur (rest coll) (dec n)))))
+
+;; ── Higher-order ─────────────────────────────────────────────
+
+(defn partial [f & args]
+  (fn [& more-args]
+    (apply f (apply list (apply list args more-args)))))
+
+;; ── Predicate ────────────────────────────────────────────────
+
+(defn zero? [x] (= x 0))
+(defn pos? [x] (< 0 x))
+(defn neg? [x] (< x 0))
+(defn even? [x] (= (mod x 2) 0))
+(defn odd? [x] (not (even? x)))
+
+(defn empty? [coll]
+  (or (nil? coll)
+      (and (list? coll) (nil? (cdr coll)))
+      (and (vector? coll) (= (count coll) 0))))
+
+(defn some? [x] (not (nil? x)))
+
+;; ── Module export marker ─────────────────────────────────────
+;; All defs above are implicitly exported.
