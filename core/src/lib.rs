@@ -14,3 +14,9 @@ pub mod span;
 pub mod special;
 pub mod symbol;
 pub mod context;
+pub mod reader;
+
+/// Return the embedded core standard library source.
+pub fn stdlib_source() -> &'static str {
+    include_str!("../stdlib/zio/core.zio")
+}

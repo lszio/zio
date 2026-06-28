@@ -1,8 +1,8 @@
 use im::{vector, Vector};
 
-use zio_core::error::ReaderError;
-use zio_core::sexp::Sexp;
-use crate::lexer::tokenize;
+use crate::error::ReaderError;
+use crate::sexp::Sexp;
+use crate::reader::lexer::tokenize;
 
 /// Read a single S-expression from the input string.
 pub fn read(input: &str) -> Result<Sexp, ReaderError> {
@@ -379,7 +379,7 @@ mod tests {
     }
     #[test]
     fn test_read_core_stdlib_do_wrapped() {
-        let content = include_str!("../../tools/stdlib/zio/core.zio");
+        let content = include_str!("../../stdlib/zio/core.zio");
         let wrapped = format!("(do\n{content}\n)");
         let result = read(&wrapped);
         assert!(result.is_ok(), "failed to parse do-wrapped stdlib: {:?}", result.err());
