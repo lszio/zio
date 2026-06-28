@@ -31,6 +31,66 @@ fn read_from_tokens(
                     return Ok((quoted, tokens.peek().is_some()));
                 }
             }
+            "#" => {
+                // Dispatch reader macro: #( → vector, #{ → set
+                match tokens.next().as_deref() {
+                    Some("(") => {
+                        // #(1 2 3) → vector [1 2 3]
+                        // Manually read items until matching ")"
+                        let mut items = Vector::new();
+                        loop {
+                            match tokens.peek().map(|s| s.as_str()) {
+                                Some(")") => {
+                                    tokens.next();
+                                    break;
+                                }
+                                None => return Err(ReaderError::UnexpectedEOF),
+                                _ => {
+                                    let (inner, _) = read_from_tokens(tokens)?;
+                                    items.push_back(inner);
+                                }
+                            }
+                        }
+                        let vec = Sexp::Vector(items);
+                        if let Some(parent) = stack.last_mut() {
+                            parent.1.push_back(vec);
+                        } else {
+                            return Ok((vec, tokens.peek().is_some()));
+                        }
+                    }
+                    Some("{") => {
+                        // #{a b c} → (set a b c)
+                        // Manually read items until matching "}"
+                        let mut items = Vector::new();
+                        items.push_back(Sexp::Symbol("set".into()));
+                        loop {
+                            match tokens.peek().map(|s| s.as_str()) {
+                                Some("}") => {
+                                    tokens.next();
+                                    break;
+                                }
+                                None => return Err(ReaderError::UnexpectedEOF),
+                                _ => {
+                                    let (inner, _) = read_from_tokens(tokens)?;
+                                    items.push_back(inner);
+                                }
+                            }
+                        }
+                        let sexp = Sexp::List(items);
+                        if let Some(parent) = stack.last_mut() {
+                            parent.1.push_back(sexp);
+                        } else {
+                            return Ok((sexp, tokens.peek().is_some()));
+                        }
+                    }
+                    Some(other) => {
+                        return Err(ReaderError::UnexpectedToken(other.to_string()));
+                    }
+                    None => {
+                        return Err(ReaderError::UnexpectedEOF);
+                    }
+                }
+            }
             "(" | "[" | "{" => {
                 stack.push((token, Vector::new()));
             }
@@ -282,6 +342,40 @@ mod tests {
     fn test_empty_input() {
         assert_eq!(read(""), Ok(Sexp::Nil));
         assert_eq!(read("   "), Ok(Sexp::Nil));
+    }
+
+    #[test]
+    fn test_hash_paren_vector() {
+        assert_eq!(
+            read("#(1 2 3)"),
+            Ok(Sexp::Vector(vector![
+                Sexp::Integer(1),
+                Sexp::Integer(2),
+                Sexp::Integer(3)
+            ]))
+        );
+    }
+
+    #[test]
+    fn test_hash_paren_empty() {
+        assert_eq!(
+            read("#()"),
+            Ok(Sexp::Vector(Vector::new()))
+        );
+    }
+
+    #[test]
+    fn test_hash_brace_set() {
+        // #{a b c} → (set a b c)
+        assert_eq!(
+            read("#{a b c}"),
+            Ok(Sexp::List(vector![
+                Sexp::Symbol("set".into()),
+                Sexp::Symbol("a".into()),
+                Sexp::Symbol("b".into()),
+                Sexp::Symbol("c".into())
+            ]))
+        );
     }
     #[test]
     fn test_read_core_stdlib_do_wrapped() {

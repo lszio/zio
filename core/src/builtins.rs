@@ -3,7 +3,9 @@ use im::Vector;
 use im::vector;
 use crate::context::EvalEngine;
 use crate::env::Env;
+use crate::sexp::Sexp;
 use crate::error::EvalError;
+use crate::macros;
 use crate::special::TailResult;
 use crate::value::{is_truthy, Value};
 
@@ -480,9 +482,56 @@ pub fn read_line(_args: Vector<Value>, _engine: &dyn EvalEngine) -> Result<Value
 }
 
 // ── Macroexpand ────────────────────────────────────────────────────
+pub fn macroexpand_1_fn(args: Vector<Value>, engine: &dyn EvalEngine) -> Result<Value, EvalError> {
+    if args.len() != 1 {
+        return Err(EvalError::wrong_arg_count(1, args.len()));
+    }
+    // Convert the Value argument back to Sexp for macro expansion
+    let sexp = macros::value_to_sexp(&args[0])?;
 
-pub fn macroexpand_fn(_args: Vector<Value>, _engine: &dyn EvalEngine) -> Result<Value, EvalError> {
-    todo!("macroexpand not implemented yet")
+    match &sexp {
+        Sexp::List(list) if !list.is_empty() => {
+            if let Sexp::Symbol(name) = &list[0] {
+                let macro_args: Vec<Sexp> = list.iter().skip(1).cloned().collect();
+                let env = engine.env();
+                if let Some(expanded) = macros::try_expand_by_name(name, &macro_args, env, engine)? {
+                    return Ok(Value::from(expanded));
+                }
+            }
+            Ok(args[0].clone())
+        }
+        _ => Ok(args[0].clone()),
+    }
+}
+
+/// Fully expand a form: recursively expand until no more macro calls remain.
+pub fn macroexpand_fn(args: Vector<Value>, engine: &dyn EvalEngine) -> Result<Value, EvalError> {
+    if args.len() != 1 {
+        return Err(EvalError::wrong_arg_count(1, args.len()));
+    }
+
+    let mut current = macros::value_to_sexp(&args[0])?;
+    let env = engine.env();
+
+    loop {
+        let next = match &current {
+            Sexp::List(list) if !list.is_empty() => {
+                if let Sexp::Symbol(name) = &list[0] {
+                    let macro_args: Vec<Sexp> = list.iter().skip(1).cloned().collect();
+                    macros::try_expand_by_name(name, &macro_args, env, engine)?
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        };
+        match next {
+            Some(expanded) => current = expanded,
+            None => break,
+        }
+    }
+
+    Ok(Value::from(current))
 }
 
 // ── Registration ───────────────────────────────────────────────────
@@ -530,6 +579,10 @@ pub fn setup_env(env: &Arc<Env>) {
     env.set("count".into(), Value::NativeFunction(NativeFn::new("count", count_fn)));
     env.set("type".into(), Value::NativeFunction(NativeFn::new("type", type_fn)));
     env.set("mod".into(), Value::NativeFunction(NativeFn::new("mod", mod_fn)));
+
+    // Macroexpand
+    env.set("macroexpand-1".into(), Value::NativeFunction(NativeFn::new("macroexpand-1", macroexpand_1_fn)));
+    env.set("macroexpand".into(), Value::NativeFunction(NativeFn::new("macroexpand", macroexpand_fn)));
 
     // I/O
     env.set("println".into(), Value::NativeFunction(NativeFn::new("println", println)));

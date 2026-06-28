@@ -1,0 +1,78 @@
+;; ── Zio Basics ──────────────────────────────────────────────────
+;; Run with: cargo run examples/basics.zio
+;; Or paste into REPL
+
+;; ── Math ──────────────────────────────────────────────────────
+
+(println "=== Arithmetic ===")
+(println (+ 1 2 3))           ;; 6
+(println (- 10 3 2))          ;; 5
+(println (* 2 3 4))           ;; 24
+(println (/ 10 3))            ;; 3 (integer division)
+(println (mod 10 3))          ;; 1
+(println (< 1 2 3))           ;; true
+(println (> 3 2 1))           ;; true
+
+;; ── Data structures ──────────────────────────────────────────
+
+(println "=== Data Structures ===")
+(println (list 1 2 3))        ;; (1 2 3)
+(println [1 2 3])             ;; [1 2 3] — vector literal
+(println #(1 2 3))            ;; [1 2 3] — dispatch reader vector
+(println {:a 1 :b 2})         ;; {:a 1 :b 2}
+(println #{a b c})            ;; (set a b c) — set via dispatch
+
+(println (cons 1 (list 2 3))) ;; (1 2 3)
+(println (car (list 1 2 3)))  ;; 1
+(println (cdr (list 1 2 3)))  ;; (2 3)
+
+;; ── Functions ─────────────────────────────────────────────────
+
+(println "=== Functions ===")
+(defn square [x] (* x x))
+(println (square 5))          ;; 25
+
+(defn add [a b] (+ a b))
+(println (add 3 4))           ;; 7
+
+;; closures
+(defn make-adder [x]
+  (fn [y] (+ x y)))
+(def add10 (make-adder 10))
+(println (add10 5))           ;; 15
+
+;; variadic
+(defn sum [& nums] (reduce + 0 nums))
+(println (sum 1 2 3 4 5))     ;; 15
+
+;; ── Recursion ─────────────────────────────────────────────────
+
+(println "=== Recursion ===")
+(defn factorial [n]
+  (if (< n 2)
+    1
+    (* n (factorial (dec n)))))
+(println (factorial 5))       ;; 120
+
+;; ── Macros ────────────────────────────────────────────────────
+
+(println "=== Macros ===")
+(defmacro unless [test body]
+  (list 'if test nil body))
+
+(println (unless false 42))   ;; 42
+(println (unless true 42))    ;; nil
+
+;; macroexpand shows the expanded form
+(println "macroexpand-1 of unless:")
+(def expanded (macroexpand-1 '(unless false 42)))
+(println (type expanded))
+;; expanded is the (if false nil 42) form as data
+
+;; ── Higher-order ─────────────────────────────────────────────
+
+(println "=== Higher-order ===")
+(println (map (fn [x] (* x 2)) [1 2 3]))        ;; (2 4 6)
+(println (filter (fn [x] (< x 3)) [1 2 3 4]))    ;; (1 2)
+(println (reduce + 0 [1 2 3 4]))                 ;; 10
+(println (apply + (list 1 2 3)))                  ;; 6

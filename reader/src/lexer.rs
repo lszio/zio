@@ -13,6 +13,27 @@ pub fn tokenize(input: &str) -> Vec<String> {
                 tokens.push(c.to_string());
                 chars.next();
             }
+            // Dispatch macro: #( `#{` `#\` etc.
+            '#' => {
+                chars.next(); // consume the '#'
+                match chars.peek() {
+                    Some(&'(') | Some(&'{') | Some(&'\\') => {
+                        // Emit '#' as a separate token, the reader handles the dispatch
+                        tokens.push("#".to_string());
+                    }
+                    _ => {
+                        // Treat as an atom (e.g., #t, #_foo, etc.)
+                        let mut atom = "#".to_string();
+                        while let Some(&c) = chars.peek() {
+                            if c.is_whitespace() || "()[]{}'\"".contains(c) || c == ';' {
+                                break;
+                            }
+                            atom.push(chars.next().unwrap());
+                        }
+                        tokens.push(atom);
+                    }
+                }
+            }
             '"' => {
                 let mut s = String::new();
                 s.push(chars.next().unwrap()); // opening "
@@ -49,7 +70,7 @@ pub fn tokenize(input: &str) -> Vec<String> {
             _ => {
                 let mut atom = String::new();
                 while let Some(&c) = chars.peek() {
-                    if c.is_whitespace() || "()[]{}'\"".contains(c) || c == ';' {
+                    if c.is_whitespace() || "()[]{}'\"#".contains(c) || c == ';' {
                         break;
                     }
                     atom.push(chars.next().unwrap());

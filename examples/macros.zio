@@ -1,0 +1,58 @@
+;; ── Zio Macros and Metaprogramming ──────────────────────────────
+;; Demonstrates macro system and macroexpand
+
+;; ── unless — the canonical example ────────────────────────────
+
+(println "=== unless macro ===")
+(defmacro unless [test body]
+  (list 'if test nil body))
+
+(println (unless false 42))   ;; 42
+(println (unless true 42))    ;; nil
+
+;; ── nif — numeric if ──────────────────────────────────────────
+
+(println "=== nif macro (number sign check) ===")
+(defmacro nif [expr pos zero neg]
+  (list 'let (list 'n expr)
+    (list 'cond
+      (list 'pos? 'n) pos
+      (list 'zero? 'n) zero
+      'true neg)))
+
+(println (nif 5 "positive" "zero" "negative"))     ;; "positive"
+(println (nif 0 "positive" "zero" "negative"))     ;; "zero"
+(println (nif -3 "positive" "zero" "negative"))    ;; "negative"
+
+;; ── defn-infix — DSL-style macro ──────────────────────────────
+
+(println "=== infix macro ===")
+(defmacro infix [expr]
+  (list (nth expr 1) (nth expr 0) (nth expr 2)))
+
+(println (infix (1 + 2)))     ;; 3
+(println (infix (10 * 5)))    ;; 50
+
+;; ── Macroexpand demo ──────────────────────────────────────────
+
+(println "=== macroexpand ===")
+;; macroexpand-1 shows one level of expansion
+(println (macroexpand-1 '(unless false 42)))
+;; → (if false nil 42)
+
+(println (macroexpand-1 '(nif 5 "pos" "zero" "neg")))
+;; → (let (n 5) (cond (pos? n) "pos" (zero? n) "zero" true "neg"))
+
+;; ── def-logger — macro generating functions ───────────────────
+
+(println "=== def-logger macro (generating functions) ===")
+(defmacro def-logger [name level]
+  (list 'defn name '[& msg]
+    (list 'println
+      (str "[" level "] " (apply str msg)))))
+
+(def-logger log-info "INFO")
+(def-logger log-error "ERROR")
+
+(log-info "system started")    ;; [INFO] system started
+(log-error "disk full")       ;; [ERROR] disk full

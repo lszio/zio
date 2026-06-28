@@ -445,6 +445,44 @@ mod tests {
     }
 
     #[test]
+    fn test_macroexpand_1() {
+        let ctx = make_ctx();
+        // Define a macro
+        let s = test_read("(defmacro unless [test body] (list 'if test nil body))").unwrap();
+        eval_in_context(&s, &ctx).unwrap();
+        // macroexpand-1 the quoted form
+        let s = test_read("(macroexpand-1 '(unless false 42))").unwrap();
+        let result = eval_in_context(&s, &ctx).unwrap();
+        // (unless false 42) expands to (if false nil 42)
+        // nil and false are runtime values, not symbols
+        assert_eq!(
+            result,
+            Value::List(vector![
+                Value::Symbol("if".into()),
+                Value::Boolean(false),
+                Value::Nil,
+                Value::Integer(42)
+            ])
+        );
+    }
+
+    #[test]
+    fn test_macroexpand_non_macro() {
+        let ctx = make_ctx();
+        // macroexpand-1 on a non-macro form returns the form unchanged
+        let s = test_read("(macroexpand-1 '(+ 1 2))").unwrap();
+        let result = eval_in_context(&s, &ctx).unwrap();
+        assert_eq!(
+            result,
+            Value::List(vector![
+                Value::Symbol("+".into()),
+                Value::Integer(1),
+                Value::Integer(2)
+            ])
+        );
+    }
+
+    #[test]
     fn test_variadic_fn() {
         let ctx = make_ctx();
         let s = test_read("(defn sum [& nums] (reduce + 0 nums))").unwrap();
