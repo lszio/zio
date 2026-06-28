@@ -115,6 +115,23 @@ impl Sexp {
             | Sexp::Vector(_, s) | Sexp::Map(_, s) | Sexp::Char(_, s) => *s,
         }
     }
+
+    /// Attach a span, returning self. Useful in builder patterns.
+    pub fn with_span(self, span: Option<Span>) -> Self {
+        match self {
+            Sexp::Nil => Sexp::Nil,
+            Sexp::Boolean(b) => Sexp::Boolean(b),
+            Sexp::Integer(i, _) => Sexp::Integer(i, span),
+            Sexp::Float(f, _) => Sexp::Float(f, span),
+            Sexp::String(s, _) => Sexp::String(s, span),
+            Sexp::Symbol(s, _) => Sexp::Symbol(s, span),
+            Sexp::Keyword(k, _) => Sexp::Keyword(k, span),
+            Sexp::List(l, _) => Sexp::List(l, span),
+            Sexp::Vector(v, _) => Sexp::Vector(v, span),
+            Sexp::Map(m, _) => Sexp::Map(m, span),
+            Sexp::Char(c, _) => Sexp::Char(c, span),
+        }
+    }
 }
 
 /// Span-aware Sexp — an AST node with source location.

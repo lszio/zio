@@ -1,67 +1,84 @@
-/// Tokenizer: converts a source string into a flat vector of tokens.
-/// Each token is a raw string: parentheses, brackets, braces, quote mark,
-/// quoted strings (including delimiters), or atoms.
+use crate::span::BytePos;
 
-/// Tokenize the input string into a sequence of token strings.
-pub fn tokenize(input: &str) -> Vec<String> {
+/// A token produced by the tokenizer, carrying its byte offset in the source.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Token {
+    pub text: String,
+    pub start: BytePos,
+}
+
+impl Token {
+    pub fn new(text: String, start: BytePos) -> Self {
+        Token { text, start }
+    }
+
+    /// Byte offset of the first byte after this token.
+    pub fn end(&self) -> BytePos {
+        BytePos(self.start.0 + self.text.len())
+    }
+}
+
+/// Tokenize the input string into a sequence of tokens with byte positions.
+pub fn tokenize(input: &str) -> Vec<Token> {
     let mut tokens = Vec::new();
-    let mut chars = input.chars().peekable();
+    let mut chars = input.char_indices().peekable();
 
-    while let Some(&c) = chars.peek() {
+    while let Some(&(pos, c)) = chars.peek() {
+        let start = BytePos(pos);
         match c {
             '(' | ')' | '[' | ']' | '{' | '}' | '\'' => {
-                tokens.push(c.to_string());
+                tokens.push(Token::new(c.to_string(), start));
                 chars.next();
             }
             // Dispatch macro: #( `#{` `#\` etc.
             '#' => {
                 chars.next(); // consume the '#'
-                match chars.peek() {
-                    Some(&'(') | Some(&'{') | Some(&'\\') => {
+                match chars.peek().map(|&(_, c)| c) {
+                    Some('(') | Some('{') | Some('\\') => {
                         // Emit '#' as a separate token, the reader handles the dispatch
-                        tokens.push("#".to_string());
+                        tokens.push(Token::new("#".to_string(), start));
                     }
                     _ => {
                         // Treat as an atom (e.g., #t, #_foo, etc.)
                         let mut atom = "#".to_string();
-                        while let Some(&c) = chars.peek() {
+                        while let Some(&(_, c)) = chars.peek() {
                             if c.is_whitespace() || "()[]{}'\"".contains(c) || c == ';' {
                                 break;
                             }
-                            atom.push(chars.next().unwrap());
+                            atom.push(chars.next().unwrap().1);
                         }
-                        tokens.push(atom);
+                        tokens.push(Token::new(atom, start));
                     }
                 }
             }
             '"' => {
                 let mut s = String::new();
-                s.push(chars.next().unwrap()); // opening "
-                while let Some(&c) = chars.peek() {
+                s.push(chars.next().unwrap().1); // opening "
+                while let Some(&(_, c)) = chars.peek() {
                     match c {
                         '\\' => {
-                            s.push(chars.next().unwrap());
-                            if let Some(next_c) = chars.next() {
+                            s.push(chars.next().unwrap().1);
+                            if let Some((_, next_c)) = chars.next() {
                                 s.push(next_c);
                             }
                         }
                         '"' => {
-                            s.push(chars.next().unwrap());
+                            s.push(chars.next().unwrap().1);
                             break;
                         }
                         _ => {
-                            s.push(chars.next().unwrap());
+                            s.push(chars.next().unwrap().1);
                         }
                     }
                 }
-                tokens.push(s);
+                tokens.push(Token::new(s, start));
             }
             _ if c.is_whitespace() => {
                 chars.next();
             }
             ';' => {
                 // Comment, skip until newline
-                while let Some(c) = chars.next() {
+                while let Some((_, c)) = chars.next() {
                     if c == '\n' {
                         break;
                     }
@@ -69,14 +86,14 @@ pub fn tokenize(input: &str) -> Vec<String> {
             }
             _ => {
                 let mut atom = String::new();
-                while let Some(&c) = chars.peek() {
+                while let Some(&(_, c)) = chars.peek() {
                     if c.is_whitespace() || "()[]{}'\"#".contains(c) || c == ';' {
                         break;
                     }
-                    atom.push(chars.next().unwrap());
+                    atom.push(chars.next().unwrap().1);
                 }
                 if !atom.is_empty() {
-                    tokens.push(atom);
+                    tokens.push(Token::new(atom, start));
                 }
             }
         }
@@ -96,42 +113,68 @@ mod tests {
 
     #[test]
     fn test_tokenize_parens() {
-        assert_eq!(tokenize("(a b)"), vec!["(", "a", "b", ")"]);
+        let toks = tokenize("(a b)");
+        assert_eq!(toks.len(), 4);
+        assert_eq!(toks[0].text, "(");
+        assert_eq!(toks[1].text, "a");
+        assert_eq!(toks[2].text, "b");
+        assert_eq!(toks[3].text, ")");
+        // Byte positions
+        assert_eq!(toks[0].start, BytePos(0));
+        assert_eq!(toks[1].start, BytePos(1));
+        assert_eq!(toks[2].start, BytePos(3));
+        assert_eq!(toks[3].start, BytePos(4));
     }
 
     #[test]
     fn test_tokenize_vectors() {
-        assert_eq!(tokenize("[1 2]"), vec!["[", "1", "2", "]"]);
+        let toks = tokenize("[1 2]");
+        assert_eq!(toks.len(), 4);
+        assert_eq!(toks[0].text, "[");
+        assert_eq!(toks[1].text, "1");
+        assert_eq!(toks[2].text, "2");
+        assert_eq!(toks[3].text, "]");
     }
 
     #[test]
     fn test_tokenize_maps() {
-        assert_eq!(tokenize("{:a 1}"), vec!["{", ":a", "1", "}"]);
+        let toks = tokenize("{:a 1}");
+        assert_eq!(toks.len(), 4);
+        assert_eq!(toks[0].text, "{");
+        assert_eq!(toks[1].text, ":a");
+        assert_eq!(toks[2].text, "1");
+        assert_eq!(toks[3].text, "}");
     }
 
     #[test]
     fn test_tokenize_quote() {
-        assert_eq!(tokenize("'x"), vec!["'", "x"]);
+        let toks = tokenize("'x");
+        assert_eq!(toks.len(), 2);
+        assert_eq!(toks[0].text, "'");
+        assert_eq!(toks[1].text, "x");
     }
 
     #[test]
     fn test_tokenize_string() {
         let toks = tokenize(r#""hello world""#);
         assert_eq!(toks.len(), 1);
-        assert_eq!(toks[0], r#""hello world""#);
+        assert_eq!(toks[0].text, r#""hello world""#);
     }
 
     #[test]
     fn test_tokenize_comment() {
-        assert_eq!(tokenize("a ; comment\n b"), vec!["a", "b"]);
+        let toks = tokenize("a ; comment\n b");
+        assert_eq!(toks.len(), 2);
+        assert_eq!(toks[0].text, "a");
+        assert_eq!(toks[1].text, "b");
     }
 
     #[test]
     fn test_tokenize_nested() {
-        assert_eq!(
-            tokenize("(+ 1 (* 2 3))"),
-            vec!["(", "+", "1", "(", "*", "2", "3", ")", ")"]
-        );
+        let toks = tokenize("(+ 1 (* 2 3))");
+        assert_eq!(toks.len(), 9);
+        let texts: Vec<&str> = toks.iter().map(|t| t.text.as_str()).collect();
+        assert_eq!(texts, vec!["(", "+", "1", "(", "*", "2", "3", ")", ")"]);
     }
 
     #[test]
@@ -146,8 +189,8 @@ mod tests {
         }
         let toks = tokenize(&input);
         assert_eq!(toks.len(), 2001);
-        assert_eq!(toks[0], "(");
-        assert_eq!(toks[1000], "1");
-        assert_eq!(toks[2000], ")");
+        assert_eq!(toks[0].text, "(");
+        assert_eq!(toks[1000].text, "1");
+        assert_eq!(toks[2000].text, ")");
     }
 }
