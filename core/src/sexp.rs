@@ -17,6 +17,7 @@ pub enum Sexp {
     List(Vector<Sexp>),
     Vector(Vector<Sexp>),
     Map(HashMap<Sexp, Sexp>),
+    Char(char),
 }
 
 impl Eq for Sexp {}
@@ -35,6 +36,7 @@ impl Hash for Sexp {
             Sexp::List(l) => l.hash(state),
             Sexp::Vector(v) => v.hash(state),
             Sexp::Map(m) => m.hash(state),
+            Sexp::Char(c) => c.hash(state),
         }
     }
 }
@@ -79,6 +81,7 @@ impl std::fmt::Display for Sexp {
                 }
                 write!(f, "}}")
             }
+            Sexp::Char(c) => write!(f, "#\\{c}"),
         }
     }
 }
@@ -96,6 +99,7 @@ impl Sexp {
             Sexp::List(_) => "list",
             Sexp::Vector(_) => "vector",
             Sexp::Map(_) => "map",
+            Sexp::Char(_) => "character",
         }
     }
 }

@@ -219,6 +219,49 @@ pub fn is_fn(args: Vector<Value>, _engine: &dyn EvalEngine) -> Result<Value, Eva
     })
 }
 
+
+// ── Character Operations ──────────────────────────────────────────
+
+pub fn is_char(args: Vector<Value>, _engine: &dyn EvalEngine) -> Result<Value, EvalError> {
+    unary_pred(&args, |v| matches!(v, Value::Char(_)))
+}
+
+pub fn char_to_integer(args: Vector<Value>, _engine: &dyn EvalEngine) -> Result<Value, EvalError> {
+    if args.len() != 1 {
+        return Err(EvalError::wrong_arg_count(1, args.len()));
+    }
+    match &args[0] {
+        Value::Char(c) => Ok(Value::Integer(*c as i64)),
+        other => Err(EvalError::type_error("character", other.value_type())),
+    }
+}
+
+pub fn integer_to_char(args: Vector<Value>, _engine: &dyn EvalEngine) -> Result<Value, EvalError> {
+    if args.len() != 1 {
+        return Err(EvalError::wrong_arg_count(1, args.len()));
+    }
+    match &args[0] {
+        Value::Integer(i) => {
+            if let Some(c) = char::from_u32(*i as u32) {
+                Ok(Value::Char(c))
+            } else {
+                Err(EvalError::custom(format!("invalid character codepoint: {i}")))
+            }
+        }
+        other => Err(EvalError::type_error("integer", other.value_type())),
+    }
+}
+
+pub fn char_eq(args: Vector<Value>, _engine: &dyn EvalEngine) -> Result<Value, EvalError> {
+    if args.len() != 2 {
+        return Err(EvalError::wrong_arg_count(2, args.len()));
+    }
+    match (&args[0], &args[1]) {
+        (Value::Char(a), Value::Char(b)) => Ok(Value::Boolean(a == b)),
+        _ => Err(EvalError::type_error("character", "non-character")),
+    }
+}
+
 // ── Cons / List Operations ─────────────────────────────────────────
 
 pub fn cons(args: Vector<Value>, _engine: &dyn EvalEngine) -> Result<Value, EvalError> {
@@ -424,6 +467,7 @@ pub fn type_fn(args: Vector<Value>, _engine: &dyn EvalEngine) -> Result<Value, E
         Value::Function(_) => "fn",
         Value::NativeFunction(_) => "native-fn",
         Value::Macro(_) => "macro",
+        Value::Char(_) => "character",
     };
     Ok(Value::Keyword(kw.to_string()))
 }
@@ -561,6 +605,7 @@ pub fn setup_env(env: &Arc<Env>) {
     env.set("vector?".into(), Value::NativeFunction(NativeFn::new("vector?", is_vector)));
     env.set("map?".into(), Value::NativeFunction(NativeFn::new("map?", is_map)));
     env.set("fn?".into(), Value::NativeFunction(NativeFn::new("fn?", is_fn)));
+    env.set("char?".into(), Value::NativeFunction(NativeFn::new("char?", is_char)));
 
     // Cons / List
     env.set("cons".into(), Value::NativeFunction(NativeFn::new("cons", cons)));
@@ -579,6 +624,9 @@ pub fn setup_env(env: &Arc<Env>) {
     env.set("count".into(), Value::NativeFunction(NativeFn::new("count", count_fn)));
     env.set("type".into(), Value::NativeFunction(NativeFn::new("type", type_fn)));
     env.set("mod".into(), Value::NativeFunction(NativeFn::new("mod", mod_fn)));
+    env.set("char->integer".into(), Value::NativeFunction(NativeFn::new("char->integer", char_to_integer)));
+    env.set("integer->char".into(), Value::NativeFunction(NativeFn::new("integer->char", integer_to_char)));
+    env.set("char=?".into(), Value::NativeFunction(NativeFn::new("char=?", char_eq)));
 
     // Macroexpand
     env.set("macroexpand-1".into(), Value::NativeFunction(NativeFn::new("macroexpand-1", macroexpand_1_fn)));

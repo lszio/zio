@@ -104,6 +104,7 @@ pub enum Value {
     Function(Arc<Function>),
     NativeFunction(NativeFn),
     Macro(Arc<Macro>),
+    Char(char),
 }
 
 impl PartialEq for Value {
@@ -120,8 +121,8 @@ impl PartialEq for Value {
             (Value::Vector(a), Value::Vector(b)) => a == b,
             (Value::Map(a), Value::Map(b)) => a == b,
             (Value::Function(a), Value::Function(b)) => Arc::ptr_eq(a, b),
-            (Value::NativeFunction(a), Value::NativeFunction(b)) => a == b,
             (Value::Macro(a), Value::Macro(b)) => Arc::ptr_eq(a, b),
+            (Value::Char(a), Value::Char(b)) => a == b,
             _ => false,
         }
     }
@@ -144,8 +145,9 @@ impl Hash for Value {
             Value::Vector(v) => v.hash(state),
             Value::Map(m) => m.hash(state),
             Value::Function(f) => Arc::as_ptr(f).hash(state),
-            Value::NativeFunction(f) => f.hash(state),
             Value::Macro(m) => Arc::as_ptr(m).hash(state),
+            Value::NativeFunction(nf) => nf.hash(state),
+            Value::Char(c) => c.hash(state),
         }
     }
 }
@@ -166,6 +168,7 @@ impl Value {
             Value::Function(_) => "function",
             Value::NativeFunction(_) => "native-function",
             Value::Macro(_) => "macro",
+            Value::Char(_) => "character",
         }
     }
 }
@@ -188,6 +191,7 @@ impl From<Sexp> for Value {
                     .map(|(k, v)| (Value::from(k), Value::from(v)))
                     .collect(),
             ),
+            Sexp::Char(c) => Value::Char(c),
         }
     }
 }
@@ -249,6 +253,7 @@ impl std::fmt::Display for Value {
                 }
                 write!(f, "#<macro {} ({})>", m.name, parts.join(" "))
             }
+            Value::Char(c) => write!(f, "#\\{c}"),
         }
     }
 }

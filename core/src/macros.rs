@@ -67,40 +67,27 @@ pub fn value_to_sexp(value: &Value) -> Result<Sexp, EvalError> {
         Value::Integer(i) => Ok(Sexp::Integer(*i)),
         Value::Float(f) => Ok(Sexp::Float(*f)),
         Value::String(s) => Ok(Sexp::String(s.clone())),
-        // Symbol is stored as String in Sexp
         Value::Symbol(s) => Ok(Sexp::Symbol(s.clone())),
         Value::Keyword(k) => Ok(Sexp::Keyword(k.clone())),
         Value::List(l) => {
             let mut new_list = Vector::new();
-            for item in l {
-                new_list.push_back(value_to_sexp(item)?);
-            }
+            for item in l { new_list.push_back(value_to_sexp(item)?); }
             Ok(Sexp::List(new_list))
         }
         Value::Vector(v) => {
             let mut new_vec = Vector::new();
-            for item in v {
-                new_vec.push_back(value_to_sexp(item)?);
-            }
+            for item in v { new_vec.push_back(value_to_sexp(item)?); }
             Ok(Sexp::Vector(new_vec))
         }
         Value::Map(m) => {
             let mut new_map = im::HashMap::new();
-            for (k, v) in m {
-                new_map.insert(value_to_sexp(k)?, value_to_sexp(v)?);
-            }
+            for (k, v) in m { new_map.insert(value_to_sexp(k)?, value_to_sexp(v)?); }
             Ok(Sexp::Map(new_map))
         }
-        // Runtime-only types cannot round-trip to Sexp
-        Value::Function(_) => Err(EvalError::macro_error(
-            "macro returned a function value".to_string(),
-        )),
-        Value::NativeFunction(_) => Err(EvalError::macro_error(
-            "macro returned a native function value".to_string(),
-        )),
-        Value::Macro(_) => Err(EvalError::macro_error(
-            "macro returned a macro value".to_string(),
-        )),
+        Value::Function(_) => Err(EvalError::macro_error("macro returned a function value")),
+        Value::NativeFunction(_) => Err(EvalError::macro_error("macro returned a native function value")),
+        Value::Macro(_) => Err(EvalError::macro_error("macro returned a macro value")),
+        Value::Char(c) => Ok(Sexp::Char(*c)),
     }
 }
 

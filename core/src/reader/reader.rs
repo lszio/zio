@@ -83,6 +83,22 @@ fn read_from_tokens(
                             return Ok((sexp, tokens.peek().is_some()));
                         }
                     }
+                    Some(token) if token.starts_with('\\') && token.len() > 1 => {
+                        // #\c → character literal
+                        let name = &token[1..]; // strip the leading '\'
+                        let ch = match name {
+                            "space" => ' ',
+                            "newline" => '\n',
+                            "tab" => '\t',
+                            _ if name.len() == 1 => name.chars().next().unwrap(),
+                            _ => return Err(ReaderError::UnexpectedToken(name.to_string())),
+                        };
+                        if let Some(parent) = stack.last_mut() {
+                            parent.1.push_back(Sexp::Char(ch));
+                        } else {
+                            return Ok((Sexp::Char(ch), tokens.peek().is_some()));
+                        }
+                        }
                     Some(other) => {
                         return Err(ReaderError::UnexpectedToken(other.to_string()));
                     }
@@ -365,6 +381,23 @@ mod tests {
     }
 
     #[test]
+
+    #[test]
+    fn test_hash_backslash_char() {
+        assert_eq!(read("#\\a"), Ok(Sexp::Char('a')));
+        assert_eq!(read("#\\Z"), Ok(Sexp::Char('Z')));
+        assert_eq!(read("#\\0"), Ok(Sexp::Char('0')));
+    }
+
+    #[test]
+    fn test_hash_backslash_space() {
+        assert_eq!(read("#\\space"), Ok(Sexp::Char(' ')));
+    }
+
+    #[test]
+    fn test_hash_backslash_newline() {
+        assert_eq!(read("#\\newline"), Ok(Sexp::Char('\n')));
+    }
     fn test_hash_brace_set() {
         // #{a b c} → (set a b c)
         assert_eq!(

@@ -88,6 +88,7 @@ fn eval_inner(expr: &Sexp, env: &Arc<Env>, tail: bool, engine: &dyn EvalEngine) 
         Sexp::Float(f) => Ok(TailResult::Value(Value::Float(*f))),
         Sexp::String(s) => Ok(TailResult::Value(Value::String(s.clone()))),
         Sexp::Keyword(k) => Ok(TailResult::Value(Value::Keyword(k.clone()))),
+        Sexp::Char(c) => Ok(TailResult::Value(Value::Char(*c))),
 
         // Symbol lookup
         Sexp::Symbol(s) => env
