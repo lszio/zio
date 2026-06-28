@@ -379,7 +379,7 @@ mod tests {
     }
     #[test]
     fn test_read_core_stdlib_do_wrapped() {
-        let content = include_str!("../../cli/stdlib/zio/core.zio");
+        let content = include_str!("../../tools/stdlib/zio/core.zio");
         let wrapped = format!("(do\n{content}\n)");
         let result = read(&wrapped);
         assert!(result.is_ok(), "failed to parse do-wrapped stdlib: {:?}", result.err());

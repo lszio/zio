@@ -147,35 +147,36 @@ Zio = Lisp 核心（同像性 + eval/apply + 宏）
 | **Reader** | tokenize + Sexp parse + reader macro | `zio-reader` | Rust |
 | **Runtime** | eval/apply、TCO、special forms、macroexpand | `zio-core` | Rust |
 | **ZOS** | Class/GF/Method/MOP/Package/Condition | `zio-core` | Rust |
-| **Compiler** | ZIR IR、优化、JIT codegen | `zio-compiler`（未来） | Rust |
-| **Stdlib** | 标准库函数、集合、IO 封装 | `zio-stdlib` | `.zio` + Rust |
-| **Extension** | `#[zio_export]` proc-macro | `zio-macros`（未来） | Rust |
-| **Application** | CLI/REPL/LSP/embed/wasm | `zio` / 用户代码 | Rust + Zio |
+| **Stdlib** | 标准库函数、集合、IO 封装 | `tools/stdlib/zio/` | `.zio` |
+| **Tools** | CLI · REPL · LSP · 编辑器 · 调试器 · `#[zio_export]` proc-macro | `zio` | Rust + Zio |
+| **Extension Libs** | Datalog · Agent · 持久化集合 | `zio-datalog` / `zio-agent` / `zio-persistent` | Rust + Zio |
 
 ### 3.3 Crate 依赖图
 
 **当前**：
 
 ```
-zio (CLI binary)
-├── zio-reader    (解析：字符串 → Sexp + Span)
-├── zio-core      (运行时：Value/Env/Eval + ZOS)
-│   └── zio-reader (reader 依赖 core 的类型定义)
-└── zio-stdlib    (标准库，未来独立 crate)
+zio (tools binary)
+├── zio-reader    (reader/src/: 解析字符串 → Sexp + Span)
+├── zio-core      (core/src/: 运行时 Value/Env/Eval + ZOS)
+│   └── zio-reader (依赖 core 的类型定义)
+└── lib/          (扩展库: datalog, agent, persistent)
     └── zio-core
 ```
 
-**未来（Phase 5+）**：
+**未来（Phase 5+，Compiler/JIT 加入 tools）**：
 
 ```
-zio (CLI binary)
+zio (tools binary: CLI + REPL + LSP + 编辑器 + JIT)
 ├── zio-reader
-├── zio-core / zos-core
-├── zio-compiler  (ZIR + JIT)
-│   └── zio-core
-├── zio-stdlib
-├── zio-macros    (#[zio_export])
-└── zio-lsp       (LSP server)
+├── zio-core (运行时 + ZOS)
+│   ├── eval     (AST 解释器)
+│   └── compiler (ZIR + JIT，可选特性)
+├── tools/stdlib/     (.zio 标准库)
+└── lib/              (扩展库)
+    ├── zio-datalog
+    ├── zio-agent
+    └── zio-persistent
 ```
 
 ---

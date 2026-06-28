@@ -199,7 +199,7 @@ ADR-002: EvalContext + EvalEngine trait 收容所有 mutable 状态
 
 ```bash
 # 确认 0 个 thread_local
-grep -r "thread_local" core/src/ reader/src/ cli/src/
+grep -r "thread_local" core/src/ reader/src/ tools/src/
 # → 无输出
 ```
 

@@ -30,7 +30,7 @@ zio/
 │   └── src/
 │       ├── lexer.rs        # 09: 词法分析
 │       └── reader.rs       # 09: S 表达式解析
-└── cli/            ← 应用层
+└── tools/           ← 应用层
     └── src/
         └── main.rs         # 10: REPL + 模块加载
 ```

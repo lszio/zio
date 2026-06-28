@@ -167,7 +167,7 @@ cargo clippy → 0 warnings
 | 4.8 | Future/Promise | P1 | `builtins.rs`, `value.rs` | +200 | 无 |
 | 4.9 | Channel CSP | P2 | [new] `builtins/chan.rs` | +250 | 4.8 |
 | 4.10 | JSON 序列化 | P2 | `builtins.rs` | +80 | 4.6 |
-| 4.11 | 包管理器 `zio install` | P0 | [new] `cli/pkg.rs` | +300 | 1.5 |
+| 4.11 | 包管理器 `zio install` | P0 | `tools/src/pkg.rs` | +300 | 1.5 |
 
 ### 交付标准
 
@@ -242,7 +242,7 @@ cargo clippy → 0 warnings
 | 6.1 | `zio-datalog` MVP | [new] `lib/zio-datalog/` | +600 | 5.1 |
 | 6.2 | `zio-agent` 原型 | [new] `lib/zio-agent/` | +300 | 4.1, 4.8 |
 | 6.3 | `zio-llm` API 封装 | [new] `lib/zio-llm/` | +300 | 4.1 |
-| 6.4 | JIT 可行性验证（Cranelift） | [new] `zio-compiler/` prototype | +300 | 无 |
+| 6.4 | JIT 可行性验证（Cranelift） | `tools/` feature | +300 | 无 |
 | 6.5 | 向量原语 + 嵌入 | `builtins.rs` + dep | +200 | 4.1 |
 
 ### 交付标准
