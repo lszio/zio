@@ -619,6 +619,20 @@ mod tests {
             run("(str-ends-with? \"hello\" \"xyz\")").unwrap(),
             Value::Boolean(false)
         );
+
+        // range
+        assert_eq!(run("(range 5)").unwrap(), Value::Vector(vector![
+            Value::Integer(0), Value::Integer(1), Value::Integer(2),
+            Value::Integer(3), Value::Integer(4),
+        ]));
+        assert_eq!(run("(range 2 5)").unwrap(), Value::Vector(vector![
+            Value::Integer(2), Value::Integer(3), Value::Integer(4),
+        ]));
+
+        // sort
+        assert_eq!(run("(sort < [3 1 2])").unwrap(), Value::Vector(vector![
+            Value::Integer(1), Value::Integer(2), Value::Integer(3),
+        ]));
 }
     #[test]
     fn test_tco_mutual_recursion() {

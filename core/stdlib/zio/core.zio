@@ -92,10 +92,37 @@
 
 (defn empty? [coll]
   (or (nil? coll)
-      (and (list? coll) (nil? (cdr coll)))
       (and (vector? coll) (= (count coll) 0))))
 
 (defn some? [x] (not (nil? x)))
+
+;; ── Sequence Operations ──────────────────────────────────────
+
+;; (take n coll) → first n elements as a list
+(defn take [n coll]
+  (if (or (nil? coll) (= n 0))
+    nil
+    (cons (first coll) (take (dec n) (rest coll)))))
+
+;; (drop n coll) → coll without first n elements
+(defn drop [n coll]
+  (if (or (nil? coll) (= n 0))
+    coll
+    (drop (dec n) (rest coll))))
+
+;; (into to from) → add elements of from to to, converting type if needed
+(defn into [to from]
+  (if (nil? from)
+    to
+    (if (list? to)
+      ;; For lists, prepend in reverse then reverse at end
+      (let [result (into to (rest from))]
+        (if (nil? result)
+          (list (first from))
+          (cons (first from) result)))
+      ;; For vectors, apply vector after converting both to lists
+      (apply vector (apply list to (apply list from))))))
+
 
 ;; ── Module export marker ─────────────────────────────────────
 ;; All defs above are implicitly exported.

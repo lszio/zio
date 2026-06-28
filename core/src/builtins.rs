@@ -567,6 +567,73 @@ pub fn symbol_fn(args: Vector<Value>, _engine: &dyn EvalEngine) -> Result<Value,
 pub fn vector_fn(args: Vector<Value>, _engine: &dyn EvalEngine) -> Result<Value, EvalError> {
     Ok(Value::Vector(args))
 }
+// ── Sequence Generation ───────────────────────────────────────────
+
+/// (range end) → vector [0 1 ... end-1]
+/// (range start end) → vector [start ... end-1]
+pub fn range_fn(args: Vector<Value>, _engine: &dyn EvalEngine) -> Result<Value, EvalError> {
+    let (start, end) = match args.len() {
+        1 => {
+            let e = match &args[0] {
+                Value::Integer(i) => *i,
+                other => return Err(EvalError::type_error("integer", other.value_type())),
+            };
+            (0i64, e)
+        }
+        2 => {
+            let s = match &args[0] {
+                Value::Integer(i) => *i,
+                other => return Err(EvalError::type_error("integer", other.value_type())),
+            };
+            let e = match &args[1] {
+                Value::Integer(i) => *i,
+                other => return Err(EvalError::type_error("integer", other.value_type())),
+            };
+            (s, e)
+        }
+        _ => return Err(EvalError::wrong_arg_count_range(1, 2, args.len())),
+    };
+    let mut v = Vector::new();
+    // Limit to reasonable size to prevent OOM
+    let count = (end - start).max(0).min(10_000_000);
+    for i in start..start + count {
+        v.push_back(Value::Integer(i));
+    }
+    Ok(Value::Vector(v))
+}
+
+// ── Sorting ────────────────────────────────────────────────────────
+
+/// (sort cmp coll) → sorted vector — stable sort using comparator.
+/// Comparator is a function (fn [a b] ...) returning boolean (true if a < b).
+pub fn sort_fn(args: Vector<Value>, engine: &dyn EvalEngine) -> Result<Value, EvalError> {
+    if args.len() != 2 {
+        return Err(EvalError::wrong_arg_count(2, args.len()));
+    }
+    let cmp = args[0].clone();
+    let coll = match &args[1] {
+        Value::List(v) | Value::Vector(v) => v.clone(),
+        other => return Err(EvalError::type_error("sequential", other.value_type())),
+    };
+    let mut items: Vec<Value> = coll.into_iter().collect();
+    // Insertion sort — stable, O(n²) but fine for typical collection sizes.
+    for i in 1..items.len() {
+        let mut j = i;
+        while j > 0 {
+            let b = items[j].clone();
+            let a = items[j - 1].clone();
+            let args_vec = vector![b, a];
+            match crate::eval::apply(cmp.clone(), args_vec, engine)? {
+                TailResult::Value(ref v) if is_truthy(v) => {
+                    items.swap(j - 1, j);
+                    j -= 1;
+                }
+                _ => break,
+            }
+        }
+    }
+    Ok(Value::Vector(items.into_iter().collect()))
+}
 // ── I/O ────────────────────────────────────────────────────────────
 pub fn println(args: Vector<Value>, _engine: &dyn EvalEngine) -> Result<Value, EvalError> {
     let s: String = args
@@ -855,6 +922,12 @@ pub fn setup_env(env: &Arc<Env>) {
     env.set("keyword".into(), Value::NativeFunction(NativeFn::new("keyword", keyword_fn)));
     env.set("symbol".into(), Value::NativeFunction(NativeFn::new("symbol", symbol_fn)));
     env.set("vector".into(), Value::NativeFunction(NativeFn::new("vector", vector_fn)));
+
+    // Sequence generation
+    env.set("range".into(), Value::NativeFunction(NativeFn::new("range", range_fn)));
+
+    // Sorting
+    env.set("sort".into(), Value::NativeFunction(NativeFn::new("sort", sort_fn)));
 
     // Macroexpand
     env.set("macroexpand-1".into(), Value::NativeFunction(NativeFn::new("macroexpand-1", macroexpand_1_fn)));
