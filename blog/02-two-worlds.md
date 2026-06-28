@@ -173,7 +173,7 @@ ADR-001: Sexp 与 Value 分离
 代价:    两个类似的枚举，偶尔需要转换函数
 ```
 
-打开 [`docs/architecture-handbook.md`](../docs/architecture-handbook.md) 第 195 行可以看到完整记录。
+打开 [`docs/adrs.md`](../docs/adrs.md#adr-001-sexp-与-value-分离) 查看 ADR-001 完整记录。
 
 ## 在代码中
 

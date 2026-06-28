@@ -2,16 +2,32 @@
 
 > A Modern Lisp for the Agent Era.
 
-Zio 是一门面向未来的通用 Lisp 语言，用 Rust 实现。当前处于 **v0.2 架构重组完成阶段**——所有全局状态已显式化，核心可嵌入、可测试。
+Zio 是一门面向未来的通用 Lisp 语言，用 Rust 实现。当前处于 **v0.2 架构重组完成阶段** —— 所有全局状态已显式化，核心可嵌入、可测试。ZOS（Zio Object System）规范已发布，进入实现阶段。
 
 | **指标** | **值** |
-|----------|-------|
+|----------|--------|
 | 测试 | 103 passing, 0 warnings |
-| 代码 | ~3,500 LOC Rust |
-| 线程局部全局变量 | **0** (已全部移除) |
-| Crates | `zio-core`, `zio-reader`, `zio` (CLI) |
+| 代码 | ~3,500 LOC Rust (core) + 规范 |
+| 线程局部全局变量 | **0**（已全部移除） |
+| Crates | `zio-core`、`zio-reader`、`zio` (CLI) |
 | 特殊形式 | 12 种 |
 | 内置函数 | 30 个 |
+| 设计原则 | 最小、正交、可扩展、运行时优先、机制而非策略 |
+
+## 哲学
+
+Zio 不是另一个 Lisp 方言 —— 而是 **CLOS 的对象模型（AMOP）+ Scheme 的卫生宏 + Clojure 的持久化数据 + Rust 的系统能力** 在同一个个运行时上的融合。
+
+```
+Zio = Lisp 核心（同像性 + eval/apply + 宏）
+    + Rust 宿主（FFI + 嵌入 + 零开销）
+    + 统一运行时对象模型（ZOS：AMOP + MOP）
+    + 扩展库生态（Datalog · Agent · 自学习）
+```
+
+核心原则：**核心最小，其余是库**。Datalog、Agent、自学习模型框架都是通过 宏 + MOP 构建的扩展库，不进入语言核心。
+
+详细哲学：[docs/zio-philosophy.md](docs/zio-philosophy.md)
 
 ## 快速开始
 
@@ -40,35 +56,38 @@ zio> (require :my.module)
 ## 文档
 
 | 文档 | 说明 |
-|------|------|
-| [docs/architecture-handbook.md](docs/architecture-handbook.md) | 完整架构设计、设计定理、ADR、类型系统、两张应用蓝图 |
-| [docs/ROADMAP.md](docs/ROADMAP.md) | 分 Phase 路线图、交付标准、工程风险、时间线 |
-| [docs/architecture-v0.2.md](docs/architecture-v0.2.md) | 上一版本的架构文档（部分已过时） |
+| [docs/zio-philosophy.md](docs/zio-philosophy.md) | 语言哲学、设计定理、设计原则、特性来源 |
+| [docs/zos-spec.md](docs/zos-spec.md) | **ZOS 完整规范**（Object/Class/GF/Method/MOP/Condition） |
+| [docs/zio-architecture.md](docs/zio-architecture.md) | 系统架构总览、分层、组件状态 |
+| [docs/eval-pipeline.md](docs/eval-pipeline.md) | Eval 循环、TCO、宏、编译器管线 |
+| [docs/roadmap.md](docs/roadmap.md) | 分 Phase 路线图、交付标准、依赖分析、应用蓝图 |
+| [docs/adrs.md](docs/adrs.md) | 架构决策记录（ADR-001 ~ ADR-011） |
+| [docs/glossary.md](docs/glossary.md) | 术语参考 |
+| [blog/INDEX.md](blog/INDEX.md) | 系列博文 |
 
 ## 设计定理
 
-1. **所有 mutable 状态必须显式** — 无 thread-local 全局变量
-2. **Rust 是合同边界，Lisp 是组合层** — 性能关键路径用 NativeFn
-3. **宏是用户扩展 eval 的方式** — 同像性使一切可编程
-4. **模块系统是代码组织的唯一方式** — 包 + 命名空间
+| # | 定理 | 状态 |
+|---|------|------|
+| 1 | **所有 mutable 状态必须显式** — 无 thread-local 全局变量 | ✅ 已达成 |
+| 2 | **Rust 是合同边界，Lisp 是组合层** — 性能关键路径用 NativeFn | ✅ 已达成 |
+| 3 | **宏是用户扩展 eval 的方式** — 没有特殊形式不可用宏替代 | ✅ 已达成 |
+| 4 | **核心最小，其余是库** — 领域能力不进入 Core | ✅ ZOS 规范中 |
+| 5 | **协议比实现重要** — EvalEngine/MOP 是扩展契约 | ✅ 规范中 |
 
 ## 路线图一览
 
 | Phase | 时间 | 交付物 |
 |-------|------|--------|
-| **Phase 1** — 核心稳定化 | 1-2 周 | Span 集成, Reader 扩展, TCO, macroexpand, 200+ tests |
-| **Phase 2** — 系统编程 | 2-4 周 | FFI, `#[zio_export]`, Buffer, File I/O, struct, try/catch |
-| **Phase 3** — 宏与元编程 | 2-3 周 | 卫生宏, Reader macro, Compiler macro |
-| **Phase 4** — 标准库+并发 | 2-3 周 | 懒序列, Future/Channel, async, 包管理器 |
-| **Phase 5** — CLOS/多方法 | 2-3 周 | Generic function, defmethod, condition system |
-| **Phase 6** — LLM/性能 | 3-4 周 | 向量原语, LLM API, Agent 框架, Baseline JIT |
-| **Phase 7** — 生产化 | 持续 | LSP, Debugger, WASM, Profiler |
+| **Phase 1** — 核心稳定化 | 1-2 周 | Span 集成, Reader 扩展, 全 TCO, macroexpand, 200+ tests |
+| **Phase 2** — ZOS Phase 1 | 2-3 周 | Class/GF/Method/Package/Condition, `defclass` `defgeneric` `defmethod` |
+| **Phase 3** — 卫生宏 + ZOS Phase 2 | 2-3 周 | `syntax-rules` 模式匹配宏, MOP, 多分派, 完整反射 |
+| **Phase 4** — 标准库 + 系统编程 | 2-4 周 | FFI, File I/O, 懒序列, Future/Channel, 包管理器, 标准库 |
+| **Phase 5** — ZOS Phase 3 + 生态 | 2-3 周 | 官方扩展库（persistent、entity、protocol） |
+| **Phase 6** — 高级生态 | 3-4 周 | zio-datalog, zio-agent, zio-ai, Baseline JIT |
+| **Phase 7** — 生产化 | 持续 | LSP, Debugger, WASM, Profiler, 自举编辑器 |
 
-项目同时推进两个工程原型：
-- **Datomic 风格 Datalog 数据库** — 内存在, 时间旅行, 纯宏 API
-- **自学习模型框架** — 基于同像性的 AutoML + 程序搜索
-
-详见 [docs/ROADMAP.md](docs/ROADMAP.md)。
+详见 [docs/roadmap.md](docs/roadmap.md)。
 
 ## License
 
