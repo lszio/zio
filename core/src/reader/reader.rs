@@ -185,8 +185,8 @@ fn parse_atom(token: &str) -> Sexp {
             }
         }
         Sexp::String(unescaped)
-    } else if token.starts_with(':') {
-        Sexp::Keyword(token[1..].to_string())
+    } else if let Some(name) = token.strip_prefix(':') {
+        Sexp::Keyword(name.to_string())
     } else {
         match token {
             "nil" => Sexp::Nil,
@@ -237,7 +237,7 @@ mod tests {
 
     #[test]
     fn test_read_float() {
-        assert_eq!(read("3.14"), Ok(Sexp::Float(3.14)));
+        assert_eq!(read("3.5"), Ok(Sexp::Float(3.5)));
     }
 
     #[test]

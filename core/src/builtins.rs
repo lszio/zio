@@ -105,13 +105,7 @@ pub fn div(args: Vector<Value>, _engine: &dyn EvalEngine) -> Result<Value, EvalE
                     Ok(a / b)
                 }
             })
-            .map(|v| {
-                if v as f64 == v as f64 {
-                    Value::Integer(v)
-                } else {
-                    Value::Float(v as f64)
-                }
-            })
+            .map(Value::Integer)
         }
     }
 }
@@ -541,6 +535,149 @@ pub fn read_line(_args: Vector<Value>, _engine: &dyn EvalEngine) -> Result<Value
     }
 }
 
+// ── File I/O ──────────────────────────────────────────────────────
+
+/// (slurp path) → string — read entire file into a string.
+pub fn slurp(args: Vector<Value>, _engine: &dyn EvalEngine) -> Result<Value, EvalError> {
+    if args.len() != 1 {
+        return Err(EvalError::wrong_arg_count(1, args.len()));
+    }
+    let path = match &args[0] {
+        Value::String(s) => s.clone(),
+        other => return Err(EvalError::type_error("string",
+        &format!("{}", other),)),
+    };
+    match std::fs::read_to_string(&path) {
+        Ok(content) => Ok(Value::String(content)),
+        Err(e) => Err(EvalError::custom(format!("slurp error: {e}"))),
+    }
+}
+
+/// (spit path content) → nil — write string to a file.
+pub fn spit(args: Vector<Value>, _engine: &dyn EvalEngine) -> Result<Value, EvalError> {
+    if args.len() != 2 {
+        return Err(EvalError::wrong_arg_count(2, args.len()));
+    }
+    let path = match &args[0] {
+        Value::String(s) => s.clone(),
+        other => return Err(EvalError::type_error("string",
+        &format!("{}", other),)),
+    };
+    let content = match &args[1] {
+        Value::String(s) => s.clone(),
+        other => return Err(EvalError::type_error("string",
+        &format!("{}", other),)),
+    };
+    match std::fs::write(&path, &content) {
+        Ok(()) => Ok(Value::Nil),
+        Err(e) => Err(EvalError::custom(format!("spit error: {e}"))),
+    }
+}
+
+// ── String Operations ─────────────────────────────────────────────
+
+/// (str-join separator strings...) — join strings with separator.
+pub fn str_join(args: Vector<Value>, _engine: &dyn EvalEngine) -> Result<Value, EvalError> {
+    if args.len() < 1 {
+        return Err(EvalError::wrong_arg_count_min(1, 0));
+    }
+    let sep = match &args[0] {
+        Value::String(s) => s.clone(),
+        other => return Err(EvalError::type_error("string",
+        &format!("{}", other),)),
+    };
+    let parts: Vec<String> = args.iter().skip(1).map(|v| match v {
+        Value::String(s) => s.clone(),
+        other => format!("{other}"),
+    }).collect();
+    Ok(Value::String(parts.join(&sep)))
+}
+
+/// (str-split separator string) → vector — split string on separator.
+pub fn str_split(args: Vector<Value>, _engine: &dyn EvalEngine) -> Result<Value, EvalError> {
+    if args.len() != 2 {
+        return Err(EvalError::wrong_arg_count(2, args.len()));
+    }
+    let sep = match &args[0] {
+        Value::String(s) => s.clone(),
+        other => return Err(EvalError::type_error("string",
+        &format!("{}", other),)),
+    };
+    let s = match &args[1] {
+        Value::String(s) => s.clone(),
+        other => return Err(EvalError::type_error("string",
+        &format!("{}", other),)),
+    };
+    let parts: Vector<Value> = s.split(&sep).map(|p| Value::String(p.to_string())).collect();
+    Ok(Value::Vector(parts))
+}
+
+/// (str-trim string) → string — trim whitespace.
+pub fn str_trim(args: Vector<Value>, _engine: &dyn EvalEngine) -> Result<Value, EvalError> {
+    if args.len() != 1 {
+        return Err(EvalError::wrong_arg_count(1, args.len()));
+    }
+    match &args[0] {
+        Value::String(s) => Ok(Value::String(s.trim().to_string())),
+        other => Err(EvalError::type_error("string",
+        &format!("{}", other),)),
+    }
+}
+
+/// (str-contains? haystack needle) → boolean — substring check.
+pub fn str_contains(args: Vector<Value>, _engine: &dyn EvalEngine) -> Result<Value, EvalError> {
+    if args.len() != 2 {
+        return Err(EvalError::wrong_arg_count(2, args.len()));
+    }
+    let haystack = match &args[0] {
+        Value::String(s) => s.clone(),
+        other => return Err(EvalError::type_error("string",
+        &format!("{}", other),)),
+    };
+    let needle = match &args[1] {
+        Value::String(s) => s.clone(),
+        other => return Err(EvalError::type_error("string",
+        &format!("{}", other),)),
+    };
+    Ok(Value::Boolean(haystack.contains(&needle)))
+}
+
+/// (str-starts-with? s prefix) → boolean.
+pub fn str_starts_with(args: Vector<Value>, _engine: &dyn EvalEngine) -> Result<Value, EvalError> {
+    if args.len() != 2 {
+        return Err(EvalError::wrong_arg_count(2, args.len()));
+    }
+    let s = match &args[0] {
+        Value::String(s_val) => s_val.clone(),
+        other => return Err(EvalError::type_error("string",
+        &format!("{}", other),)),
+    };
+    let prefix = match &args[1] {
+        Value::String(p) => p.clone(),
+        other => return Err(EvalError::type_error("string",
+        &format!("{}", other),)),
+    };
+    Ok(Value::Boolean(s.starts_with(&prefix)))
+}
+
+/// (str-ends-with? s suffix) → boolean.
+pub fn str_ends_with(args: Vector<Value>, _engine: &dyn EvalEngine) -> Result<Value, EvalError> {
+    if args.len() != 2 {
+        return Err(EvalError::wrong_arg_count(2, args.len()));
+    }
+    let s = match &args[0] {
+        Value::String(s_val) => s_val.clone(),
+        other => return Err(EvalError::type_error("string",
+        &format!("{}", other),)),
+    };
+    let suffix = match &args[1] {
+        Value::String(suf) => suf.clone(),
+        other => return Err(EvalError::type_error("string",
+        &format!("{}", other),)),
+    };
+    Ok(Value::Boolean(s.ends_with(&suffix)))
+}
+
 // ── Macroexpand ────────────────────────────────────────────────────
 pub fn macroexpand_1_fn(args: Vector<Value>, engine: &dyn EvalEngine) -> Result<Value, EvalError> {
     if args.len() != 1 {
@@ -634,7 +771,8 @@ pub fn setup_env(env: &Arc<Env>) {
     env.set("filter".into(), Value::NativeFunction(NativeFn::new("filter", filter_fn)));
     env.set("reduce".into(), Value::NativeFunction(NativeFn::new("reduce", reduce_fn)));
 
-    // New builtins
+
+    // New builtins (v0.2 additions)
     env.set("apply".into(), Value::NativeFunction(NativeFn::new("apply", apply_fn)));
     env.set("get".into(), Value::NativeFunction(NativeFn::new("get", get_fn)));
     env.set("count".into(), Value::NativeFunction(NativeFn::new("count", count_fn)));
@@ -647,11 +785,20 @@ pub fn setup_env(env: &Arc<Env>) {
     // Macroexpand
     env.set("macroexpand-1".into(), Value::NativeFunction(NativeFn::new("macroexpand-1", macroexpand_1_fn)));
     env.set("macroexpand".into(), Value::NativeFunction(NativeFn::new("macroexpand", macroexpand_fn)));
-
     // I/O
     env.set("println".into(), Value::NativeFunction(NativeFn::new("println", println)));
     env.set("prn".into(), Value::NativeFunction(NativeFn::new("prn", prn)));
     env.set("read-line".into(), Value::NativeFunction(NativeFn::new("read-line", read_line)));
+    env.set("slurp".into(), Value::NativeFunction(NativeFn::new("slurp", slurp)));
+    env.set("spit".into(), Value::NativeFunction(NativeFn::new("spit", spit)));
+
+    // String operations
+    env.set("str-join".into(), Value::NativeFunction(NativeFn::new("str-join", str_join)));
+    env.set("str-split".into(), Value::NativeFunction(NativeFn::new("str-split", str_split)));
+    env.set("str-trim".into(), Value::NativeFunction(NativeFn::new("str-trim", str_trim)));
+    env.set("str-contains?".into(), Value::NativeFunction(NativeFn::new("str-contains?", str_contains)));
+    env.set("str-starts-with?".into(), Value::NativeFunction(NativeFn::new("str-starts-with?", str_starts_with)));
+    env.set("str-ends-with?".into(), Value::NativeFunction(NativeFn::new("str-ends-with?", str_ends_with)));
 }
 
 pub use crate::value::NativeFn;

@@ -43,15 +43,15 @@ impl Module {
 
 /// Registry of all loaded modules, keyed by fully-qualified name.
 #[derive(Debug, Default)]
-pub struct ModuleRegistry {
+pub struct ModuleTable {
     pub modules: Vec<Module>,
     /// Stack of file paths being loaded (circular require detection).
     pub loading_stack: Vec<PathBuf>,
 }
 
-impl ModuleRegistry {
+impl ModuleTable {
     pub fn new() -> Self {
-        ModuleRegistry {
+        ModuleTable {
             modules: Vec::new(),
             loading_stack: Vec::new(),
         }
@@ -101,7 +101,6 @@ impl ModuleRegistry {
         self.loading_stack.retain(|p| p != path);
     }
 }
-
 /// Resolve a module path like "zio/math" to a file path.
 /// Looks in:
 ///   1. Current directory (./{path}.zio)
@@ -156,7 +155,7 @@ mod tests {
 
     #[test]
     fn test_module_registry() {
-        let mut reg = ModuleRegistry::new();
+        let mut reg = ModuleTable::new();
         let env = Arc::new(Env::new(None));
         let m = Module::new(vec!["test".into()], &env);
         reg.register(m);
@@ -172,14 +171,14 @@ mod tests {
 
     #[test]
     fn test_begin_loading_ok() {
-        let mut reg = ModuleRegistry::new();
+        let mut reg = ModuleTable::new();
         assert!(reg.begin_loading(Path::new("foo.zio")).is_ok());
         assert!(reg.loading_stack.len() == 1);
     }
 
     #[test]
     fn test_circular_require_detection() {
-        let mut reg = ModuleRegistry::new();
+        let mut reg = ModuleTable::new();
         reg.begin_loading(Path::new("a.zio")).unwrap();
         reg.begin_loading(Path::new("b.zio")).unwrap();
         let result = reg.begin_loading(Path::new("a.zio"));
@@ -189,7 +188,7 @@ mod tests {
 
     #[test]
     fn test_end_loading() {
-        let mut reg = ModuleRegistry::new();
+        let mut reg = ModuleTable::new();
         reg.begin_loading(Path::new("a.zio")).unwrap();
         reg.end_loading(Path::new("a.zio"));
         assert!(reg.loading_stack.is_empty());

@@ -275,7 +275,7 @@ mod tests {
         assert_ne!(Value::Boolean(true), Value::Boolean(false));
         assert_eq!(Value::Integer(42), Value::Integer(42));
         assert_ne!(Value::Integer(42), Value::Integer(43));
-        assert_eq!(Value::Float(3.14), Value::Float(3.14));
+        assert_eq!(Value::Float(3.5), Value::Float(3.5));
         assert_eq!(Value::String("hello".into()), Value::String("hello".into()));
         assert_eq!(Value::Symbol("foo".into()), Value::Symbol("foo".into()));
         assert_eq!(Value::Keyword("bar".into()), Value::Keyword("bar".into()));
@@ -342,11 +342,13 @@ mod tests {
         fn dummy_engine() -> &'static dyn EvalEngine {
             // Used only in tests that don't need actual eval
             struct DummyEngine;
-            impl crate::context::EvalEngine for DummyEngine {
+            impl crate::context::EvalRuntime for DummyEngine {
                 fn eval_expr(&self, _: &Sexp, _: &Arc<Env>, _: bool) -> Result<crate::special::TailResult, EvalError> {
                     unimplemented!()
                 }
                 fn env(&self) -> &Arc<Env> { panic!("DummyEngine has no env") }
+            }
+            impl crate::context::ModuleRegistry for DummyEngine {
                 fn register_module(&self, _: crate::module::Module) {}
                 fn find_module(&self, _: &[String]) -> Option<crate::module::Module> { None }
                 fn is_module_loaded(&self, _: &[String]) -> bool { false }
@@ -354,6 +356,7 @@ mod tests {
                 fn begin_loading(&self, _: &std::path::Path) -> Result<(), EvalError> { Ok(()) }
                 fn end_loading(&self, _: &std::path::Path) {}
             }
+            impl crate::context::EvalEngine for DummyEngine {}
             static ENGINE: DummyEngine = DummyEngine;
             &ENGINE
         }

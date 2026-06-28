@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use im::Vector;
 
-use crate::context::{EvalContext, EvalEngine};
+use crate::context::{EvalContext, EvalEngine, EvalRuntime, ModuleRegistry};
 use crate::env::Env;
 use crate::error::EvalError;
 use crate::macros;
@@ -10,9 +10,9 @@ use crate::sexp::Sexp;
 use crate::special::{eval_special_form, TailResult};
 use crate::value::Value;
 
-// ── EvalEngine implementation for EvalContext ────────────────────
+// ── EvalRuntime implementation for EvalContext ───────────────────
 
-impl EvalEngine for EvalContext {
+impl EvalRuntime for EvalContext {
     fn eval_expr(&self, expr: &Sexp, env: &Arc<Env>, tail: bool) -> Result<TailResult, EvalError> {
         eval_inner(expr, env, tail, self)
     }
@@ -20,6 +20,11 @@ impl EvalEngine for EvalContext {
     fn env(&self) -> &Arc<Env> {
         &self.env
     }
+}
+
+// ── ModuleRegistry implementation for EvalContext ─────────────────
+
+impl ModuleRegistry for EvalContext {
     fn register_module(&self, m: crate::module::Module) {
         self.modules.borrow_mut().register(m);
     }
@@ -50,6 +55,10 @@ impl EvalEngine for EvalContext {
         self.modules.borrow_mut().end_loading(path);
     }
 }
+
+// ── EvalEngine marker supertrait for backward compat ──────────────
+
+impl EvalEngine for EvalContext {}
 
 /// Public API: evaluate an S-expression in the given context.
 /// Uses a trampoline loop for proper tail-call optimization.
@@ -134,8 +143,15 @@ fn eval_inner(expr: &Sexp, env: &Arc<Env>, tail: bool, engine: &dyn EvalEngine) 
                 evaled_args.push_back(eval_inner(item, env, false, engine)?.into_value());
             }
 
-            // Apply the function
-            // Resolve tail calls trampoline-style
+            // In tail position: defer to outer trampoline for proper TCO.
+            // This avoids growing the Rust call stack through mutual recursion
+            // (e.g. even?/odd?). The eval() trampoline loop catches TailCall
+            // and drives apply() without recursive eval_inner frames.
+            if tail {
+                return Ok(TailResult::TailCall(func_val, evaled_args));
+            }
+
+            // Non-tail: apply directly with inner trampoline for nested TailCalls.
             let mut r = apply(func_val, evaled_args, engine)?;
             loop {
                 match r {
@@ -336,7 +352,7 @@ mod tests {
         assert_eq!(run("nil").unwrap(), Value::Nil);
         assert_eq!(run("true").unwrap(), Value::Boolean(true));
         assert_eq!(run("42").unwrap(), Value::Integer(42));
-        assert_eq!(run("3.14").unwrap(), Value::Float(3.14));
+        assert_eq!(run("3.5").unwrap(), Value::Float(3.5));
     }
 
     #[test]
@@ -564,5 +580,71 @@ mod tests {
         assert_eq!(run("(mod 10 3)").unwrap(), Value::Integer(1));
         assert_eq!(run("(mod 7 2)").unwrap(), Value::Integer(1));
         assert_eq!(run("(mod 4 2)").unwrap(), Value::Integer(0));
+
+        // String operations
+        assert_eq!(run("(str-trim \"  hello  \")").unwrap(), Value::String("hello".to_string()));
+        assert_eq!(
+            run("(str-join \", \" \"a\" \"b\" \"c\")").unwrap(),
+            Value::String("a, b, c".to_string())
+        );
+        assert_eq!(
+            run("(str-split \",\" \"a,b,c\")").unwrap(),
+            Value::Vector(vector![
+                Value::String("a".to_string()),
+                Value::String("b".to_string()),
+                Value::String("c".to_string()),
+            ])
+        );
+        assert_eq!(
+            run("(str-contains? \"hello world\" \"world\")").unwrap(),
+            Value::Boolean(true)
+        );
+        assert_eq!(
+            run("(str-contains? \"hello world\" \"xyz\")").unwrap(),
+            Value::Boolean(false)
+        );
+        assert_eq!(
+            run("(str-starts-with? \"hello\" \"hel\")").unwrap(),
+            Value::Boolean(true)
+        );
+        assert_eq!(
+            run("(str-starts-with? \"hello\" \"xyz\")").unwrap(),
+            Value::Boolean(false)
+        );
+        assert_eq!(
+            run("(str-ends-with? \"hello\" \"llo\")").unwrap(),
+            Value::Boolean(true)
+        );
+        assert_eq!(
+            run("(str-ends-with? \"hello\" \"xyz\")").unwrap(),
+            Value::Boolean(false)
+        );
+}
+    #[test]
+    fn test_tco_mutual_recursion() {
+        // Tail-call optimization for mutual recursion.
+        // Without TCO, (even? 100000) overflows the Rust stack.
+        let ctx = make_ctx();
+        // Builtins don't include zero?/dec, so define them inline.
+        let s = test_read("(defn zero? [n] (= n 0))").unwrap();
+        eval_in_context(&s, &ctx).unwrap();
+        let s = test_read("(defn dec [n] (- n 1))").unwrap();
+        eval_in_context(&s, &ctx).unwrap();
+        let s = test_read(
+            "(defn even? [n] (if (zero? n) true (odd? (dec n))))",
+        )
+        .unwrap();
+        eval_in_context(&s, &ctx).unwrap();
+        let s = test_read(
+            "(defn odd? [n] (if (zero? n) false (even? (dec n))))",
+        )
+        .unwrap();
+        eval_in_context(&s, &ctx).unwrap();
+        let s = test_read("(even? 100000)").unwrap();
+        let result = eval_in_context(&s, &ctx).unwrap();
+        assert_eq!(result.to_string(), "true");
+        let s = test_read("(odd? 100001)").unwrap();
+        let result = eval_in_context(&s, &ctx).unwrap();
+        assert_eq!(result.to_string(), "true");
     }
 }
