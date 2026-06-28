@@ -1,51 +1,15 @@
 use std::io::{self, Write};
-use std::path::PathBuf;
 use std::sync::Arc;
 
-use im::Vector;
-
 use zio_core::builtins;
-use zio_core::context::{EvalContext, EvalEngine};
+use zio_core::context::EvalContext;
 use zio_core::env::Env;
 use zio_core::error::EvalError;
 use zio_core::eval;
 use zio_core::module;
-use zio_core::value::{NativeFn, Value};
+use zio_core::value::Value;
 use zio_core::reader;
 
-// ── load: (load "path.zio") → last value ────────────────────────
-
-fn do_load(args: Vector<Value>, engine: &dyn EvalEngine) -> Result<Value, EvalError> {
-    if args.len() != 1 {
-        return Err(EvalError::wrong_arg_count(1, args.len()));
-    }
-    let path = match &args[0] {
-        Value::String(s) => s.clone(),
-        other => return Err(EvalError::type_error("string", other.value_type())),
-    };
-    let resolved = resolve_path(&path)?;
-    let source = std::fs::read_to_string(&resolved)
-        .map_err(|e| EvalError::custom(format!("cannot read {}: {e}", resolved.display())))?;
-    let sexp = reader::read(&source)
-        .map_err(|e| EvalError::custom(format!("parse error in {}: {e}", resolved.display())))?;
-
-    let env = engine.env();
-    engine.eval_expr(&sexp, env, false).map(|r| r.into_value())
-}
-
-fn resolve_path(path: &str) -> Result<PathBuf, EvalError> {
-    let p = PathBuf::from(path);
-    if p.is_absolute() {
-        return Ok(p);
-    }
-    let cwd = std::env::current_dir()
-        .map_err(|e| EvalError::custom(format!("cannot get cwd: {e}")))?;
-    Ok(cwd.join(p))
-}
-
-fn register_load_fn(env: &Arc<Env>) {
-    env.set("load".into(), Value::NativeFunction(NativeFn::new("load", do_load)));
-}
 
 // ── Script runner ───────────────────────────────────────────────
 
@@ -94,7 +58,6 @@ fn make_ctx() -> EvalContext {
 fn make_root_env() -> Arc<Env> {
     let env = Arc::new(Env::new(None));
     builtins::setup_env(&env);
-    register_load_fn(&env);
     env
 }
 

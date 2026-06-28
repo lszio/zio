@@ -141,7 +141,7 @@ pub fn do_require(
                     match sym {
                         Sexp::Keyword(s, _) => syms.push(s.clone()),
                         Sexp::Symbol(s, _) => syms.push(s.clone()),
-                        other => return Err(EvalError::invalid_form(
+                        _other => return Err(EvalError::invalid_form(
                             format!("require :refer list items must be symbols or keywords"),
                         )),
                     }

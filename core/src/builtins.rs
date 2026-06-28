@@ -647,6 +647,7 @@ pub fn println(args: Vector<Value>, _engine: &dyn EvalEngine) -> Result<Value, E
 
 pub fn prn(args: Vector<Value>, _engine: &dyn EvalEngine) -> Result<Value, EvalError> {
     let s: String = args
+
         .iter()
         .map(|v| format!("{v:?}"))
         .collect::<Vec<_>>()
@@ -665,6 +666,35 @@ pub fn read_line(_args: Vector<Value>, _engine: &dyn EvalEngine) -> Result<Value
             Ok(Value::String(trimmed.to_string()))
         }
     }
+}
+// ── File Loading ──────────────────────────────────────────────────
+
+/// (load path) → last value — read and evaluate a file.
+fn resolve_builtin_path(path: &str) -> Result<std::path::PathBuf, EvalError> {
+    let p = std::path::PathBuf::from(path);
+    if p.is_absolute() {
+        return Ok(p);
+    }
+    let cwd = std::env::current_dir()
+        .map_err(|e| EvalError::custom(format!("cannot get cwd: {e}")))?;
+    Ok(cwd.join(p))
+}
+
+pub fn do_load(args: Vector<Value>, engine: &dyn EvalEngine) -> Result<Value, EvalError> {
+    if args.len() != 1 {
+        return Err(EvalError::wrong_arg_count(1, args.len()));
+    }
+    let path = match &args[0] {
+        Value::String(s) => s.clone(),
+        other => return Err(EvalError::type_error("string", other.value_type())),
+    };
+    let resolved = resolve_builtin_path(&path)?;
+    let source = std::fs::read_to_string(&resolved)
+        .map_err(|e| EvalError::custom(format!("cannot read {}: {e}", resolved.display())))?;
+    let sexp = crate::reader::read(&source)
+        .map_err(|e| EvalError::custom(format!("parse error in {}: {e}", resolved.display())))?;
+    let env = engine.env();
+    engine.eval_expr(&sexp, env, false).map(|r| r.into_value())
 }
 
 // ── File I/O ──────────────────────────────────────────────────────
@@ -938,6 +968,9 @@ pub fn setup_env(env: &Arc<Env>) {
     env.set("read-line".into(), Value::NativeFunction(NativeFn::new("read-line", read_line)));
     env.set("slurp".into(), Value::NativeFunction(NativeFn::new("slurp", slurp)));
     env.set("spit".into(), Value::NativeFunction(NativeFn::new("spit", spit)));
+
+    // File loading
+    env.set("load".into(), Value::NativeFunction(NativeFn::new("load", do_load)));
 
     // String operations
     env.set("str-join".into(), Value::NativeFunction(NativeFn::new("str-join", str_join)));
