@@ -148,8 +148,7 @@ Zio = Lisp 核心（同像性 + eval/apply + 宏）
 | **Runtime** | eval/apply、TCO、special forms、macroexpand | `zio-core` | Rust |
 | **ZOS** | Class/GF/Method/MOP/Package/Condition | `zio-core` | Rust |
 | **Stdlib** | 标准库函数、集合、IO 封装 | `tools/stdlib/zio/` | `.zio` |
-| **Tools** | CLI · REPL · LSP · 编辑器 · 调试器 · `#[zio_export]` proc-macro | `zio` | Rust + Zio |
-| **Extension Libs** | Datalog · Agent · 持久化集合 | `zio-datalog` / `zio-agent` / `zio-persistent` | Rust + Zio |
+| **Extension Libs** | Datalog · Agent · 持久化集合 | `lib/zio/*.zio` | **Zio** |
 
 ### 3.3 Crate 依赖图
 
@@ -160,8 +159,8 @@ zio (tools binary)
 ├── zio-reader    (reader/src/: 解析字符串 → Sexp + Span)
 ├── zio-core      (core/src/: 运行时 Value/Env/Eval + ZOS)
 │   └── zio-reader (依赖 core 的类型定义)
-└── lib/          (扩展库: datalog, agent, persistent)
-    └── zio-core
+└── lib/zio/*.zio (扩展库: datalog, agent, persistent)
+    └── 通过 (require :zio.*) 加载，纯 Zio 实现 + 宏
 ```
 
 **未来（Phase 5+，Compiler/JIT 加入 tools）**：
@@ -173,10 +172,10 @@ zio (tools binary: CLI + REPL + LSP + 编辑器 + JIT)
 │   ├── eval     (AST 解释器)
 │   └── compiler (ZIR + JIT，可选特性)
 ├── tools/stdlib/     (.zio 标准库)
-└── lib/              (扩展库)
-    ├── zio-datalog
-    ├── zio-agent
-    └── zio-persistent
+└── lib/zio/          (扩展库，纯 Zio 实现)
+    ├── persistent.zio
+    ├── datalog.zio
+    └── agent/*.zio
 ```
 
 ---

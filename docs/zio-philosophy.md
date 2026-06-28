@@ -79,7 +79,8 @@ Zio = Lisp 核心
 
 ### 3.1 最小（Minimal）
 
-核心保持尽可能小。ZOS 只提供运行时最基本的能力——Object、Class、Generic Function、Method、Package、Condition。任何领域能力都不进入 Core。
+## 4 特性来源与整合
+Zio 从以下语言借鉴设计，但所有扩展特性都由 Zio 语言本身（通过宏 + `.zio` 库）实现，不是 Rust crate：
 
 ### 3.2 正交（Orthogonal）
 
@@ -102,7 +103,12 @@ Library      → 模块级扩展
 
 ZOS 描述的是**运行时对象**，不是语言语法。Reader、Macro、Compiler 负责**生成**对象；ZOS 负责**运行**这些对象。
 
-### 3.5 机制而非策略（Mechanism over Policy）
+### 4.1 关于 Clojure
+Clojure 风格的不可变数据、atom/ref/agent、序列抽象等，在 Zio 中都属于扩展库——`lib/zio/persistent.zio`、`lib/zio/agent/*.zio`。它们通过宏构建在核心之上，用 Zio 语言本身实现，不是 Rust crate。这意味着：
+- 纯 Zio 实现：库代码就是 `.zio` 文件
+- 宏驱动：语言特性通过宏定义，不修改核心
+- 用户可读：实现源码就是文档
+- 如果社区需要更符合 Clojure 习惯的 API，可以通过宏贡献
 
 ZOS 只提供机制，不提供策略。Multiple Dispatch 是机制；Protocol 是策略。Immutable Entity、Datomic、AI Runtime 都是策略——全部通过宏 + MOP 构建。
 

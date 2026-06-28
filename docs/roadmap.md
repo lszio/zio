@@ -202,9 +202,9 @@ cargo clippy → 0 warnings
 
 | # | 任务 | 文件 | 估算 LOC | 前提 |
 |---|------|------|----------|------|
-| 5.1 | `zio-persistent`: 持久化 Vector/Map/Set | [new] `lib/zio-persistent/` | +300 | 3.4 |
-| 5.2 | `zio-entity`: Entity 模型 | [new] `lib/zio-entity/` | +200 | 2.7, 3.6 |
-| 5.3 | `zio-protocol`: Protocol 系统 | [new] `lib/zio-protocol/` | +250 | 3.5, 3.6 |
+| 5.1 | `zio-persistent`: 持久化 Vector/Map/Set | `lib/zio/persistent.zio` | +300 | 3.4 |
+| 5.2 | `zio-entity`: Entity 模型 | `lib/zio/entity.zio` | +200 | 2.7, 3.6 |
+| 5.3 | `zio-protocol`: Protocol 系统 | `lib/zio/protocol.zio` | +250 | 3.5, 3.6 |
 | 5.4 | 自举编辑器原型 | [new] `tools/zide/` | +1000 Zio | 无 |
 
 ### 交付标准
@@ -239,9 +239,9 @@ cargo clippy → 0 warnings
 
 | # | 任务 | 文件 | 估算 LOC | 前提 |
 |---|------|------|----------|------|
-| 6.1 | `zio-datalog` MVP | [new] `lib/zio-datalog/` | +600 | 5.1 |
-| 6.2 | `zio-agent` 原型 | [new] `lib/zio-agent/` | +300 | 4.1, 4.8 |
-| 6.3 | `zio-llm` API 封装 | [new] `lib/zio-llm/` | +300 | 4.1 |
+| 6.1 | `zio-datalog` MVP | `lib/zio/datalog.zio` | +600 | 5.1 |
+| 6.2 | `zio-agent` 原型 | `lib/zio/agent/*.zio` | +300 | 4.1, 4.8 |
+| 6.3 | `zio-llm` API 封装 | `lib/zio/llm.zio` | +300 | 4.1 |
 | 6.4 | JIT 可行性验证（Cranelift） | `tools/` feature | +300 | 无 |
 | 6.5 | 向量原语 + 嵌入 | `builtins.rs` + dep | +200 | 4.1 |
 

@@ -1,0 +1,84 @@
+;; ── zio.datalog — Datalog Query Engine ──────────────────────────
+;; Requires: zio-core builtins
+;;
+;; Datomic-style Datalog: queries are Sexp data, composable via macros.
+;;
+;; Key insight: because queries are just nested lists, macros can
+;; compose, generate, and transform queries at compile time.
+;;
+;; Maturity: placeholder — API design only. No implementations yet.
+
+;; ── Core data structures (implemented as macros) ───────────────
+
+;; A Database is an opaque value (wrapping EAVT/VAET/AEVT indexes).
+;; Created by create-db, mutated by transact.
+
+;; A Datom is a 5-tuple: [entity attribute value tx operation]
+;; where operation is :add or :retract.
+
+;; ── Database operations ────────────────────────────────────────
+
+;; (create-db schema) — create empty database with schema
+;; Schema defines attributes and their indexing strategy.
+(defmacro create-db [schema]
+  ;; Expands to: (datalog/create-db-native (quote schema))
+  (throw "not implemented: create-db"))
+
+;; (transact db tx-data) — apply transaction, return new db
+(defmacro transact [db tx-data]
+  ;; Expands to: (datalog/transact-native db (quote tx-data))
+  (throw "not implemented: transact"))
+
+;; ── Query macro ────────────────────────────────────────────────
+
+;; (q '[:find ?name :where [?e :name ?name]] db)
+;; The query is data — a quoted vector of clauses.
+;; The q macro takes the data, compiles it, and runs it.
+
+(defmacro q [query-form db]
+  ;; 1. Compile query: parse clauses, plan joins
+  ;; 2. Run against database
+  ;; 3. Return result set
+  (throw "not implemented: q"))
+
+;; ── Query composition — macro composing queries ────────────────
+
+;; Because queries are data, they can be composed:
+
+;; (def base-query '[:find ?name ?age :where [?e :name ?name] [?e :age ?age]])
+
+;; (defmacro filter-by-age [age-query min-age]
+;;   `(conj ~age-query [:where [?e :age ?a] [(> ?a ~min-age)]]))
+
+;; (q (filter-by-age base-query 30) my-db)
+
+;; ── Time travel ────────────────────────────────────────────────
+
+;; (as-of db tx-id) — snapshot at transaction
+;; (since db tx-id) — changes since transaction
+
+(defmacro as-of [db tx-id]
+  (throw "not implemented: as-of"))
+
+(defmacro since [db tx-id]
+  (throw "not implemented: since"))
+
+;; ── Example usage (conceptual) ─────────────────────────────────
+
+#|
+(def my-db (-> (create-db {:person/name {:type :string :index :eav}
+                            :person/age  {:type :int :index :eav}})
+               (transact [[:add 1 :person/name "Alice"]
+                          [:add 1 :person/age 30]
+                          [:add 2 :person/name "Bob"]
+                          [:add 2 :person/age 25]])))
+
+(q [:find ?name
+    :where [?e :person/name ?name]
+           [?e :person/age ?age]
+           [(> ?age 28)]]
+   my-db)
+;; → #{["Alice"]}
+|#
+
+(println "zio.datalog loaded — API design stage")

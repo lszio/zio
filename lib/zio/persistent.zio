@@ -1,0 +1,71 @@
+;; ── zio.persistent — Persistent (immutable) collections ─────────
+;; Requires: zio-core builtins (map, filter, reduce, cons, list)
+;;
+;; All collections are immutable — operations return new versions.
+;; Built on top of Zio's native im::Vector/im::HashMap via core builtins.
+;;
+;; Maturity: placeholder — API design only. No implementations yet.
+
+;; ── Persistent Vector ──────────────────────────────────────────
+
+;; (conj coll x) — add element to end
+(defn conj [coll x]
+  ;; Future: (vector-conj coll x) builtin
+  (throw "not implemented: conj"))
+
+;; (pop coll) — remove last element
+(defn pop [coll]
+  (throw "not implemented: pop"))
+
+;; (peek coll) — get last element
+(defn peek [coll]
+  (get coll (dec (count coll))))
+
+;; (assoc coll k v) — associate key with value (for vectors, set index)
+(defn assoc [coll k v]
+  (throw "not implemented: assoc"))
+
+;; ── Persistent Map ─────────────────────────────────────────────
+
+;; (get m k default) — already a builtin
+
+;; (assoc m k v) — return new map with k→v
+;; Not yet implemented — needs hash-map-assoc builtin
+
+;; (dissoc m k) — remove key
+(defn dissoc [m k]
+  (throw "not implemented: dissoc"))
+
+;; (merge & maps) — merge multiple maps, rightmost wins
+(defn merge [& maps]
+  (reduce (fn [acc m]
+    ;; Future: use map-merge builtin
+    (throw "not implemented: merge-inner"))
+    {} maps))
+
+;; ── Persistent Set ─────────────────────────────────────────────
+
+;; (set & items) — create a set from items
+;; The reader macro #{a b c} already expands to (set a b c)
+
+(defn set [& items]
+  (throw "not implemented: set"))
+
+;; (contains? s item) — check membership
+(defn contains? [s item]
+  (throw "not implemented: contains?"))
+
+;; (conj s item) — add to set
+;; (disj s item) — remove from set
+
+;; ── Sequence API (lazy, if available) ──────────────────────────
+
+;; (seq coll) — get a sequence view
+;; (into coll items) — pour items into collection
+;; (take n coll) — first n items
+;; (drop n coll) — skip n items
+
+;; These will be implemented as macros expanding to
+;; combinations of map/filter/reduce when lazy-seq is available.
+
+(println "zio.persistent loaded — API design stage")

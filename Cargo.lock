@@ -142,35 +142,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "zio-agent"
-version = "0.2.0"
-dependencies = [
- "zio-core",
-]
-
-[[package]]
 name = "zio-core"
 version = "0.2.0"
 dependencies = [
  "im",
  "itertools",
  "thiserror",
-]
-
-[[package]]
-name = "zio-datalog"
-version = "0.2.0"
-dependencies = [
- "im",
- "zio-core",
-]
-
-[[package]]
-name = "zio-persistent"
-version = "0.2.0"
-dependencies = [
- "im",
- "zio-core",
 ]
 
 [[package]]

@@ -1,9 +1,0 @@
-[package]
-name = "zio-persistent"
-version.workspace = true
-edition.workspace = true
-license.workspace = true
-
-[dependencies]
-zio-core = { path = "../../core" }
-im = "15.1.0"
