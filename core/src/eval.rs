@@ -52,13 +52,15 @@ impl EvalEngine for EvalContext {
 }
 
 /// Public API: evaluate an S-expression in the given context.
+/// Uses a trampoline loop for proper tail-call optimization.
 pub fn eval(expr: &Sexp, ctx: &dyn EvalEngine) -> Result<Value, EvalError> {
-    let result = eval_inner(expr, ctx.env(), false, ctx)?;
-    match result {
-        TailResult::Value(v) => Ok(v),
-        TailResult::Recur(_) => Err(EvalError::custom(
-            "recur without loop frame".to_string(),
-        )),
+    let mut result = eval_inner(expr, ctx.env(), false, ctx)?;
+    loop {
+        match result {
+            TailResult::Value(v) => return Ok(v),
+            TailResult::Recur(_) => return Err(EvalError::custom("recur without loop frame")),
+            TailResult::TailCall(func, args) => result = apply(func, args, ctx)?,
+        }
     }
 }
 
@@ -71,11 +73,7 @@ pub fn eval_in_context(expr: &Sexp, ctx: &EvalContext) -> Result<Value, EvalErro
 /// Creates a throwaway EvalContext internally.
 pub fn eval_bare(expr: &Sexp, env: &Arc<Env>) -> Result<Value, EvalError> {
     let ctx = EvalContext::new(env.clone());
-    let result = eval_inner(expr, env, false, &ctx)?;
-    match result {
-        TailResult::Value(v) => Ok(v),
-        TailResult::Recur(_) => Err(EvalError::custom("recur without loop frame")),
-    }
+    eval(expr, &ctx)
 }
 
 /// Internal evaluator with tail-position tracking.
@@ -137,7 +135,15 @@ fn eval_inner(expr: &Sexp, env: &Arc<Env>, tail: bool, engine: &dyn EvalEngine) 
             }
 
             // Apply the function
-            apply(func_val, evaled_args, engine)
+            // Resolve tail calls trampoline-style
+            let mut r = apply(func_val, evaled_args, engine)?;
+            loop {
+                match r {
+                    TailResult::Value(_) => break Ok(r),
+                    TailResult::TailCall(f, a) => r = apply(f, a, engine)?,
+                    TailResult::Recur(_) => return Err(EvalError::custom("unexpected recur")),
+                }
+            }
         }
 
         // Vector: evaluate each element

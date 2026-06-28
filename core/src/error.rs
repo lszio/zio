@@ -207,3 +207,25 @@ impl EvalError {
         }
     }
 }
+
+impl EvalError {
+    /// Attach a source location to this error.
+    pub fn with_span(self, span: Span) -> Self {
+        let ctx = SpanContext { span: Some(span) };
+        match self {
+            Self::SymbolNotFound(s, _) => Self::SymbolNotFound(s, ctx),
+            Self::NotAFunction { value, .. } => Self::NotAFunction { value, span: ctx },
+            Self::WrongArgCount { expected, got, .. } => Self::WrongArgCount { expected, got, span: ctx },
+            Self::WrongArgCountMin { min, got, .. } => Self::WrongArgCountMin { min, got, span: ctx },
+            Self::WrongArgCountRange { min, max, got, .. } => Self::WrongArgCountRange { min, max, got, span: ctx },
+            Self::IndexOutOfBounds { index, length, .. } => Self::IndexOutOfBounds { index, length, span: ctx },
+            Self::TypeError { expected, got, .. } => Self::TypeError { expected, got, span: ctx },
+            Self::DivisionByZero { .. } => Self::DivisionByZero { span: ctx },
+            Self::InvalidForm(s, _) => Self::InvalidForm(s, ctx),
+            Self::MacroError(s, _) => Self::MacroError(s, ctx),
+            Self::RecurNotTail { .. } => Self::RecurNotTail { span: ctx },
+            Self::RecurWithoutLoop { .. } => Self::RecurWithoutLoop { span: ctx },
+            Self::Custom(s, _) => Self::Custom(s, ctx),
+        }
+    }
+}

@@ -111,6 +111,9 @@ pub fn do_loop(
                 }
                 values = new_args.into_iter().collect();
             }
+            TailResult::TailCall(func, args) => {
+                return Ok(TailResult::TailCall(func, args));
+            }
         }
     }
 }

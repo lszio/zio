@@ -14,19 +14,23 @@ mod letloop;
 mod data;
 mod module_forms;
 
-/// Result of evaluating an expression, possibly a recur target.
+/// Result of evaluating an expression, possibly a recur or tail call.
 #[derive(Debug, Clone)]
 pub enum TailResult {
+    /// Normal return value.
     Value(Value),
+    /// Loop recur: re-bind loop args and continue.
     Recur(Vector<Value>),
+    /// Tail call: trampoline back through eval loop.
+    TailCall(Value, Vector<Value>),
 }
 
 impl TailResult {
-    /// Unwrap into Value, panicking if it's a Recur.
+    /// Unwrap into Value, panicking if Recur or TailCall.
     pub fn into_value(self) -> Value {
         match self {
             TailResult::Value(v) => v,
-            TailResult::Recur(_) => panic!("unexpected recur result"),
+            other => panic!("cannot convert {other:?} to Value"),
         }
     }
 }

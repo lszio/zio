@@ -319,11 +319,15 @@ pub fn map_fn(args: Vector<Value>, engine: &dyn EvalEngine) -> Result<Value, Eva
     };
     let mut result = Vector::new();
     for item in items {
-        let r = crate::eval::apply(func.clone(), vector![item.clone()], engine)?;
-        result.push_back(match r {
-            TailResult::Value(v) => v,
-            _ => return Err(EvalError::custom("unexpected recur in map")),
-        });
+        let mut r = crate::eval::apply(func.clone(), vector![item.clone()], engine)?;
+        let v = loop {
+            match r {
+                TailResult::Value(v) => break v,
+                TailResult::TailCall(f, a) => r = crate::eval::apply(f, a, engine)?,
+                _ => return Err(EvalError::custom("unexpected recur in map")),
+            }
+        };
+        result.push_back(v);
     }
     Ok(Value::List(result))
 }
@@ -341,10 +345,13 @@ pub fn filter_fn(args: Vector<Value>, engine: &dyn EvalEngine) -> Result<Value, 
     };
     let mut result = Vector::new();
     for item in items {
-        let r = crate::eval::apply(pred.clone(), vector![item.clone()], engine)?;
-        let v = match r {
-            TailResult::Value(v) => v,
-            _ => return Err(EvalError::custom("unexpected recur in filter")),
+        let mut r = crate::eval::apply(pred.clone(), vector![item.clone()], engine)?;
+        let v = loop {
+            match r {
+                TailResult::Value(v) => break v,
+                TailResult::TailCall(f, a) => r = crate::eval::apply(f, a, engine)?,
+                _ => return Err(EvalError::custom("unexpected recur in filter")),
+            }
         };
         if is_truthy(&v) {
             result.push_back(item.clone());
@@ -367,10 +374,13 @@ pub fn reduce_fn(args: Vector<Value>, engine: &dyn EvalEngine) -> Result<Value, 
     };
     let mut acc = init;
     for item in items {
-        let r = crate::eval::apply(func.clone(), vector![acc, item.clone()], engine)?;
-        acc = match r {
-            TailResult::Value(v) => v,
-            _ => return Err(EvalError::custom("unexpected recur in reduce")),
+        let mut r = crate::eval::apply(func.clone(), vector![acc, item.clone()], engine)?;
+        acc = loop {
+            match r {
+                TailResult::Value(v) => break v,
+                TailResult::TailCall(f, a) => r = crate::eval::apply(f, a, engine)?,
+                _ => return Err(EvalError::custom("unexpected recur in reduce")),
+            }
         };
     }
     Ok(acc)
@@ -392,8 +402,14 @@ pub fn apply_fn(args: Vector<Value>, engine: &dyn EvalEngine) -> Result<Value, E
     } else {
         Vector::new()
     };
-    let result = crate::eval::apply(func, arg_list, engine)?;
-    Ok(result.into_value())
+    let mut result = crate::eval::apply(func, arg_list, engine)?;
+    loop {
+        match result {
+            TailResult::Value(v) => return Ok(v),
+            TailResult::TailCall(f, a) => result = crate::eval::apply(f, a, engine)?,
+            _ => return Err(EvalError::custom("unexpected recur in apply")),
+        }
+    }
 }
 
 // ── Collection Access ──────────────────────────────────────────────
