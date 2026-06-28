@@ -286,10 +286,18 @@ pub fn cdr(args: Vector<Value>, _engine: &dyn EvalEngine) -> Result<Value, EvalE
     }
     match &args[0] {
         Value::List(l) => {
+            if l.is_empty() {
+                return Ok(Value::Nil);
+            }
             let mut rest = l.clone();
             rest.pop_front();
-            Ok(Value::List(rest))
+            if rest.is_empty() {
+                Ok(Value::Nil) // (cdr '(x)) → nil
+            } else {
+                Ok(Value::List(rest))
+            }
         }
+        Value::Nil => Ok(Value::Nil), // (cdr nil) → nil
         other => Err(EvalError::type_error("list", other.value_type())),
     }
 }
@@ -502,6 +510,63 @@ pub fn mod_fn(args: Vector<Value>, _engine: &dyn EvalEngine) -> Result<Value, Ev
     Ok(Value::Integer(a % b))
 }
 
+
+// ── Map Operations ────────────────────────────────────────────────
+
+/// (put map key val) → new map — assoc key-value.
+pub fn put_fn(args: Vector<Value>, _engine: &dyn EvalEngine) -> Result<Value, EvalError> {
+    if args.len() != 3 {
+        return Err(EvalError::wrong_arg_count(3, args.len()));
+    }
+    let m = match &args[0] {
+        Value::Map(m) => m.clone(),
+        other => return Err(EvalError::type_error("map", other.value_type())),
+    };
+    Ok(Value::Map(m.update(args[1].clone(), args[2].clone())))
+}
+// ── Type Conversion ────────────────────────────────────────────────
+
+/// (str ...) → string — concatenate args. Does not add quotes to strings.
+pub fn str_fn(args: Vector<Value>, _engine: &dyn EvalEngine) -> Result<Value, EvalError> {
+    let result: String = args.iter().map(|v| match v {
+        Value::String(s) => s.clone(),
+        other => format!("{other}"),
+    }).collect();
+    Ok(Value::String(result))
+}
+
+/// (keyword x) → keyword — convert string or symbol to keyword.
+pub fn keyword_fn(args: Vector<Value>, _engine: &dyn EvalEngine) -> Result<Value, EvalError> {
+    if args.len() != 1 {
+        return Err(EvalError::wrong_arg_count(1, args.len()));
+    }
+    let s = match &args[0] {
+        Value::String(s) => s.clone(),
+        Value::Symbol(s) => s.clone(),
+        Value::Keyword(k) => return Ok(Value::Keyword(k.clone())),
+        other => return Err(EvalError::type_error("string, symbol, or keyword", other.value_type())),
+    };
+    Ok(Value::Keyword(s))
+}
+
+/// (symbol x) → symbol — convert string or keyword to symbol.
+pub fn symbol_fn(args: Vector<Value>, _engine: &dyn EvalEngine) -> Result<Value, EvalError> {
+    if args.len() != 1 {
+        return Err(EvalError::wrong_arg_count(1, args.len()));
+    }
+    let s = match &args[0] {
+        Value::String(s) => s.clone(),
+        Value::Symbol(s) => return Ok(Value::Symbol(s.clone())),
+        Value::Keyword(k) => k.clone(),
+        other => return Err(EvalError::type_error("string, symbol, or keyword", other.value_type())),
+    };
+    Ok(Value::Symbol(s))
+}
+
+/// (vector ...) → vector — create a vector from arguments.
+pub fn vector_fn(args: Vector<Value>, _engine: &dyn EvalEngine) -> Result<Value, EvalError> {
+    Ok(Value::Vector(args))
+}
 // ── I/O ────────────────────────────────────────────────────────────
 pub fn println(args: Vector<Value>, _engine: &dyn EvalEngine) -> Result<Value, EvalError> {
     let s: String = args
@@ -781,6 +846,15 @@ pub fn setup_env(env: &Arc<Env>) {
     env.set("char->integer".into(), Value::NativeFunction(NativeFn::new("char->integer", char_to_integer)));
     env.set("integer->char".into(), Value::NativeFunction(NativeFn::new("integer->char", integer_to_char)));
     env.set("char=?".into(), Value::NativeFunction(NativeFn::new("char=?", char_eq)));
+
+    // Map operations
+    env.set("put".into(), Value::NativeFunction(NativeFn::new("put", put_fn)));
+
+    // Type conversion
+    env.set("str".into(), Value::NativeFunction(NativeFn::new("str", str_fn)));
+    env.set("keyword".into(), Value::NativeFunction(NativeFn::new("keyword", keyword_fn)));
+    env.set("symbol".into(), Value::NativeFunction(NativeFn::new("symbol", symbol_fn)));
+    env.set("vector".into(), Value::NativeFunction(NativeFn::new("vector", vector_fn)));
 
     // Macroexpand
     env.set("macroexpand-1".into(), Value::NativeFunction(NativeFn::new("macroexpand-1", macroexpand_1_fn)));

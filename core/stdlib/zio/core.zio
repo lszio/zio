@@ -13,6 +13,28 @@
 (defn inc [x] (+ x 1))
 (defn dec [x] (- x 1))
 
+;; ── Data Structures ───────────────────────────────────────────
+
+(defmacro defstruct [name fields]
+  ;; Accept [x y] or (x y); convert to list for uniform processing
+  (let* [flds (if (vector? fields) (apply list fields) fields)
+        build-result
+        (fn [fld-list]
+          (loop [r fld-list m {}]
+            (if (nil? r)
+              m
+              (recur (cdr r)
+                (put m (keyword (car r)) (car r))))))
+        defn-form (list 'defn name (apply vector flds) (build-result flds))
+        accessor-forms
+        (map (fn [field]
+          (let [acc-name (symbol (str name "-" field))]
+            (list 'defn acc-name (vector 'obj)
+              (list 'get 'obj (keyword field)))))
+          flds)]
+    ;; (cons 'do (cons defn-form accessor-forms)) → (do defn-form acc1 acc2 ...)
+    (cons 'do (cons defn-form accessor-forms))))
+
 ;; ── Logical ──────────────────────────────────────────────────
 
 (defn not [x] (if x false true))

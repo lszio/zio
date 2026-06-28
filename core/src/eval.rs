@@ -647,4 +647,34 @@ mod tests {
         let result = eval_in_context(&s, &ctx).unwrap();
         assert_eq!(result.to_string(), "true");
     }
+
+    #[test]
+    fn test_defstruct() {
+        // defstruct creates constructor + accessors via stdlib macro.
+        // Load the full stdlib wrapped in (do ...) like the CLI does.
+        let ctx = make_ctx();
+        let stdlib = include_str!("../stdlib/zio/core.zio");
+        let wrapped = format!("(do\n{stdlib}\n)");
+        let s = test_read(&wrapped).unwrap();
+        eval_in_context(&s, &ctx).unwrap();
+
+        // Now define a struct and use it
+        let s = test_read("(defstruct point [x y])").unwrap();
+        eval_in_context(&s, &ctx).unwrap();
+        let s = test_read("(def p (point 10 20))").unwrap();
+        eval_in_context(&s, &ctx).unwrap();
+
+        let s = test_read("(point-x p)").unwrap();
+        let result = eval_in_context(&s, &ctx).unwrap();
+        assert_eq!(result, Value::Integer(10), "point-x should be 10");
+
+        let s = test_read("(point-y p)").unwrap();
+        let result = eval_in_context(&s, &ctx).unwrap();
+        assert_eq!(result, Value::Integer(20), "point-y should be 20");
+
+        // Verify it's a map
+        let s = test_read("(map? p)").unwrap();
+        let result = eval_in_context(&s, &ctx).unwrap();
+        assert_eq!(result, Value::Boolean(true), "struct should be a map");
+    }
 }
