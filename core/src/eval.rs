@@ -98,10 +98,10 @@ fn eval_inner(expr: &Sexp, env: &Arc<Env>, tail: bool, engine: &dyn EvalEngine) 
         Sexp::Char(c, _) => Ok(TailResult::Value(Value::Char(*c))),
 
         // Symbol lookup
-        Sexp::Symbol(s, _) => env
+        Sexp::Symbol(s, span) => env
             .get(s)
             .map(TailResult::Value)
-            .ok_or_else(|| EvalError::symbol_not_found(s.clone())),
+            .ok_or_else(|| EvalError::symbol_not_found(s.clone()).with_opt_span(*span)),
 
         // Empty list evaluates to nil
         Sexp::List(list, _) if list.is_empty() => Ok(TailResult::Value(Value::Nil)),
@@ -634,6 +634,24 @@ mod tests {
             Value::Integer(1), Value::Integer(2), Value::Integer(3),
         ]));
 }
+
+    #[test]
+    fn test_error_span_display() {
+        // Verify that EvalError Display includes span info when available.
+        // This tests the with_opt_span mechanism.
+        use crate::span::{BytePos, Span, SourceId};
+        let span = Span {
+            source_id: SourceId::NONE,
+            start: BytePos(5),
+            end: BytePos(8),
+            line: 1,
+            col: 6,
+        };
+        let err = EvalError::symbol_not_found("foo").with_opt_span(Some(span));
+        let msg = err.to_string();
+        assert!(msg.contains("symbol not found: foo"), "msg: {msg}");
+        assert!(msg.contains("at line 1, col 6"), "msg should contain position, got: {msg}");
+    }
     #[test]
     fn test_tco_mutual_recursion() {
         // Tail-call optimization for mutual recursion.

@@ -14,7 +14,6 @@ pub enum ReaderError {
 }
 
 /// Source location context attached to evaluation errors.
-/// The `#[source]` annotation satisfies thiserror's requirement.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SpanContext {
     pub span: Option<Span>,
@@ -31,9 +30,10 @@ impl SpanContext {
         SpanContext { span: Some(span) }
     }
 
-    pub fn display(&self) -> String {
+    /// Return the formatted span location string, empty if no span.
+    pub fn location(&self) -> String {
         match &self.span {
-            Some(s) => format!(" at {}:{}", s.line, s.col),
+            Some(s) => format!(" at line {}, col {}", s.line, s.col),
             None => String::new(),
         }
     }
@@ -56,71 +56,87 @@ impl std::fmt::Display for SpanContext {
     }
 }
 
-#[derive(Error, Debug, Clone, PartialEq)]
+/// Evaluation errors with optional source location.
+/// Display implementation includes span info when available.
+#[derive(Debug, Clone, PartialEq)]
 pub enum EvalError {
-    #[error("Symbol not found: {0}")]
-    SymbolNotFound(String, #[source] SpanContext),
-
-    #[error("Not a function: {value}")]
+    SymbolNotFound(String, SpanContext),
     NotAFunction {
         value: String,
         span: SpanContext,
     },
-
-    #[error("Wrong argument count: expected {expected}, got {got}")]
     WrongArgCount {
         expected: usize,
         got: usize,
         span: SpanContext,
     },
-
-    #[error("Wrong argument count: expected at least {min}, got {got}")]
     WrongArgCountMin {
         min: usize,
         got: usize,
         span: SpanContext,
     },
-
-    #[error("Wrong argument count: expected between {min} and {max}, got {got}")]
     WrongArgCountRange {
         min: usize,
         max: usize,
         got: usize,
         span: SpanContext,
     },
-
-    #[error("Index out of bounds: index {index} but length is {length}")]
     IndexOutOfBounds {
         index: usize,
         length: usize,
         span: SpanContext,
     },
-
-    #[error("Type error: expected {expected}, got {got}")]
     TypeError {
         expected: &'static str,
         got: String,
         span: SpanContext,
     },
-
-    #[error("Division by zero")]
-    DivisionByZero { span: SpanContext },
-
-    #[error("Invalid form: {0}")]
-    InvalidForm(String, #[source] SpanContext),
-
-    #[error("Macro error: {0}")]
-    MacroError(String, #[source] SpanContext),
-
-    #[error("recur not in tail position")]
-    RecurNotTail { span: SpanContext },
-
-    #[error("recur without loop frame")]
-    RecurWithoutLoop { span: SpanContext },
-
-    #[error("{0}")]
-    Custom(String, #[source] SpanContext),
+    DivisionByZero {
+        span: SpanContext,
+    },
+    InvalidForm(String, SpanContext),
+    MacroError(String, SpanContext),
+    RecurNotTail {
+        span: SpanContext,
+    },
+    RecurWithoutLoop {
+        span: SpanContext,
+    },
+    Custom(String, SpanContext),
 }
+
+impl std::fmt::Display for EvalError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        use EvalError::*;
+        match self {
+            SymbolNotFound(s, ctx) => write!(f, "symbol not found: {s}{}", ctx.location()),
+            NotAFunction { value, span: ctx } => write!(f, "not a function: {value}{}", ctx.location()),
+            WrongArgCount { expected, got, span: ctx } => {
+                write!(f, "wrong argument count: expected {expected}, got {got}{}", ctx.location())
+            }
+            WrongArgCountMin { min, got, span: ctx } => {
+                write!(f, "wrong argument count: expected at least {min}, got {got}{}", ctx.location())
+            }
+            WrongArgCountRange { min, max, got, span: ctx } => {
+                write!(f, "wrong argument count: expected between {min} and {max}, got {got}{}", ctx.location())
+            }
+            IndexOutOfBounds { index, length, span: ctx } => {
+                write!(f, "index out of bounds: index {index} but length is {length}{}", ctx.location())
+            }
+            TypeError { expected, got, span: ctx } => {
+                write!(f, "type error: expected {expected}, got {got}{}", ctx.location())
+            }
+            DivisionByZero { span: ctx } => write!(f, "division by zero{}", ctx.location()),
+            InvalidForm(msg, ctx) => write!(f, "invalid form: {msg}{}", ctx.location()),
+            MacroError(msg, ctx) => write!(f, "macro error: {msg}{}", ctx.location()),
+            RecurNotTail { span: ctx } => write!(f, "recur not in tail position{}", ctx.location()),
+            RecurWithoutLoop { span: ctx } => write!(f, "recur without loop frame{}", ctx.location()),
+            Custom(msg, ctx) => write!(f, "{msg}{}", ctx.location()),
+        }
+    }
+}
+
+impl std::error::Error for EvalError {}
 
 // ── Convenience constructors (default to Span DUMMY) ────────────
 
@@ -206,9 +222,7 @@ impl EvalError {
             span: SpanContext::DUMMY,
         }
     }
-}
 
-impl EvalError {
     /// Attach a source location to this error.
     pub fn with_span(self, span: Span) -> Self {
         let ctx = SpanContext { span: Some(span) };
@@ -227,5 +241,25 @@ impl EvalError {
             Self::RecurWithoutLoop { .. } => Self::RecurWithoutLoop { span: ctx },
             Self::Custom(s, _) => Self::Custom(s, ctx),
         }
+    }
+
+    /// Attach an optional source location (no-op if None).
+    pub fn with_opt_span(self, span: Option<Span>) -> Self {
+        match span {
+            Some(s) => self.with_span(s),
+            None => self,
+        }
+    }
+}
+
+impl std::cmp::PartialEq<str> for EvalError {
+    fn eq(&self, other: &str) -> bool {
+        self.to_string() == other
+    }
+}
+
+impl From<std::convert::Infallible> for EvalError {
+    fn from(x: std::convert::Infallible) -> Self {
+        match x {}
     }
 }
