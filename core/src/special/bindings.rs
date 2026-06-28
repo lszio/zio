@@ -83,8 +83,8 @@ pub fn do_fn(args: &[Sexp], env: &Arc<Env>) -> Result<TailResult, EvalError> {
 // ── defmacro ─────────────────────────────────────────────────────
 
 pub fn do_defmacro(args: &[Sexp], env: &Arc<Env>, _engine: &dyn EvalEngine) -> Result<TailResult, EvalError> {
-    if args.len() < 3 {
-        return Err(EvalError::wrong_arg_count_min(3, args.len()));
+    if args.len() < 2 {
+        return Err(EvalError::wrong_arg_count_min(2, args.len()));
     }
     let name = match &args[0] {
         Sexp::Symbol(s, _) => s.clone(),
@@ -92,11 +92,25 @@ pub fn do_defmacro(args: &[Sexp], env: &Arc<Env>, _engine: &dyn EvalEngine) -> R
             format!("defmacro requires a symbol, got {}", other.kind()),
         )),
     };
-    let (params, rest_param) = parse_params(&args[1])?;
-    let body = if args.len() == 3 {
-        args[2].clone()
+
+    // Check if this is a syntax-rules macro (no explicit params)
+    let is_syntax_rules = matches!(&args[1], Sexp::List(list, _) if !list.is_empty()
+        && matches!(&list[0], Sexp::Symbol(s, _) if s == "syntax-rules"));
+
+    let (params, rest_param, body) = if is_syntax_rules {
+        // syntax-rules: capture all args as variadic, body is the rules form
+        (im::vector!["_args".into()], Some("_args".into()), args[1].clone())
     } else {
-        Sexp::List(args[2..].iter().cloned().collect(), None)
+        if args.len() < 3 {
+            return Err(EvalError::wrong_arg_count_min(3, args.len()));
+        }
+        let (params, rest_param) = parse_params(&args[1])?;
+        let body = if args.len() == 3 {
+            args[2].clone()
+        } else {
+            Sexp::List(args[2..].iter().cloned().collect(), None)
+        };
+        (params, rest_param, body)
     };
 
     let macro_val = Value::Macro(Arc::new(Macro {

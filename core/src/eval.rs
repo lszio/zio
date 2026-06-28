@@ -709,4 +709,38 @@ mod tests {
         let result = eval_in_context(&s, &ctx).unwrap();
         assert_eq!(result, Value::Boolean(true), "struct should be a map");
     }
+
+    #[test]
+    fn test_syntax_rules_macro() {
+        let ctx = make_ctx();
+
+        // (unless test body) → (if test nil body)
+        let s = test_read("(defmacro unless
+          (syntax-rules ()
+            ((_ test body) (if test nil body))))").unwrap();
+        eval_in_context(&s, &ctx).unwrap();
+
+        let s = test_read("(unless false 42)").unwrap();
+        let result = eval_in_context(&s, &ctx).unwrap();
+        assert_eq!(result, Value::Integer(42));
+
+        let s = test_read("(unless true 42)").unwrap();
+        let result = eval_in_context(&s, &ctx).unwrap();
+        assert_eq!(result, Value::Nil);
+
+        // Macro with literal symbol matching
+        // (define name value) → (def name value)
+        let s = test_read("(defmacro define
+          (syntax-rules ()
+            ((_ name value) (def name value))))").unwrap();
+        eval_in_context(&s, &ctx).unwrap();
+
+        let s = test_read("(define x 42)").unwrap();
+        let result = eval_in_context(&s, &ctx).unwrap();
+        assert_eq!(result, Value::Integer(42));
+
+        let s = test_read("x").unwrap();
+        let result = eval_in_context(&s, &ctx).unwrap();
+        assert_eq!(result, Value::Integer(42));
+    }
 }
