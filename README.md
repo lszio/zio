@@ -16,16 +16,17 @@ Zio 是一门面向未来的通用 Lisp 语言，用 Rust 实现。当前处于 
 
 ## 哲学
 
-Zio 不是另一个 Lisp 方言 —— 而是 **CLOS 的对象模型（AMOP）+ Scheme 的卫生宏 + Clojure 的持久化数据 + Rust 的系统能力** 在同一个个运行时上的融合。
+Zio 是一门以同像性（homoiconicity）为基石的 Lisp 语言。代码即数据，数据即代码。
+宏系统让用户拥有与语言实现者相同的扩展能力。
 
-```
+```text
 Zio = Lisp 核心（同像性 + eval/apply + 宏）
     + Rust 宿主（FFI + 嵌入 + 零开销）
     + 统一运行时对象模型（ZOS：AMOP + MOP）
     + 扩展库生态（Datalog · Agent · 自学习）
 ```
 
-核心原则：**核心最小，其余是库**。Datalog、Agent、自学习模型框架都是通过 宏 + MOP 构建的扩展库，不进入语言核心。
+核心原则：**核心最小，其余是库**。Datalog、Agent、自学习模型框架都是通过宏 + MOP 构建的 `.zio` 扩展库，不进入核心。
 
 详细哲学：[docs/zio-philosophy.md](docs/zio-philosophy.md)
 

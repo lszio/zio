@@ -40,7 +40,7 @@ ZOS 中的类型描述符。定义对象的结构（槽位）、继承关系（s
 
 ### Condition System
 
-Common Lisp 风格的条件恢复系统。比传统异常处理更灵活：不抛出异常，而是 signal condition 并允许调用者选择修复策略（restart）。
+带恢复选项的错误处理系统。不简单地抛出异常，而是 signal condition 并允许调用者从多个 restart 中选择修复策略。
 
 ### Call-next-method
 

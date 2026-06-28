@@ -8,33 +8,39 @@
 
 ### 1.1 Zio 是什么？
 
+Zio 是一门以同像性（homoiconicity）为基石的通用 Lisp 语言。代码即数据，数据即代码。宏在语法域变换程序，eval 在运行时域执行程序。两个域通过 Sexp ↔ Value 转换桥接。
+
+在此基础上，Zio 构建了：
+
 ```text
-Zio = Lisp 核心 (同像性 + eval/apply + 宏)
-    + Rust 宿主 (FFI + 嵌入 + 零开销)
-    + 统一运行时对象模型 (ZOS: CLOS AMOP + MOP)
-    + 扩展库生态 (Datalog · Agent · AutoML · Clojure)
+Zio = 核心语言
+    ├── Lisp 核心（Sexp + eval/apply + 宏）
+    ├── ZOS（AMOP 运行时对象模型：Class · GF · Method · MOP · Package · Condition）
+    └── Rust 宿主（零开销嵌入 · EvalEngine trait · NativeFn）
 ```
 
-Zio 不是另一个 Schema 方言，不是另一个 Rust 脚本语言，也不是另一个 CL 克隆。Zio 是**三者**的融合——在同一个运行时之上，以同像性为中层语言，以 Rust 为系统层，以 ZOS 为运行时对象协议。
+所有领域能力（Datalog、Agent、持久化集合等）都是通过宏 + MOP 构建的 `.zio` 扩展库，不进入核心。
 
 ### 1.2 核心命题
 
+同像性是 Zio 的根。一切特性由此推导：
+
 ```text
-Lisp = S-expressions + eval/apply
-     = 同像性 (homoiconicity)
-     = 代码即数据 → 面向语言编程
-     = 交互式开发 → REPL 原生
+同像性 → 宏系统 → 用户拥有与语言实现者相同的扩展能力
+       → 代码可被程序读取、变换、生成
+       → eval/apply 是元循环求值器
+       → eval(env, expr) = agent(state, action)
 ```
 
 Zio 的扩充分解：
 
 ```text
-Zio = Lisp 核心
-    + Rust 零开销嵌入
-    + ZOS (AMOP + MOP + 多分派)
-    + 宏系统 (模式匹配 → 显式重命名)
-    + 扩展库 (Datalog · Agent · 自学习)
-    + 自举工具链 (编辑器 · LSP · Debugger)
+Zio = Lisp 核心（同像性 + eval/apply + 宏）
+    + Rust 宿主（FFI + 嵌入 + 零开销）
+    + ZOS（AMOP + MOP + 多分派）
+    + 宏系统（模式匹配 → 显式重命名）
+    + 扩展库（Datalog · Agent · 自学习）
+    + 自举工具链（编辑器 · LSP · Debugger）
 ```
 
 ---
@@ -78,16 +84,12 @@ Zio = Lisp 核心
 ## 3 设计原则
 
 ### 3.1 最小（Minimal）
-
-## 4 特性来源与整合
-Zio 从以下语言借鉴设计，但所有扩展特性都由 Zio 语言本身（通过宏 + `.zio` 库）实现，不是 Rust crate：
+核心保持尽可能小。ZOS 只提供运行时最基本的能力——Object、Class、Generic Function、Method、Package、Condition。任何领域能力都不进入 Core。
 
 ### 3.2 正交（Orthogonal）
-
 各模块互相独立。Class 不依赖 Entity。Generic Function 不依赖 Database。MOP 不依赖 Graph。正交性确保每个概念可以独立理解和测试。
 
 ### 3.3 可扩展（Extensible）
-
 任何高级能力通过以下途径构建：
 
 ```
@@ -100,58 +102,51 @@ Library      → 模块级扩展
 四个扩展点形成**递进系统**：从最轻量的 Reader Macro 到最重量级的 MOP。
 
 ### 3.4 运行时优先（Runtime First）
-
 ZOS 描述的是**运行时对象**，不是语言语法。Reader、Macro、Compiler 负责**生成**对象；ZOS 负责**运行**这些对象。
 
-### 4.1 关于 Clojure
-Clojure 风格的不可变数据、atom/ref/agent、序列抽象等，在 Zio 中都属于扩展库——`lib/zio/persistent.zio`、`lib/zio/agent/*.zio`。它们通过宏构建在核心之上，用 Zio 语言本身实现，不是 Rust crate。这意味着：
-- 纯 Zio 实现：库代码就是 `.zio` 文件
-- 宏驱动：语言特性通过宏定义，不修改核心
-- 用户可读：实现源码就是文档
-- 如果社区需要更符合 Clojure 习惯的 API，可以通过宏贡献
-
+### 3.5 机制而非策略（Mechanism over Policy）
 ZOS 只提供机制，不提供策略。Multiple Dispatch 是机制；Protocol 是策略。Immutable Entity、Datomic、AI Runtime 都是策略——全部通过宏 + MOP 构建。
 
 ---
 
-## 4 特性来源与整合
+## 4 核心特性
 
-Zio 从以下语言借鉴设计，但在一个统一的运行时中重新整合：
+Zio 的核心特性构成一个自洽的整体，不是其他语言特性的组合：
 
-| 来源 | 特性 | 整合方式 |
-|------|------|----------|
-| **Common Lisp** | CLOS / AMOP / MOP | ZOS 核心模型 |
-| **Common Lisp** | Condition/Restart System | ZOS Condition (简化 Phase 1) |
-| **Common Lisp** | Package / 符号管理 | ZOS Package |
-| **Common Lisp** | Generic Function / Multiple Dispatch | ZOS GF (4-参数缓存) |
-| **Common Lisp** | Meta Object Protocol | ZOS MOP (Phase 2) |
-| **Scheme R5RS** | 卫生宏 (syntax-rules) | Phase 3 — 模式匹配宏 |
-| **Scheme** | 隐式尾调用优化 (TCO) | Phase 1 — 所有尾位置 |
-| **Clojure** | 持久化数据结构 (im) | Value 默认实现 |
-| **Clojure** | 不可变数据优先 | 库: zio-persistent |
-| **Rust** | 零开销嵌入 + FFI | 宿主层 |
-| **Rust** | 代数类型 + Result | 内部实现基础设施 |
+| 特性 | 归属 | 说明 |
+|------|------|------|
+| **同像性** | 核心语言 | 代码即数据，宏在 Sexp 域变换 |
+| **AMOP / MOP** | ZOS | 统一运行时对象模型 + 元对象协议 |
+| **Generic Function / 多分派** | ZOS | 基于全部参数类型的行为分派 |
+| **Condition / Restart** | ZOS | 带恢复选项的错误处理系统 |
+| **Package** | ZOS | 符号命名空间管理 |
+| **卫生宏（模式匹配）** | 核心语言 | 自动重命名的模式匹配宏 |
+| **尾调用优化** | 核心语言 | 所有尾位置不建帧 |
+| **持久化数据结构** | 核心语言 | 不可变 + 结构共享（im crate） |
+| **零开销嵌入** | Rust 宿主 | 任意 Rust 程序可嵌入 Zio |
 
-### 4.1 关于 Clojure
+### 4.1 扩展库（纯 Zio 实现）
+所有领域能力都是通过宏 + MOP 构建的 `.zio` 库，不进入核心：
 
-Clojure 风格的不可变数据、atom/ref/agent、序列抽象等，在 Zio 中都属于库——`zio-persistent`、`zio-concurrent`。它们通过宏 + MOP 构建在 ZOS 之上，不进入语言核心。这意味着：
-- 如果社区需要更符合 Clojure 习惯的 API，可以贡献库
-- 如果 Clojure 风格的某些设计不适合 Zio 路径，核心不会受其约束
-- 用户可以选择使用 CLOS 风格、Clojure 风格或混合风格
+| 库 | 目录 | 说明 |
+|----|------|------|
+| `zio-persistent` | `lib/zio/persistent.zio` | 持久化集合（Vector / Map / Set） |
+| `zio-datalog` | `lib/zio/datalog.zio` | 内存 Datalog 数据库 |
+| `zio-agent` | `lib/zio/agent/` | Agent 编排框架 |
+| `zio-entity` | `lib/zio/entity.zio` | 带身份的对象 |
+| `zio-protocol` | `lib/zio/protocol.zio` | Protocol 系统 |
 
-### 4.2 关于自举
-
-Zio 的自举路径不是「编译器用 Zio 写」，而是**工具链自举**：
+### 4.2 自举
+Zio 的自举路径是**工具链自举**，不是「编译器用 Zio 写」：
 
 ```
-Phase 1-2: Rust 实现核心语言 + CL REPL
+Phase 1-2: Rust 实现核心语言 + REPL
 Phase 3-4: Zio 语言成熟 → 能写实质性程序
 Phase 5+:  用 Zio 编写编辑器（语法高亮 + REPL 集成）
 Phase 7+:  编辑器具备 LSP 能力（用 Zio 写）
 ```
 
-当一个用 Zio 写的 Zio 编辑器成为主要开发界面时，语言就完成了工具链自举。这是比「编译器自举」更务实、更有用户价值的自举目标。
-
+当一个用 Zio 写的 Zio 编辑器成为主要开发界面时，语言就完成了工具链自举。
 ---
 
 ## 5 什么是 ZOS
@@ -260,7 +255,7 @@ ZOS（Zio Object System）是 Zio 的统一运行时对象模型。它不是传�
 (def agent (agent "assistant" "help user" [calculator]))
 (agent/run agent "calculate 2^10")
 
-;; Clojure 风格集合（库）
+;; 持久化集合（库）
 (require :zio.persistent)
 (def m (assoc {} :a 1 :b 2))
 (get m :a)            ;; → 1
@@ -277,11 +272,9 @@ ZOS（Zio Object System）是 Zio 的统一运行时对象模型。它不是传�
 3. **嵌入优先**：任何 Rust 程序都可以嵌入 Zio，无需异步运行时
 4. **宏优先**：新语言特性首选宏方案，特殊形式为最后手段
 5. **渐进用户**：从简单脚本到复杂系统编程，体验平滑
-
 ### 8.2 我们不承诺
 
-1. ANSI CLOS 完全兼容（ZOS 是子集 + 演化）
-2. Clojure API 兼容（Clojure 风格是库，不是核心）
-3. Scheme R6RS 兼容（只借鉴卫生宏模式匹配）
-4. Python/JS 性能竞争力（目标是 LuaJIT 级别）
-5. 无 GC（当前借用 Arc + im 结构共享）
+1. 与其他 Lisp 方言的完全兼容（ZOS 是自己的对象模型，不是移植）
+2. Java / JS / Python 生态兼容性（Zio 通过 Rust FFI 与 C ABI 对接）
+3. 无 GC 性能担保（当前使用 Arc + im 结构共享，不引入追踪式 GC）
+4. 通过 AOT 编译达到原生性能（Phase 6 JIT 是可选加速器，非硬依赖）

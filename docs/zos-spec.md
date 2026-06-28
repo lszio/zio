@@ -8,7 +8,7 @@
 
 ### 1.1 什么是 ZOS
 
-ZOS（Zio Object System）是 Zio 语言的统一运行时对象模型（Unified Runtime Object Model）。它借鉴 Common Lisp CLOS 的设计思想，但不是 ANSI CLOS 的完全兼容实现。ZOS 在保持核心简洁的前提下，为 Protocol、Entity、Graph、AI、Datalog 等高级能力提供统一的运行时基础。
+ZOS（Zio Object System）是 Zio 的统一运行时对象模型（Unified Runtime Object Model）。它定义了对象如何存在、类型如何组织、行为如何分派、运行时如何扩展——在一个统一协议之下，不绑定任何特定领域框架。
 
 **一句话定义**：ZOS 是 Zio 的 AMOP（A Metaobject Protocol）——一个运行时的对象结构、类型组织、行为分派、元编程协议。
 
