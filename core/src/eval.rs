@@ -91,28 +91,28 @@ fn eval_inner(expr: &Sexp, env: &Arc<Env>, tail: bool, engine: &dyn EvalEngine) 
         // Self-evaluating types
         Sexp::Nil => Ok(TailResult::Value(Value::Nil)),
         Sexp::Boolean(b) => Ok(TailResult::Value(Value::Boolean(*b))),
-        Sexp::Integer(i) => Ok(TailResult::Value(Value::Integer(*i))),
-        Sexp::Float(f) => Ok(TailResult::Value(Value::Float(*f))),
-        Sexp::String(s) => Ok(TailResult::Value(Value::String(s.clone()))),
-        Sexp::Keyword(k) => Ok(TailResult::Value(Value::Keyword(k.clone()))),
-        Sexp::Char(c) => Ok(TailResult::Value(Value::Char(*c))),
+        Sexp::Integer(i, _) => Ok(TailResult::Value(Value::Integer(*i))),
+        Sexp::Float(f, _) => Ok(TailResult::Value(Value::Float(*f))),
+        Sexp::String(s, _) => Ok(TailResult::Value(Value::String(s.clone()))),
+        Sexp::Keyword(k, _) => Ok(TailResult::Value(Value::Keyword(k.clone()))),
+        Sexp::Char(c, _) => Ok(TailResult::Value(Value::Char(*c))),
 
         // Symbol lookup
-        Sexp::Symbol(s) => env
+        Sexp::Symbol(s, _) => env
             .get(s)
             .map(TailResult::Value)
             .ok_or_else(|| EvalError::symbol_not_found(s.clone())),
 
         // Empty list evaluates to nil
-        Sexp::List(list) if list.is_empty() => Ok(TailResult::Value(Value::Nil)),
+        Sexp::List(list, _) if list.is_empty() => Ok(TailResult::Value(Value::Nil)),
 
         // List: special form, macro, or function call
-        Sexp::List(list) => {
+        Sexp::List(list, _) => {
             let first = &list[0];
             let args: Vec<Sexp> = list.iter().skip(1).cloned().collect();
 
             // Check if it's a symbol naming a special form
-            if let Sexp::Symbol(name) = first {
+            if let Sexp::Symbol(name, _) = first {
                 if let Some(result) =
                     eval_special_form(name, &args, env, tail, engine)?
                 {
@@ -126,7 +126,7 @@ fn eval_inner(expr: &Sexp, env: &Arc<Env>, tail: bool, engine: &dyn EvalEngine) 
             // Check if it's a macro — expand and re-evaluate
             if let Value::Macro(m) = &func_val {
                 // Try symbol-based expansion (fast path)
-                if let Sexp::Symbol(name) = first {
+                if let Sexp::Symbol(name, _) = first {
                     if let Some(expanded) = macros::try_expand_by_name(name, &args, env, engine)? {
                         return eval_inner(&expanded, env, tail, engine);
                     }
@@ -163,7 +163,7 @@ fn eval_inner(expr: &Sexp, env: &Arc<Env>, tail: bool, engine: &dyn EvalEngine) 
         }
 
         // Vector: evaluate each element
-        Sexp::Vector(v) => {
+        Sexp::Vector(v, _) => {
             let mut new_v = Vector::new();
             for item in v {
                 new_v.push_back(eval_inner(item, env, false, engine)?.into_value());
@@ -172,7 +172,7 @@ fn eval_inner(expr: &Sexp, env: &Arc<Env>, tail: bool, engine: &dyn EvalEngine) 
         }
 
         // Map: evaluate each key and value
-        Sexp::Map(m) => {
+        Sexp::Map(m, _) => {
             let mut new_m = im::HashMap::new();
             for (k, v) in m {
                 let k_val = eval_inner(k, env, false, engine)?.into_value();
@@ -271,7 +271,7 @@ mod tests {
             match token.as_str() {
                 "'" => {
                     let (inner, _) = test_read_tokens(tokens)?;
-                    let quoted = Sexp::List(im::vector![Sexp::Symbol("quote".into()), inner]);
+                    let quoted = Sexp::List(im::vector![Sexp::Symbol("quote".into(), None), inner], None);
                     if let Some(parent) = stack.last_mut() { parent.1.push_back(quoted); }
                     else { return Ok((quoted, tokens.peek().is_some())); }
                 }
@@ -282,14 +282,14 @@ mod tests {
                         return Err(ReaderError::UnexpectedToken(token));
                     }
                     let val = match open.as_str() {
-                        "(" => Sexp::List(items),
-                        "[" => Sexp::Vector(items),
+                        "(" => Sexp::List(items, None),
+                        "[" => Sexp::Vector(items, None),
                         "{" => {
                             if items.len() % 2 != 0 { return Err(ReaderError::OddMapElements); }
                             let mut map = im::HashMap::new();
                             let mut iter = items.into_iter();
                             while let Some(key) = iter.next() { let val = iter.next().unwrap(); map.insert(key, val); }
-                            Sexp::Map(map)
+                            Sexp::Map(map, None)
                         }
                         _ => unreachable!(),
                     };
@@ -319,17 +319,17 @@ mod tests {
                     }
                 } else { unescaped.push(c); }
             }
-            Sexp::String(unescaped)
-        } else if token.starts_with(':') { Sexp::Keyword(token[1..].to_string()) }
+            Sexp::String(unescaped, None)
+        } else if token.starts_with(':') { Sexp::Keyword(token[1..].to_string(), None) }
         else {
             match token {
                 "nil" => Sexp::Nil,
                 "true" => Sexp::Boolean(true),
                 "false" => Sexp::Boolean(false),
                 _ => {
-                    if let Ok(i) = token.parse::<i64>() { Sexp::Integer(i) }
-                    else if let Ok(f) = token.parse::<f64>() { Sexp::Float(f) }
-                    else { Sexp::Symbol(token.to_string()) }
+                    if let Ok(i) = token.parse::<i64>() { Sexp::Integer(i, None) }
+                    else if let Ok(f) = token.parse::<f64>() { Sexp::Float(f, None) }
+                    else { Sexp::Symbol(token.to_string(), None) }
                 }
             }
         }

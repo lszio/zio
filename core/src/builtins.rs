@@ -687,8 +687,8 @@ pub fn macroexpand_1_fn(args: Vector<Value>, engine: &dyn EvalEngine) -> Result<
     let sexp = macros::value_to_sexp(&args[0])?;
 
     match &sexp {
-        Sexp::List(list) if !list.is_empty() => {
-            if let Sexp::Symbol(name) = &list[0] {
+        Sexp::List(list, _) if !list.is_empty() => {
+            if let Sexp::Symbol(name, _) = &list[0] {
                 let macro_args: Vec<Sexp> = list.iter().skip(1).cloned().collect();
                 let env = engine.env();
                 if let Some(expanded) = macros::try_expand_by_name(name, &macro_args, env, engine)? {
@@ -712,8 +712,8 @@ pub fn macroexpand_fn(args: Vector<Value>, engine: &dyn EvalEngine) -> Result<Va
 
     loop {
         let next = match &current {
-            Sexp::List(list) if !list.is_empty() => {
-                if let Sexp::Symbol(name) = &list[0] {
+            Sexp::List(list, _) if !list.is_empty() => {
+                if let Sexp::Symbol(name, _) = &list[0] {
                     let macro_args: Vec<Sexp> = list.iter().skip(1).cloned().collect();
                     macros::try_expand_by_name(name, &macro_args, env, engine)?
                 } else {

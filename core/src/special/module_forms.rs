@@ -22,8 +22,8 @@ pub fn do_module(
 
     // Extract module name (keyword or symbol)
     let module_name = match &args[0] {
-        Sexp::Keyword(s) => s.split('.').map(|p| p.to_string()).collect::<Vec<_>>(),
-        Sexp::Symbol(s) => s.split('.').map(|p| p.to_string()).collect::<Vec<_>>(),
+        Sexp::Keyword(s, _) => s.split('.').map(|p| p.to_string()).collect::<Vec<_>>(),
+        Sexp::Symbol(s, _) => s.split('.').map(|p| p.to_string()).collect::<Vec<_>>(),
         other => {
             return Err(EvalError::invalid_form(
                 format!("module name must be a keyword or symbol, got {}", other.kind()),
@@ -75,8 +75,8 @@ pub fn do_require(
 
     // Parse module name from first arg (keyword or symbol)
     let module_name = match &args[0] {
-        Sexp::Keyword(s) => s.split('.').map(|p| p.to_string()).collect::<Vec<_>>(),
-        Sexp::Symbol(s) => s.split('.').map(|p| p.to_string()).collect::<Vec<_>>(),
+        Sexp::Keyword(s, _) => s.split('.').map(|p| p.to_string()).collect::<Vec<_>>(),
+        Sexp::Symbol(s, _) => s.split('.').map(|p| p.to_string()).collect::<Vec<_>>(),
         other => {
             return Err(EvalError::invalid_form(
                 format!("require requires a module name (keyword or symbol), got {}", other.kind()),
@@ -89,8 +89,8 @@ pub fn do_require(
         let mut syms = Vec::new();
         for arg in &args[1..] {
             match arg {
-                Sexp::Keyword(s) => syms.push(s.clone()),
-                Sexp::Symbol(s) => syms.push(s.clone()),
+                Sexp::Keyword(s, _) => syms.push(s.clone()),
+                Sexp::Symbol(s, _) => syms.push(s.clone()),
                 other => {
                     return Err(EvalError::invalid_form(
                         format!("require symbols must be keywords or symbols, got {}", other.kind()),

@@ -74,8 +74,8 @@ pub fn parse_bindings(
     binding_sexp: &Sexp,
 ) -> Result<(Vector<String>, Vec<&Sexp>), EvalError> {
     let items = match binding_sexp {
-        Sexp::Vector(v) => v.iter().collect::<Vec<_>>(),
-        Sexp::List(l) => l.iter().collect::<Vec<_>>(),
+        Sexp::Vector(v, _) => v.iter().collect::<Vec<_>>(),
+        Sexp::List(l, _) => l.iter().collect::<Vec<_>>(),
         other => {
             return Err(EvalError::invalid_form(
                 format!("bindings must be a vector or list, got {}", other.kind()),
@@ -92,7 +92,7 @@ pub fn parse_bindings(
     let mut iter = items.iter();
     while let (Some(name_sexp), Some(init)) = (iter.next(), iter.next()) {
         let name = match name_sexp {
-            Sexp::Symbol(s) => s.clone(),
+            Sexp::Symbol(s, _) => s.clone(),
             other => {
                 return Err(EvalError::invalid_form(
                     format!("binding name must be a symbol, got {}", other.kind()),
@@ -110,8 +110,8 @@ pub fn parse_params(
     param_sexp: &Sexp,
 ) -> Result<(Vector<String>, Option<String>), EvalError> {
     let items = match param_sexp {
-        Sexp::Vector(v) => v.clone(),
-        Sexp::List(l) => l.clone(),
+        Sexp::Vector(v, _) => v.clone(),
+        Sexp::List(l, _) => l.clone(),
         other => {
             return Err(EvalError::invalid_form(
                 format!("params must be a vector or list, got {}", other.kind()),
@@ -123,13 +123,13 @@ pub fn parse_params(
     let mut rest_seen = false;
     for item in items.iter() {
         match item {
-            Sexp::Symbol(s) if s == "&" => {
+            Sexp::Symbol(s, _) if s == "&" => {
                 rest_seen = true;
             }
-            Sexp::Symbol(s) if rest_seen => {
+            Sexp::Symbol(s, _) if rest_seen => {
                 rest_param = Some(s.clone());
             }
-            Sexp::Symbol(s) => {
+            Sexp::Symbol(s, _) => {
                 names.push_back(s.clone());
             }
             other => {
@@ -168,11 +168,11 @@ mod tests {
     #[test]
     fn test_parse_bindings() {
         let sexp = Sexp::Vector(vector![
-            Sexp::Symbol("x".into()),
-            Sexp::Integer(1),
-            Sexp::Symbol("y".into()),
-            Sexp::Integer(2),
-        ]);
+            Sexp::Symbol("x".into(), None),
+            Sexp::Integer(1, None),
+            Sexp::Symbol("y".into(), None),
+            Sexp::Integer(2, None),
+        ], None);
         let (names, inits) = parse_bindings(&sexp).unwrap();
         assert_eq!(names, vector!["x".to_string(), "y".to_string()]);
         assert_eq!(inits.len(), 2);
@@ -180,16 +180,16 @@ mod tests {
 
     #[test]
     fn test_parse_bindings_odd() {
-        let sexp = Sexp::Vector(vector![Sexp::Symbol("x".into())]);
+        let sexp = Sexp::Vector(vector![Sexp::Symbol("x".into(), None)], None);
         assert!(parse_bindings(&sexp).is_err());
     }
 
     #[test]
     fn test_parse_params() {
         let sexp = Sexp::Vector(vector![
-            Sexp::Symbol("a".into()),
-            Sexp::Symbol("b".into()),
-        ]);
+            Sexp::Symbol("a".into(), None),
+            Sexp::Symbol("b".into(), None),
+        ], None);
         let (names, rest) = parse_params(&sexp).unwrap();
         assert_eq!(names, vector!["a".to_string(), "b".to_string()]);
         assert!(rest.is_none());
@@ -198,10 +198,10 @@ mod tests {
     #[test]
     fn test_parse_params_variadic() {
         let sexp = Sexp::Vector(vector![
-            Sexp::Symbol("a".into()),
-            Sexp::Symbol("&".into()),
-            Sexp::Symbol("rest".into()),
-        ]);
+            Sexp::Symbol("a".into(), None),
+            Sexp::Symbol("&".into(), None),
+            Sexp::Symbol("rest".into(), None),
+        ], None);
         let (names, rest) = parse_params(&sexp).unwrap();
         assert_eq!(names, vector!["a".to_string()]);
         assert_eq!(rest, Some("rest".to_string()));
@@ -214,7 +214,7 @@ mod tests {
 
         let env = Arc::new(Env::new(None));
         let ctx = EvalContext::new(env.clone());
-        let body = [Sexp::Integer(1), Sexp::Integer(2)];
+        let body = [Sexp::Integer(1, None), Sexp::Integer(2, None)];
         let result = eval_last_body(&body, &env, false, &ctx).unwrap().into_value();
         assert_eq!(result, Value::Integer(2));
     }

@@ -27,8 +27,8 @@ pub fn do_macroexpand(args: &[Sexp], env: &Arc<Env>, engine: &dyn EvalEngine) ->
 
     let form = &args[0];
     match form {
-        Sexp::List(list) if !list.is_empty() => {
-            if let Sexp::Symbol(name) = &list[0] {
+        Sexp::List(list, _) if !list.is_empty() => {
+            if let Sexp::Symbol(name, _) = &list[0] {
                 let expanded_args: Vec<Sexp> = list.iter().skip(1).cloned().collect();
                 if let Some(expanded) = macros::try_expand_by_name(name, &expanded_args, env, engine)? {
                     return Ok(TailResult::Value(Value::from(expanded)));
@@ -50,7 +50,7 @@ mod tests {
     #[test]
     fn test_quote() {
         let _env = Arc::new(Env::new(None));
-        let args = [Sexp::Integer(42)];
+        let args = [Sexp::Integer(42, None)];
         let result = do_quote(&args).unwrap().into_value();
         assert_eq!(result, Value::Integer(42));
     }

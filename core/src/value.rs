@@ -179,19 +179,19 @@ impl From<Sexp> for Value {
         match s {
             Sexp::Nil => Value::Nil,
             Sexp::Boolean(b) => Value::Boolean(b),
-            Sexp::Integer(i) => Value::Integer(i),
-            Sexp::Float(f) => Value::Float(f),
-            Sexp::String(s) => Value::String(s),
-            Sexp::Symbol(s) => Value::Symbol(s),
-            Sexp::Keyword(k) => Value::Keyword(k),
-            Sexp::List(l) => Value::List(l.into_iter().map(Value::from).collect()),
-            Sexp::Vector(v) => Value::Vector(v.into_iter().map(Value::from).collect()),
-            Sexp::Map(m) => Value::Map(
+            Sexp::Integer(i, _) => Value::Integer(i),
+            Sexp::Float(f, _) => Value::Float(f),
+            Sexp::String(s, _) => Value::String(s),
+            Sexp::Symbol(s, _) => Value::Symbol(s),
+            Sexp::Keyword(k, _) => Value::Keyword(k),
+            Sexp::List(l, _) => Value::List(l.into_iter().map(Value::from).collect()),
+            Sexp::Vector(v, _) => Value::Vector(v.into_iter().map(Value::from).collect()),
+            Sexp::Map(m, _) => Value::Map(
                 m.into_iter()
                     .map(|(k, v)| (Value::from(k), Value::from(v)))
                     .collect(),
             ),
-            Sexp::Char(c) => Value::Char(c),
+            Sexp::Char(c, _) => Value::Char(c),
         }
     }
 }
@@ -321,10 +321,10 @@ mod tests {
     #[test]
     fn test_from_sexp() {
         let s = Sexp::List(vector![
-            Sexp::Symbol("+".into()),
-            Sexp::Integer(1),
-            Sexp::Integer(2)
-        ]);
+            Sexp::Symbol("+".into(), None),
+            Sexp::Integer(1, None),
+            Sexp::Integer(2, None),
+        ], None);
         let v: Value = s.into();
         assert_eq!(
             v,

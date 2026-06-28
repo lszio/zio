@@ -24,7 +24,7 @@ fn read_from_tokens(
             "'" => {
                 // Reader macro: 'x → (quote x)
                 let (inner, _) = read_from_tokens(tokens)?;
-                let quoted = Sexp::List(vector![Sexp::Symbol("quote".into()), inner]);
+                let quoted = Sexp::List(vector![Sexp::Symbol("quote".into(), None), inner], None);
                 if let Some(parent) = stack.last_mut() {
                     parent.1.push_back(quoted);
                 } else {
@@ -51,7 +51,7 @@ fn read_from_tokens(
                                 }
                             }
                         }
-                        let vec = Sexp::Vector(items);
+                        let vec = Sexp::Vector(items, None);
                         if let Some(parent) = stack.last_mut() {
                             parent.1.push_back(vec);
                         } else {
@@ -62,7 +62,7 @@ fn read_from_tokens(
                         // #{a b c} → (set a b c)
                         // Manually read items until matching "}"
                         let mut items = Vector::new();
-                        items.push_back(Sexp::Symbol("set".into()));
+                        items.push_back(Sexp::Symbol("set".into(), None));
                         loop {
                             match tokens.peek().map(|s| s.as_str()) {
                                 Some("}") => {
@@ -76,7 +76,7 @@ fn read_from_tokens(
                                 }
                             }
                         }
-                        let sexp = Sexp::List(items);
+                        let sexp = Sexp::List(items, None);
                         if let Some(parent) = stack.last_mut() {
                             parent.1.push_back(sexp);
                         } else {
@@ -94,9 +94,9 @@ fn read_from_tokens(
                             _ => return Err(ReaderError::UnexpectedToken(name.to_string())),
                         };
                         if let Some(parent) = stack.last_mut() {
-                            parent.1.push_back(Sexp::Char(ch));
+                            parent.1.push_back(Sexp::Char(ch, None));
                         } else {
-                            return Ok((Sexp::Char(ch), tokens.peek().is_some()));
+                            return Ok((Sexp::Char(ch, None), tokens.peek().is_some()));
                         }
                         }
                     Some(other) => {
@@ -121,8 +121,8 @@ fn read_from_tokens(
                     return Err(ReaderError::UnexpectedToken(token));
                 }
                 let val = match open.as_str() {
-                    "(" => Sexp::List(items),
-                    "[" => Sexp::Vector(items),
+                    "(" => Sexp::List(items, None),
+                    "[" => Sexp::Vector(items, None),
                     "{" => {
                         if items.len() % 2 != 0 {
                             return Err(ReaderError::OddMapElements);
@@ -133,7 +133,7 @@ fn read_from_tokens(
                             let val = iter.next().unwrap();
                             map.insert(key, val);
                         }
-                        Sexp::Map(map)
+                        Sexp::Map(map, None)
                     }
                     _ => unreachable!(),
                 };
@@ -184,9 +184,9 @@ fn parse_atom(token: &str) -> Sexp {
                 unescaped.push(c);
             }
         }
-        Sexp::String(unescaped)
+        Sexp::String(unescaped, None)
     } else if let Some(name) = token.strip_prefix(':') {
-        Sexp::Keyword(name.to_string())
+        Sexp::Keyword(name.to_string(), None)
     } else {
         match token {
             "nil" => Sexp::Nil,
@@ -194,11 +194,11 @@ fn parse_atom(token: &str) -> Sexp {
             "false" => Sexp::Boolean(false),
             _ => {
                 if let Ok(i) = token.parse::<i64>() {
-                    Sexp::Integer(i)
+                    Sexp::Integer(i, None)
                 } else if let Ok(f) = token.parse::<f64>() {
-                    Sexp::Float(f)
+                    Sexp::Float(f, None)
                 } else {
-                    Sexp::Symbol(token.to_string())
+                    Sexp::Symbol(token.to_string(), None)
                 }
             }
         }
@@ -211,12 +211,12 @@ mod tests {
 
     #[test]
     fn test_read_integer() {
-        assert_eq!(read("42"), Ok(Sexp::Integer(42)));
+        assert_eq!(read("42"), Ok(Sexp::Integer(42, None)));
     }
 
     #[test]
     fn test_read_symbol() {
-        assert_eq!(read("foo"), Ok(Sexp::Symbol("foo".into())));
+        assert_eq!(read("foo"), Ok(Sexp::Symbol("foo".into(), None)));
     }
 
     #[test]
@@ -224,20 +224,20 @@ mod tests {
         assert_eq!(
             read("(+ 1 (* 2 3))"),
             Ok(Sexp::List(vector![
-                Sexp::Symbol("+".into()),
-                Sexp::Integer(1),
+                Sexp::Symbol("+".into(), None),
+                Sexp::Integer(1, None),
                 Sexp::List(vector![
-                    Sexp::Symbol("*".into()),
-                    Sexp::Integer(2),
-                    Sexp::Integer(3)
-                ])
-            ]))
+                    Sexp::Symbol("*".into(), None),
+                    Sexp::Integer(2, None),
+                    Sexp::Integer(3, None)
+                ], None)
+            ], None))
         );
     }
 
     #[test]
     fn test_read_float() {
-        assert_eq!(read("3.5"), Ok(Sexp::Float(3.5)));
+        assert_eq!(read("3.5"), Ok(Sexp::Float(3.5, None)));
     }
 
     #[test]
@@ -268,13 +268,13 @@ mod tests {
     fn test_read_string() {
         assert_eq!(
             read("\"hello (world)\""),
-            Ok(Sexp::String("hello (world)".into()))
+            Ok(Sexp::String("hello (world)".into(), None))
         );
     }
 
     #[test]
     fn test_read_keyword() {
-        assert_eq!(read(":foo"), Ok(Sexp::Keyword("foo".into())));
+        assert_eq!(read(":foo"), Ok(Sexp::Keyword("foo".into(), None)));
     }
 
     #[test]
@@ -282,10 +282,10 @@ mod tests {
         assert_eq!(
             read("[1 2 3]"),
             Ok(Sexp::Vector(vector![
-                Sexp::Integer(1),
-                Sexp::Integer(2),
-                Sexp::Integer(3)
-            ]))
+                Sexp::Integer(1, None),
+                Sexp::Integer(2, None),
+                Sexp::Integer(3, None)
+            ], None))
         );
     }
 
@@ -295,9 +295,9 @@ mod tests {
         assert_eq!(
             read("{:a 1 :b 2}"),
             Ok(Sexp::Map(hashmap! {
-                Sexp::Keyword("a".into()) => Sexp::Integer(1),
-                Sexp::Keyword("b".into()) => Sexp::Integer(2)
-            }))
+                Sexp::Keyword("a".into(), None) => Sexp::Integer(1, None),
+                Sexp::Keyword("b".into(), None) => Sexp::Integer(2, None)
+            }, None))
         );
     }
 
@@ -319,9 +319,9 @@ mod tests {
         assert_eq!(
             read("'42"),
             Ok(Sexp::List(vector![
-                Sexp::Symbol("quote".into()),
-                Sexp::Integer(42)
-            ]))
+                Sexp::Symbol("quote".into(), None),
+                Sexp::Integer(42, None)
+            ], None))
         );
     }
 
@@ -330,13 +330,13 @@ mod tests {
         assert_eq!(
             read("'(1 2 3)"),
             Ok(Sexp::List(vector![
-                Sexp::Symbol("quote".into()),
+                Sexp::Symbol("quote".into(), None),
                 Sexp::List(vector![
-                    Sexp::Integer(1),
-                    Sexp::Integer(2),
-                    Sexp::Integer(3)
-                ])
-            ]))
+                    Sexp::Integer(1, None),
+                    Sexp::Integer(2, None),
+                    Sexp::Integer(3, None)
+                ], None)
+            ], None))
         );
     }
 
@@ -345,12 +345,12 @@ mod tests {
         assert_eq!(
             read("''x"),
             Ok(Sexp::List(vector![
-                Sexp::Symbol("quote".into()),
+                Sexp::Symbol("quote".into(), None),
                 Sexp::List(vector![
-                    Sexp::Symbol("quote".into()),
-                    Sexp::Symbol("x".into())
-                ])
-            ]))
+                    Sexp::Symbol("quote".into(), None),
+                    Sexp::Symbol("x".into(), None)
+                ], None)
+            ], None))
         );
     }
 
@@ -365,10 +365,10 @@ mod tests {
         assert_eq!(
             read("#(1 2 3)"),
             Ok(Sexp::Vector(vector![
-                Sexp::Integer(1),
-                Sexp::Integer(2),
-                Sexp::Integer(3)
-            ]))
+                Sexp::Integer(1, None),
+                Sexp::Integer(2, None),
+                Sexp::Integer(3, None)
+            ], None))
         );
     }
 
@@ -376,7 +376,7 @@ mod tests {
     fn test_hash_paren_empty() {
         assert_eq!(
             read("#()"),
-            Ok(Sexp::Vector(Vector::new()))
+            Ok(Sexp::Vector(Vector::new(), None))
         );
     }
 
@@ -384,30 +384,30 @@ mod tests {
 
     #[test]
     fn test_hash_backslash_char() {
-        assert_eq!(read("#\\a"), Ok(Sexp::Char('a')));
-        assert_eq!(read("#\\Z"), Ok(Sexp::Char('Z')));
-        assert_eq!(read("#\\0"), Ok(Sexp::Char('0')));
+        assert_eq!(read("#\\a"), Ok(Sexp::Char('a', None)));
+        assert_eq!(read("#\\Z"), Ok(Sexp::Char('Z', None)));
+        assert_eq!(read("#\\0"), Ok(Sexp::Char('0', None)));
     }
 
     #[test]
     fn test_hash_backslash_space() {
-        assert_eq!(read("#\\space"), Ok(Sexp::Char(' ')));
+        assert_eq!(read("#\\space"), Ok(Sexp::Char(' ', None)));
     }
 
     #[test]
     fn test_hash_backslash_newline() {
-        assert_eq!(read("#\\newline"), Ok(Sexp::Char('\n')));
+        assert_eq!(read("#\\newline"), Ok(Sexp::Char('\n', None)));
     }
     fn test_hash_brace_set() {
         // #{a b c} → (set a b c)
         assert_eq!(
             read("#{a b c}"),
             Ok(Sexp::List(vector![
-                Sexp::Symbol("set".into()),
-                Sexp::Symbol("a".into()),
-                Sexp::Symbol("b".into()),
-                Sexp::Symbol("c".into())
-            ]))
+                Sexp::Symbol("set".into(), None),
+                Sexp::Symbol("a".into(), None),
+                Sexp::Symbol("b".into(), None),
+                Sexp::Symbol("c".into(), None)
+            ], None))
         );
     }
     #[test]
@@ -418,9 +418,9 @@ mod tests {
         assert!(result.is_ok(), "failed to parse do-wrapped stdlib: {:?}", result.err());
         let sexp = result.unwrap();
         match &sexp {
-            Sexp::List(v) => {
+            Sexp::List(v, _) => {
                 assert!(!v.is_empty(), "empty list from do wrapper");
-                assert_eq!(v[0], Sexp::Symbol("do".into()));
+                assert_eq!(v[0], Sexp::Symbol("do".into(), None));
             }
             other => panic!("expected list (do ...), got {:?}", other),
         }

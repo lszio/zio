@@ -64,30 +64,30 @@ pub fn value_to_sexp(value: &Value) -> Result<Sexp, EvalError> {
     match value {
         Value::Nil => Ok(Sexp::Nil),
         Value::Boolean(b) => Ok(Sexp::Boolean(*b)),
-        Value::Integer(i) => Ok(Sexp::Integer(*i)),
-        Value::Float(f) => Ok(Sexp::Float(*f)),
-        Value::String(s) => Ok(Sexp::String(s.clone())),
-        Value::Symbol(s) => Ok(Sexp::Symbol(s.clone())),
-        Value::Keyword(k) => Ok(Sexp::Keyword(k.clone())),
+        Value::Integer(i) => Ok(Sexp::Integer(*i, None)),
+        Value::Float(f) => Ok(Sexp::Float(*f, None)),
+        Value::String(s) => Ok(Sexp::String(s.clone(), None)),
+        Value::Symbol(s) => Ok(Sexp::Symbol(s.clone(), None)),
+        Value::Keyword(k) => Ok(Sexp::Keyword(k.clone(), None)),
         Value::List(l) => {
             let mut new_list = Vector::new();
             for item in l { new_list.push_back(value_to_sexp(item)?); }
-            Ok(Sexp::List(new_list))
+            Ok(Sexp::List(new_list, None))
         }
         Value::Vector(v) => {
             let mut new_vec = Vector::new();
             for item in v { new_vec.push_back(value_to_sexp(item)?); }
-            Ok(Sexp::Vector(new_vec))
+            Ok(Sexp::Vector(new_vec, None))
         }
         Value::Map(m) => {
             let mut new_map = im::HashMap::new();
             for (k, v) in m { new_map.insert(value_to_sexp(k)?, value_to_sexp(v)?); }
-            Ok(Sexp::Map(new_map))
+            Ok(Sexp::Map(new_map, None))
         }
         Value::Function(_) => Err(EvalError::macro_error("macro returned a function value")),
         Value::NativeFunction(_) => Err(EvalError::macro_error("macro returned a native function value")),
         Value::Macro(_) => Err(EvalError::macro_error("macro returned a macro value")),
-        Value::Char(c) => Ok(Sexp::Char(*c)),
+        Value::Char(c) => Ok(Sexp::Char(*c, None)),
     }
 }
 
@@ -113,10 +113,10 @@ mod tests {
         ]);
         let s = value_to_sexp(&v).unwrap();
         assert_eq!(s, Sexp::List(im::vector![
-            Sexp::Integer(1),
-            Sexp::Integer(2),
-            Sexp::Integer(3),
-        ]));
+            Sexp::Integer(1, None),
+            Sexp::Integer(2, None),
+            Sexp::Integer(3, None),
+        ], None));
     }
 
     #[test]
@@ -136,13 +136,13 @@ mod tests {
             name: "test-macro".into(),
             params: im::vector!["x".into()],
             rest_param: None,
-            body: Sexp::Symbol("x".into()),
+            body: Sexp::Symbol("x".into(), None),
             env: Arc::new(Env::new(None)),
         });
 
         let ctx = make_ctx();
-        let args = [Sexp::Integer(42)];
+        let args = [Sexp::Integer(42, None)];
         let result = apply_macro(&m, &args, &ctx.env, &ctx).unwrap();
-        assert_eq!(result, Sexp::Integer(42));
+        assert_eq!(result, Sexp::Integer(42, None));
     }
 }

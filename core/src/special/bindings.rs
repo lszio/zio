@@ -18,7 +18,7 @@ pub fn do_def(
         return Err(EvalError::wrong_arg_count(2, args.len()));
     }
     let name = match &args[0] {
-        Sexp::Symbol(s) => s.clone(),
+        Sexp::Symbol(s, _) => s.clone(),
         other => return Err(EvalError::invalid_form(
             format!("def requires a symbol, got {}", other.kind()),
         )),
@@ -35,7 +35,7 @@ pub fn do_defn(args: &[Sexp], env: &Arc<Env>, _engine: &dyn EvalEngine) -> Resul
         return Err(EvalError::wrong_arg_count_min(3, args.len()));
     }
     let name = match &args[0] {
-        Sexp::Symbol(s) => s.clone(),
+        Sexp::Symbol(s, _) => s.clone(),
         other => return Err(EvalError::invalid_form(
             format!("defn requires a symbol, got {}", other.kind()),
         )),
@@ -44,7 +44,7 @@ pub fn do_defn(args: &[Sexp], env: &Arc<Env>, _engine: &dyn EvalEngine) -> Resul
     let body = if args.len() == 3 {
         args[2].clone()
     } else {
-        Sexp::List(args[2..].iter().cloned().collect())
+        Sexp::List(args[2..].iter().cloned().collect(), None)
     };
 
     let fn_val = Value::Function(Arc::new(Function {
@@ -70,7 +70,7 @@ pub fn do_fn(args: &[Sexp], env: &Arc<Env>) -> Result<TailResult, EvalError> {
     } else if args.len() == 2 {
         args[1].clone()
     } else {
-        Sexp::List(args[1..].iter().cloned().collect())
+        Sexp::List(args[1..].iter().cloned().collect(), None)
     };
     Ok(TailResult::Value(Value::Function(Arc::new(Function {
         params,
@@ -87,7 +87,7 @@ pub fn do_defmacro(args: &[Sexp], env: &Arc<Env>, _engine: &dyn EvalEngine) -> R
         return Err(EvalError::wrong_arg_count_min(3, args.len()));
     }
     let name = match &args[0] {
-        Sexp::Symbol(s) => s.clone(),
+        Sexp::Symbol(s, _) => s.clone(),
         other => return Err(EvalError::invalid_form(
             format!("defmacro requires a symbol, got {}", other.kind()),
         )),
@@ -96,7 +96,7 @@ pub fn do_defmacro(args: &[Sexp], env: &Arc<Env>, _engine: &dyn EvalEngine) -> R
     let body = if args.len() == 3 {
         args[2].clone()
     } else {
-        Sexp::List(args[2..].iter().cloned().collect())
+        Sexp::List(args[2..].iter().cloned().collect(), None)
     };
 
     let macro_val = Value::Macro(Arc::new(Macro {

@@ -177,18 +177,18 @@ mod tests {
                     if c == '\\' { if let Some(nc) = chars.next() { match nc { 'n' => unescaped.push('\n'), 'r' => unescaped.push('\r'), 't' => unescaped.push('\t'), '\\' => unescaped.push('\\'), '"' => unescaped.push('"'), _ => unescaped.push(nc), } } }
                     else { unescaped.push(c); }
                 }
-                Sexp::String(unescaped)
-            } else if token.starts_with(':') { Sexp::Keyword(token[1..].to_string()) }
-            else { match token { "nil" => Sexp::Nil, "true" => Sexp::Boolean(true), "false" => Sexp::Boolean(false), _ => { if let Ok(i) = token.parse::<i64>() { Sexp::Integer(i) } else if let Ok(f) = token.parse::<f64>() { Sexp::Float(f) } else { Sexp::Symbol(token.to_string()) } } } }
+                Sexp::String(unescaped, None)
+            } else if token.starts_with(':') { Sexp::Keyword(token[1..].to_string(), None) }
+            else { match token { "nil" => Sexp::Nil, "true" => Sexp::Boolean(true), "false" => Sexp::Boolean(false), _ => { if let Ok(i) = token.parse::<i64>() { Sexp::Integer(i, None) } else if let Ok(f) = token.parse::<f64>() { Sexp::Float(f, None) } else { Sexp::Symbol(token.to_string(), None) } } } }
         }
         fn read_sexp(tokens: &mut std::iter::Peekable<std::vec::IntoIter<String>>) -> Result<Sexp, ()> {
             let mut stack: Vec<(String, im::Vector<Sexp>)> = Vec::new();
             while let Some(token) = tokens.next() {
                 match token.as_str() {
-                    "'" => { let inner = read_sexp(tokens)?; let quoted = Sexp::List(im::vector![Sexp::Symbol("quote".into()), inner]); if let Some(parent) = stack.last_mut() { parent.1.push_back(quoted); } else { return Ok(quoted); } }
+                    "'" => { let inner = read_sexp(tokens)?; let quoted = Sexp::List(im::vector![Sexp::Symbol("quote".into(), None), inner], None); if let Some(parent) = stack.last_mut() { parent.1.push_back(quoted); } else { return Ok(quoted); } }
                     "(" | "[" | "{" => { stack.push((token, im::Vector::new())); }
-                    ")" => { let (_, items) = stack.pop().ok_or(())?; let val = Sexp::List(items); if let Some(parent) = stack.last_mut() { parent.1.push_back(val); } else { return Ok(val); } }
-                    "]" => { let (_, items) = stack.pop().ok_or(())?; let val = Sexp::Vector(items); if let Some(parent) = stack.last_mut() { parent.1.push_back(val); } else { return Ok(val); } }
+                    ")" => { let (_, items) = stack.pop().ok_or(())?; let val = Sexp::List(items, None); if let Some(parent) = stack.last_mut() { parent.1.push_back(val); } else { return Ok(val); } }
+                    "]" => { let (_, items) = stack.pop().ok_or(())?; let val = Sexp::Vector(items, None); if let Some(parent) = stack.last_mut() { parent.1.push_back(val); } else { return Ok(val); } }
                     "}" => { let (_, items) = stack.pop().ok_or(())?; return Err(()); }
                     _ => { let val = test_parse_atom(&token); if let Some(parent) = stack.last_mut() { parent.1.push_back(val); } else { return Ok(val); } }
                 }
