@@ -46,17 +46,24 @@ pub fn read_with_source(input: &str, source_id: SourceId) -> Result<Sexp, Reader
     Ok(sexp)
 }
 
-/// Create a Span from token start/end positions.
-fn make_span(source_id: SourceId, start: BytePos, end: BytePos, _input: &str) -> Span {
-    // We approximate line/col from byte positions.
-    // A more precise version would use the source map; for now
-    // line/col are best-effort from scanning the input.
+/// Create a Span from token start/end positions, computing real line/col.
+fn make_span(source_id: SourceId, start: BytePos, end: BytePos, input: &str) -> Span {
+    // Compute line/col by counting newlines from start of input.
+    let (line, col) = if start.0 == 0 {
+        (1usize, 1usize)
+    } else {
+        let before = &input[..start.0.min(input.len())];
+        let line = before.matches('\n').count() + 1;
+        let last_newline = before.rfind('\n').map(|i| i + 1).unwrap_or(0);
+        let col = start.0 - last_newline + 1;
+        (line, col)
+    };
     Span {
         source_id,
         start,
         end,
-        line: 1,
-        col: start.0 + 1,
+        line,
+        col,
     }
 }
 
