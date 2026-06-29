@@ -1065,4 +1065,57 @@ mod tests {
         let result = eval_in_context(&s, &ctx).unwrap();
         assert_eq!(result, Value::Keyword("string".into()));
     }
+
+    #[test]
+    fn test_reflection_class_metadata() {
+        let ctx = make_ctx();
+        let s = test_read("(defclass my-obj nil ((x :initarg :x)))").unwrap();
+        eval_in_context(&s, &ctx).unwrap();
+
+        // class-name on an instance
+        let s = test_read("(class-name (make-instance my-obj :x 42))").unwrap();
+        let result = eval_in_context(&s, &ctx).unwrap();
+        assert_eq!(result, Value::Symbol("my-obj".into()));
+
+        // class-precedence-list
+        let s = test_read("(class-precedence-list (make-instance my-obj))").unwrap();
+        let result = eval_in_context(&s, &ctx).unwrap();
+        assert!(matches!(result, Value::List(_)), "CPL should be a list");
+
+        // class-slots
+        let s = test_read("(class-slots (make-instance my-obj))").unwrap();
+        let result = eval_in_context(&s, &ctx).unwrap();
+        assert!(matches!(result, Value::List(_)), "slots should be a list");
+    }
+
+    #[test]
+    fn test_multi_dispatch() {
+        let ctx = make_ctx();
+
+        // Define a class hierarchy
+        let s = test_read("(defclass vehicle nil ())").unwrap();
+        eval_in_context(&s, &ctx).unwrap();
+        let s = test_read("(defclass car (vehicle) ())").unwrap();
+        eval_in_context(&s, &ctx).unwrap();
+        let s = test_read("(defclass truck (vehicle) ())").unwrap();
+        eval_in_context(&s, &ctx).unwrap();
+
+        // Multi-dispatch GF
+        let s = test_read("(defgeneric collide (a b))").unwrap();
+        eval_in_context(&s, &ctx).unwrap();
+        let s = test_read("(defmethod collide ((a vehicle) (b vehicle)) (str \"generic\"))").unwrap();
+        eval_in_context(&s, &ctx).unwrap();
+        let s = test_read("(defmethod collide ((a car) (b truck)) (str \"car-truck\"))").unwrap();
+        eval_in_context(&s, &ctx).unwrap();
+
+        // Test dispatch
+        let s = test_read("(collide (make-instance car) (make-instance truck))").unwrap();
+        let result = eval_in_context(&s, &ctx).unwrap();
+        assert_eq!(result.to_string(), "\"car-truck\"", "car-truck method should be preferred");
+
+        // GF methods reflection
+        let s = test_read("(generic-function-methods collide)").unwrap();
+        let result = eval_in_context(&s, &ctx).unwrap();
+        assert!(matches!(result, Value::List(_)), "methods should be a list");
+    }
 }

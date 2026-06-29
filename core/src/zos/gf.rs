@@ -60,23 +60,15 @@ impl GenericFunction {
     }
 
     /// Find applicable methods for the given argument types (class refs).
-    /// Returns methods sorted by specificity (most specific first).
+    /// Returns methods sorted by CPL precedence (most specific first).
     pub fn find_applicable_methods(&self, arg_classes: &[ClassRef]) -> Vec<Arc<Method>> {
         let mut applicable: Vec<Arc<Method>> = Vec::new();
-
         for method in &self.methods {
             if self.method_applies(method, arg_classes) {
                 applicable.push(Arc::clone(method));
             }
         }
-
-        // Sort by specificity: more specific specializers first
-        applicable.sort_by(|a, b| {
-            let a_specificity = self.specificity_score(&a.specializers, arg_classes);
-            let b_specificity = self.specificity_score(&b.specializers, arg_classes);
-            b_specificity.cmp(&a_specificity)
-        });
-
+        self.sort_by_cpl(&mut applicable, arg_classes);
         applicable
     }
 
@@ -105,33 +97,48 @@ impl GenericFunction {
         true
     }
 
-    /// Compute specificity score for sorting methods.
-    /// Higher score = more specific (better match).
-    fn specificity_score(&self, specializers: &[Specializer], arg_classes: &[ClassRef]) -> usize {
-        let mut score = 0usize;
-        for (i, (specializer, arg_class)) in specializers.iter().zip(arg_classes.iter()).enumerate() {
-            match specializer {
-                Specializer::T => score += 1 << (i * 4),       // least specific
-                Specializer::Exact(name) => {
-                    if arg_class.name == *name {
-                        score += 10 << (i * 4);                // exact match = most specific
-                    } else {
-                        score += 5 << (i * 4);                 // subclass = medium
-                    }
-                }
+    /// Compare two methods by CPL precedence for multi-dispatch ordering.
+    /// For each argument position, compare the position of the specializer
+    /// in the argument's CPL. Lower position = more specific.
+    fn cpl_compare(&self, a: &Arc<Method>, b: &Arc<Method>, arg_classes: &[ClassRef]) -> std::cmp::Ordering {
+        let max_args = a.specializers.len().max(b.specializers.len()).min(arg_classes.len());
+        for i in 0..max_args {
+            let a_spec = a.specializers.get(i);
+            let b_spec = b.specializers.get(i);
+            let arg_cpl = &arg_classes.get(i).map(|c| &c.cpl).cloned().unwrap_or_default();
+
+            let a_pos = a_spec.and_then(|s| self.spec_pos_in_cpl(s, arg_cpl));
+            let b_pos = b_spec.and_then(|s| self.spec_pos_in_cpl(s, arg_cpl));
+
+            match (a_pos, b_pos) {
+                (Some(ap), Some(bp)) if ap != bp => return ap.cmp(&bp),
+                (Some(_), None) => return std::cmp::Ordering::Less,
+                (None, Some(_)) => return std::cmp::Ordering::Greater,
+                _ => continue,
             }
         }
-        score
+        std::cmp::Ordering::Equal
     }
 
-    /// Build a cache key from argument classes.
+    fn spec_pos_in_cpl(&self, spec: &Specializer, cpl: &[String]) -> Option<usize> {
+        match spec {
+            Specializer::T => Some(usize::MAX),
+            Specializer::Exact(name) => cpl.iter().position(|n| n == name),
+        }
+    }
+
+    fn sort_by_cpl(&self, methods: &mut [Arc<Method>], arg_classes: &[ClassRef]) {
+        methods.sort_by(|a, b| self.cpl_compare(a, b, arg_classes));
+    }
+
+
+    /// Build a cache key from argument class names.
     fn cache_key(&self, arg_classes: &[ClassRef]) -> (u64, u64, u64, u64) {
         let id = |i: usize| -> u64 {
             arg_classes.get(i).map(|c| simple_hash(&c.name)).unwrap_or(0)
         };
         (id(0), id(1), id(2), id(3))
     }
-
     /// Dispatch: find and sort applicable methods, return by qualifier.
     pub fn dispatch(&mut self, arg_classes: &[ClassRef]) -> DispatchResult {
         let key = self.cache_key(arg_classes);
