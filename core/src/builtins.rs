@@ -486,6 +486,7 @@ pub fn type_fn(args: Vector<Value>, _engine: &dyn EvalEngine) -> Result<Value, E
         Value::NativeFunction(_) => "native-fn",
         Value::Macro(_) => "macro",
         Value::Char(_) => "character",
+        Value::Object(_) => "object",
     };
     Ok(Value::Keyword(kw.to_string()))
 }

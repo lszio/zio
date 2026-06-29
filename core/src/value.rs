@@ -88,6 +88,47 @@ pub struct Macro {
     pub env: Arc<Env>,
 }
 
+
+
+/// A ZOS instance — the most common heap object.
+/// Stores slot values keyed by slot name.
+#[derive(Debug, Clone)]
+pub struct ZosInstance {
+    pub header: crate::zos::object::ObjectHeader,
+    pub slots: std::collections::HashMap<String, Value>,
+}
+
+impl ZosInstance {
+    pub fn new(class: Arc<crate::zos::object::Class>) -> Self {
+        let header = crate::zos::object::ObjectHeader {
+            class,
+            flags: crate::zos::object::ObjectFlags::NONE,
+            identity: None,
+        };
+        ZosInstance {
+            header,
+            slots: std::collections::HashMap::new(),
+        }
+    }
+}
+
+impl crate::zos::object::ZosObject for ZosInstance {
+    fn header(&self) -> &crate::zos::object::ObjectHeader {
+        &self.header
+    }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+    fn clone_box(&self) -> Box<dyn crate::zos::object::ZosObject> {
+        Box::new(self.clone())
+    }
+}
+
+impl std::fmt::Display for ZosInstance {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "#<{}>", self.header.class.name)
+    }
+}
 /// Runtime value — the output of evaluation.
 #[derive(Debug, Clone)]
 pub enum Value {
@@ -105,8 +146,9 @@ pub enum Value {
     NativeFunction(NativeFn),
     Macro(Arc<Macro>),
     Char(char),
+    /// ZOS heap object — entry point for the runtime object system.
+    Object(Box<dyn crate::zos::object::ZosObject>),
 }
-
 impl PartialEq for Value {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
@@ -123,8 +165,10 @@ impl PartialEq for Value {
             (Value::Function(a), Value::Function(b)) => Arc::ptr_eq(a, b),
             (Value::Macro(a), Value::Macro(b)) => Arc::ptr_eq(a, b),
             (Value::Char(a), Value::Char(b)) => a == b,
+            (Value::NativeFunction(a), Value::NativeFunction(b)) => a.eq(b),
+            (Value::Object(a), Value::Object(b)) => a == b,
             _ => false,
-        }
+}
     }
 }
 
@@ -148,6 +192,7 @@ impl Hash for Value {
             Value::Macro(m) => Arc::as_ptr(m).hash(state),
             Value::NativeFunction(nf) => nf.hash(state),
             Value::Char(c) => c.hash(state),
+            Value::Object(o) => o.hash(state),
         }
     }
 }
@@ -169,10 +214,10 @@ impl Value {
             Value::NativeFunction(_) => "native-function",
             Value::Macro(_) => "macro",
             Value::Char(_) => "character",
+            Value::Object(_) => "object",
         }
     }
 }
-
 /// Infallible conversion from Sexp (syntax tree) to Value (runtime).
 impl From<Sexp> for Value {
     fn from(s: Sexp) -> Self {
@@ -254,6 +299,7 @@ impl std::fmt::Display for Value {
                 write!(f, "#<macro {} ({})>", m.name, parts.join(" "))
             }
             Value::Char(c) => write!(f, "#\\{c}"),
+            Value::Object(o) => write!(f, "#<{}>", o.header().class.name),
         }
     }
 }
