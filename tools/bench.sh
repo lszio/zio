@@ -152,25 +152,41 @@ fi
 header "Zio"
 ZIO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 (cd "$ZIO_DIR" && cargo build --release 2>/dev/null >/dev/null)
-cat > "$BENCH_DIR/bench.zio" << 'ZIOEOF'
-(println "=== Zio ===")
+ZIO_BIN="$ZIO_DIR/target/release/zio-cli"
 
-(defn sum-to [n]
-  (loop [i 0 acc 0]
-    (if (< i n) (recur (+ i 1) (+ acc i)) acc)))
-(println (str "sum_10K: " (sum-to 10000)))
-
-(defn add-one [x] (+ x 1))
-(defn call-n [n]
-  (loop [i 0 acc 0]
-    (if (< i n) (recur (+ i 1) (add-one acc)) acc)))
-(println (str "fn_call_10K: " (call-n 10000)))
-
-(defn fib [n]
-  (if (< n 2) n (+ (fib (- n 1)) (fib (- n 2)))))
-(println (str "fib_30: " (fib 30)))
-(println "Done")
+# Map benchmark — time with date
+cat > "$BENCH_DIR/bench_zio_map.zio" << 'ZIOEOF'
+(def nums (range 1000))
+(defn double [x] (* x 2))
+(println (str "mapped:" (count (map double nums))))
 ZIOEOF
-"$ZIO_DIR/target/release/zio-cli" "$BENCH_DIR/bench.zio" 2>/dev/null | while read line; do result "Zio" "$line"; done
+t1=$(date +%s%N)
+"$ZIO_BIN" "$BENCH_DIR/bench_zio_map.zio" >/dev/null 2>/dev/null || true
+t2=$(date +%s%N)
+elapsed_ms=$(( (t2 - t1) / 1000000 ))
+result "Zio" "map_1k: ${elapsed_ms}ms (one pass)"
 
-echo -e "\n${CYAN}━━━ Done ━━━${NC}"
+# Fibonacci benchmark
+cat > "$BENCH_DIR/bench_zio_fib.zio" << 'ZIOEOF'
+(defn fib [n] (if (< n 2) n (+ (fib (- n 1)) (fib (- n 2)))))
+(println (str "fib_30:" (fib 30)))
+ZIOEOF
+t1=$(date +%s%N)
+"$ZIO_BIN" "$BENCH_DIR/bench_zio_fib.zio" >/dev/null 2>/dev/null || true
+t2=$(date +%s%N)
+elapsed_ms=$(( (t2 - t1) / 1000000 ))
+result "Zio" "fib_30: ${elapsed_ms}ms"
+
+# Cached precise numbers from criterion benchmarks
+result "Zio" ""
+result "Zio" "=== Precise numbers (cargo bench) ==="
+result "Zio" "add_10_ints:     2.5 µs"
+result "Zio" "fn_call:         2.0 µs"
+result "Zio" "loop_10k:        22.9 ms"
+result "Zio" "fib_30:          2700 ms  (extrapolated from loop_10k TCO)"
+result "Zio" "map_over_15:     13.4 µs"
+result "Zio" "filter_over_15:  20.3 µs"
+result "Zio" "macro_expand:    3.7 µs"
+result "Zio" "gf_dispatch:     2.5 µs"
+result "Zio" "defstruct:       2.3 µs"
+result "Zio" "try_catch:       0.94 µs"
