@@ -59,8 +59,9 @@ pub fn make_builtin_classes() -> Vec<ClassRef> {
     // Top class (TObject)
     let top = Arc::new(Class {
         name: "TObject".into(),
-        superclass: None,
+        superclasses: Vec::new(),
         slots: Vec::new(),
+        cpl: vec!["TObject".into()],
     });
     classes.push(top.clone());
 
@@ -70,10 +71,12 @@ pub fn make_builtin_classes() -> Vec<ClassRef> {
         "Keyword", "List", "Vector", "Map", "Function", "NativeFunction",
         "Macro", "Character",
     ] {
+        let cpl = vec![name.to_string(), "TObject".into()];
         let c = Arc::new(Class {
             name: name.to_string(),
-            superclass: Some(top.clone()),
+            superclasses: vec![top.clone()],
             slots: Vec::new(),
+            cpl,
         });
         classes.push(c);
     }
@@ -86,9 +89,85 @@ pub fn is_subclass_of(c: &ClassRef, target: &ClassRef) -> bool {
     if c.name == target.name {
         return true;
     }
-    if let Some(ref superclass) = c.superclass {
-        is_subclass_of(superclass, target)
-    } else {
-        false
+    for sc in &c.superclasses {
+        if is_subclass_of(sc, target) {
+            return true;
+        }
     }
+    false
 }
+
+/// Compute C3 linearization for a class given its superclasses.
+pub fn c3_linearize(class_name: &str, direct_supers: &[ClassRef]) -> Vec<String> {
+    // Start with the class itself
+    let mut result = vec![class_name.to_string()];
+
+    // Compute CPL for each direct superclass
+    let mut super_cpls: Vec<Vec<String>> = Vec::new();
+    for sup in direct_supers {
+        let cpl = if sup.cpl.is_empty() {
+            vec![sup.name.clone()]
+        } else {
+            sup.cpl.clone()
+        };
+        super_cpls.push(cpl);
+    }
+
+    // Merge: C3 algorithm
+    let mut merged = c3_merge(&mut super_cpls, direct_supers);
+    result.append(&mut merged);
+    result
+}
+
+/// C3 merge algorithm: take lists of CPLs + direct superclasses as the last list.
+fn c3_merge(cpls: &mut [Vec<String>], direct_supers: &[ClassRef]) -> Vec<String> {
+    let mut result = Vec::new();
+
+    // Build the direct superclass name list (the last list in C3 merge)
+    let direct_names: Vec<String> = direct_supers.iter().map(|c| c.name.clone()).collect();
+
+    // Collect all lists: superclass CPLs + direct superclass list
+    let mut all_lists: Vec<Vec<String>> = cpls.to_vec();
+    all_lists.push(direct_names);
+
+    // Remove any empty lists
+    all_lists.retain(|l| !l.is_empty());
+
+    while !all_lists.is_empty() {
+        // Find a candidate: first element of any list that doesn't appear
+        // in the tail of any other list
+        let mut found: Option<String> = None;
+        'candidate: for list in &all_lists {
+            let candidate = &list[0];
+            // Check that candidate is not in the tail of any list
+            for other in &all_lists {
+                if other.len() > 1 && other[1..].contains(candidate) {
+                    continue 'candidate;
+                }
+            }
+            found = Some(candidate.clone());
+            break;
+        }
+
+        match found {
+            Some(candidate) => {
+                result.push(candidate.clone());
+                // Remove candidate from all lists
+                for list in &mut all_lists {
+                    if list.first() == Some(&candidate) {
+                        list.remove(0);
+                    }
+                }
+                all_lists.retain(|l| !l.is_empty());
+            }
+            None => {
+                // Inconsistent hierarchy — just return what we have
+                break;
+            }
+        }
+    }
+
+    result
+}
+
+

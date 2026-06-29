@@ -92,8 +92,9 @@ impl GenericFunction {
                     if !is_subclass_of(arg_class, &Arc::new(
                         crate::zos::object::Class {
                             name: name.clone(),
-                            superclass: None,
+                            superclasses: Vec::new(),
                             slots: Vec::new(),
+                            cpl: vec![name.clone()],
                         }
                     )) {
                         return false;

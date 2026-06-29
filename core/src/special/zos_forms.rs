@@ -48,27 +48,74 @@ pub fn do_defclass(
         other => return Err(EvalError::type_error("symbol", format!("class name: {}", other.kind()))),
     };
 
-    // Parse superclass (nil or symbol)
-    let superclass: Option<ClassRef> = match &args[1] {
-        Sexp::Nil => None,
-        Sexp::Symbol(s, _) => {
-            // Look up in env — if a class was previously defined with defclass,
-            // it would be stored in the env as a Value::Object wrapping the class.
-            // For now, only built-in classes are available.
-            if let Some(Value::Object(o)) = env.get(s) {
-                // The class object itself
-                if let Some(cls) = o.as_any().downcast_ref::<crate::value::ZosInstance>() {
-                    // For classes, we store them specially
+    // Parse superclass(es)
+    // (defclass name super slots) or (defclass name (super1 super2) slots)
+    let mut super_names: Vec<String> = Vec::new();
+    let mut slots_idx = 2; // default: args[2] is slots
+
+    if args.len() > 1 {
+        match &args[1] {
+            Sexp::Nil => { slots_idx = 2; }
+            Sexp::List(l, _) => {
+                for item in l {
+                    if let Sexp::Symbol(s, _) = item {
+                        super_names.push(s.clone());
+                    }
+                }
+                slots_idx = 2;
+            }
+            Sexp::Symbol(s, _) => {
+                // Could be superclass name or slots — check args[2]
+                if args.len() >= 3 {
+                    // args[2] exists, so args[1] is superclass
+                    super_names.push(s.clone());
+                    slots_idx = 2;
+                } else {
+                    // args[1] might be slots (defclass name slots)
+                    slots_idx = 1;
                 }
             }
-            // Fallback: check built-in class registry
-            None // Simplified for now
+            _ => { slots_idx = 1; }
         }
-        other => return Err(EvalError::type_error("symbol or nil", format!("superclass: {}", other.kind()))),
+    }
+
+    // Resolve superclass names to ClassRefs
+    let mut resolved_supers: Vec<ClassRef> = Vec::new();
+    for s_name in &super_names {
+        if let Some(val) = env.get(s_name) {
+            match &val {
+                Value::Object(o) => {
+                    let cr = o.header().class.clone();
+                    if cr.name == *s_name {
+                        resolved_supers.push(cr);
+                    }
+                }
+                _ => {}
+            }
+        }
+        // If not found, create a placeholder ClassRef with the name
+        if !resolved_supers.iter().any(|c| c.name == *s_name) {
+            resolved_supers.push(Arc::new(Class {
+                name: s_name.clone(),
+                superclasses: Vec::new(),
+                slots: Vec::new(),
+                cpl: vec![s_name.clone()],
+            }));
+        }
+    }
+
+    // Compute C3 linearization
+    let cpl = if resolved_supers.is_empty() {
+        vec![class_name.clone()]
+    } else {
+        crate::zos::class::c3_linearize(&class_name, &resolved_supers)
     };
 
     // Parse slot definitions
-    let slots_sexp = &args[2];
+    if slots_idx >= args.len() {
+        return Err(EvalError::wrong_arg_count_min(3, args.len()));
+    }
+    let slots_sexp = &args[slots_idx];
     let slot_list = match slots_sexp {
         Sexp::List(l, _) | Sexp::Vector(l, _) => l,
         other => return Err(EvalError::type_error("list or vector", format!("slots: {}", other.kind()))),
@@ -91,7 +138,6 @@ pub fn do_defclass(
             other => return Err(EvalError::type_error("symbol", format!("slot name: {}", other.kind()))),
         };
 
-        // Parse :initarg, :accessor, etc.
         let mut initargs = Vec::new();
         let mut accessor = None;
         let mut i = 1;
@@ -129,15 +175,15 @@ pub fn do_defclass(
         });
     }
 
-    // Create the class
+    // Create the class with CPL
     let class = Arc::new(Class {
         name: class_name.clone(),
-        superclass,
+        superclasses: resolved_supers,
         slots,
+        cpl,
     });
 
-    // Register in a global class registry stored in the env
-    // For now, store as a ZosInstance wrapping the class
+    // Store class in env
     let mut instance = crate::value::ZosInstance::new(class.clone());
     instance.header.flags = ObjectFlags::MUTABLE;
     instance.slots.insert("__class_name__".into(), Value::Symbol(class_name.clone()));
@@ -179,8 +225,9 @@ pub fn do_defgeneric(
     let header = crate::zos::object::ObjectHeader {
         class: Arc::new(crate::zos::object::Class {
             name: "GenericFunction".into(),
-            superclass: None,
+            superclasses: Vec::new(),
             slots: Vec::new(),
+            cpl: vec!["GenericFunction".into()],
         }),
         flags: ObjectFlags::MUTABLE,
         identity: None,

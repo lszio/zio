@@ -61,8 +61,11 @@ impl std::hash::Hash for Box<dyn ZosObject> {
 #[derive(Debug, Clone)]
 pub struct Class {
     pub name: String,
-    pub superclass: Option<ClassRef>,
+    /// Direct superclasses (Vec for multiple inheritance).
+    pub superclasses: Vec<ClassRef>,
     pub slots: Vec<SlotDefinition>,
+    /// C3 linearized class precedence list (computed at defclass time).
+    pub cpl: Vec<String>,
 }
 
 /// A slot (instance variable) definition.

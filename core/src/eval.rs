@@ -326,9 +326,10 @@ fn build_around_wrappers(
 fn value_class_ref(v: &Value) -> crate::zos::object::ClassRef {
     let name = value_class_name(v);
     Arc::new(crate::zos::object::Class {
-        name,
-        superclass: None,
+        name: name.clone(),
+        superclasses: Vec::new(),
         slots: Vec::new(),
+        cpl: vec![name],
     })
 }
 
@@ -1016,5 +1017,52 @@ mod tests {
         let s = test_read("(get *packages* :my-pkg)").unwrap();
         let result = eval_in_context(&s, &ctx).unwrap();
         assert_eq!(result, Value::Keyword("package".into()));
+    }
+
+    #[test]
+    fn test_c3_linearization() {
+        // Test C3 linearization via multi-inheritance classes
+        let ctx = make_ctx();
+
+        // Define a simple hierarchy with multiple inheritance
+        //   A
+        //  / \
+        // B   C
+        //  \ /
+        //   D
+        let s = test_read("(defclass a nil ())").unwrap();
+        eval_in_context(&s, &ctx).unwrap();
+        let s = test_read("(defclass b (a) ())").unwrap();
+        eval_in_context(&s, &ctx).unwrap();
+        let s = test_read("(defclass c (a) ())").unwrap();
+        eval_in_context(&s, &ctx).unwrap();
+        let s = test_read("(defclass d (b c) ())").unwrap();
+        eval_in_context(&s, &ctx).unwrap();
+
+        // Verify inheritance works via GF dispatch
+        let s = test_read("(defgeneric identify (x))").unwrap();
+        eval_in_context(&s, &ctx).unwrap();
+        let s = test_read("(defmethod identify ((x a)) (str \"A\"))").unwrap();
+        eval_in_context(&s, &ctx).unwrap();
+        let s = test_read("(defmethod identify ((x d)) (str \"D\"))").unwrap();
+        eval_in_context(&s, &ctx).unwrap();
+
+        // D's method should be preferred over A's
+        let s = test_read("(identify (make-instance d))").unwrap();
+        let result = eval_in_context(&s, &ctx).unwrap();
+        assert_eq!(result.to_string(), "\"D\"", "D's method should be preferred");
+    }
+
+    #[test]
+    fn test_reflection_class_of() {
+        // Test basic reflection: class-of via type
+        let ctx = make_ctx();
+        let s = test_read("(type 42)").unwrap();
+        let result = eval_in_context(&s, &ctx).unwrap();
+        assert_eq!(result, Value::Keyword("integer".into()));
+
+        let s = test_read("(type \"hello\")").unwrap();
+        let result = eval_in_context(&s, &ctx).unwrap();
+        assert_eq!(result, Value::Keyword("string".into()));
     }
 }
