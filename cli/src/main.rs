@@ -61,8 +61,10 @@ fn run_script(path: &str, sm: &Arc<SourceMap>) -> Result<Value, EvalError> {
     load_stdlib(&ctx, sm);
     let source = std::fs::read_to_string(path)
         .map_err(|e| EvalError::custom(format!("cannot read {}: {e}", path)))?;
+    // Wrap in (do ...) to evaluate all forms, like load_stdlib does
+    let wrapped = format!("(do\n{source}\n)");
     let source_id = sm.register(path.to_string(), source.clone());
-    let sexp = reader::read_with_source(&source, source_id)
+    let sexp = reader::read_with_source(&wrapped, source_id)
         .map_err(|e| EvalError::custom(format!("parse error in {}: {e}", path)))?;
     eval::eval_in_context(&sexp, &ctx)
 }
