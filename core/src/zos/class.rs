@@ -81,9 +81,9 @@ pub fn make_builtin_classes() -> Vec<ClassRef> {
     classes
 }
 
-/// Check if a class is a subclass of (or equal to) another.
+/// Check if a class is a subclass of (or equal to) another, by name.
 pub fn is_subclass_of(c: &ClassRef, target: &ClassRef) -> bool {
-    if Arc::ptr_eq(c, target) {
+    if c.name == target.name {
         return true;
     }
     if let Some(ref superclass) = c.superclass {

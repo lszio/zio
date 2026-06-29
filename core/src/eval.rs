@@ -183,8 +183,8 @@ fn eval_inner(expr: &Sexp, env: &Arc<Env>, tail: bool, engine: &dyn EvalEngine) 
         }
     }
 }
-
 /// Apply a function value to arguments.
+/// Handles GF dispatch for ZOS generic functions.
 pub fn apply(func: Value, args: Vector<Value>, engine: &dyn EvalEngine) -> Result<TailResult, EvalError> {
     match func {
         Value::Function(f) => {
@@ -199,7 +199,82 @@ pub fn apply(func: Value, args: Vector<Value>, engine: &dyn EvalEngine) -> Resul
             let result = nf.call(args, engine)?;
             Ok(TailResult::Value(result))
         }
-        other => Err(EvalError::not_a_function(other.to_string())),
+        // ZOS Generic Function dispatch
+        Value::Object(o) => {
+            if let Some(gf_obj) = o.as_any().downcast_ref::<crate::special::zos_forms::GFObject>() {
+                let mut gf = gf_obj.gf.borrow_mut();
+                let arg_classes: Vec<crate::zos::object::ClassRef> = args.iter().map(value_class_ref).collect();
+                let dispatch = gf.dispatch(&arg_classes);
+
+                // Execute primary methods (simplified: call first applicable)
+                let primaries = &dispatch.primary;
+                if primaries.is_empty() {
+                    return Err(EvalError::custom(format!(
+                        "no applicable method for {} with args {:?}",
+                        gf.name,
+                        arg_classes.iter().map(|c| &c.name).collect::<Vec<_>>()
+                    )));
+                }
+
+                // Execute the most specific method (first in primary list)
+                let method = &primaries[0];
+                let env = if method.body.rest_param.is_some() {
+                    Env::bind_variadic(&method.body.env, &method.body.params, &method.body.rest_param, &args)?
+                } else {
+                    Env::bind(&method.body.env, &method.body.params, &args)?
+                };
+                engine.eval_expr(&method.body.body, &env, true)
+            } else {
+                Err(EvalError::not_a_function(format!("#<{}>", o.header().class.name)))
+            }
+        }
+        _ => Err(EvalError::not_a_function(other_display(&func))),
+    }
+}
+
+/// Get the class ref for a Value (used by GF dispatch).
+fn value_class_ref(v: &Value) -> crate::zos::object::ClassRef {
+    let name = value_class_name(v);
+    Arc::new(crate::zos::object::Class {
+        name,
+        superclass: None,
+        slots: Vec::new(),
+    })
+}
+
+/// Get the class name string for any Value.
+fn value_class_name(v: &Value) -> String {
+    match v {
+        Value::Nil => "Nil".into(),
+        Value::Boolean(_) => "Boolean".into(),
+        Value::Integer(_) => "Integer".into(),
+        Value::Float(_) => "Float".into(),
+        Value::String(_) => "String".into(),
+        Value::Symbol(_) => "Symbol".into(),
+        Value::Keyword(_) => "Keyword".into(),
+        Value::List(_) => "List".into(),
+        Value::Vector(_) => "Vector".into(),
+        Value::Map(_) => "Map".into(),
+        Value::Function(_) => "Function".into(),
+        Value::NativeFunction(_) => "NativeFunction".into(),
+        Value::Macro(_) => "Macro".into(),
+        Value::Char(_) => "Character".into(),
+        Value::Object(o) => o.header().class.name.clone(),
+    }
+}
+
+/// Display a value for error messages (non-panicking).
+fn other_display(v: &Value) -> String {
+    match v {
+        Value::Nil => "nil".into(),
+        Value::Integer(i) => format!("integer {i}"),
+        Value::Float(f) => format!("float {f}"),
+        Value::String(s) => format!("string {s:?}"),
+        Value::Function(_) => "#<function>".into(),
+        Value::NativeFunction(nf) => format!("#<native {}>", nf.name()),
+        Value::Macro(m) => format!("#<macro {}>", m.name),
+        Value::Object(o) => format!("#<{}>", o.header().class.name),
+        other => format!("{other}"),
     }
 }
 
@@ -764,5 +839,34 @@ mod tests {
         let s = test_read("(slot-value p :y)").unwrap();
         let result = eval_in_context(&s, &ctx).unwrap();
         assert_eq!(result, Value::Integer(20), "slot-value :y should be 20");
+    }
+
+    #[test]
+    fn test_zos_generic_function() {
+        // Test defgeneric, defmethod, and dispatch
+        let ctx = make_ctx();
+
+        // Define classes
+        let s = test_read("(defclass shape nil ())").unwrap();
+        eval_in_context(&s, &ctx).unwrap();
+        let s = test_read("(defclass circle shape ())").unwrap();
+        eval_in_context(&s, &ctx).unwrap();
+
+        // Define GF and methods
+        let s = test_read("(defgeneric draw (x))").unwrap();
+        eval_in_context(&s, &ctx).unwrap();
+        let s = test_read("(defmethod draw ((x shape)) (str \"Drawing a shape\"))").unwrap();
+        eval_in_context(&s, &ctx).unwrap();
+        let s = test_read("(defmethod draw ((x circle)) (str \"Drawing a circle\"))").unwrap();
+        eval_in_context(&s, &ctx).unwrap();
+
+        // Test dispatch
+        let s = test_read("(draw (make-instance shape))").unwrap();
+        let result = eval_in_context(&s, &ctx).unwrap();
+        assert!(result.to_string().contains("shape"), "shape method should be called, got: {result}");
+
+        let s = test_read("(draw (make-instance circle))").unwrap();
+        let result = eval_in_context(&s, &ctx).unwrap();
+        assert!(result.to_string().contains("circle"), "circle method should be called, got: {result}");
     }
 }

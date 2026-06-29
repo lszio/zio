@@ -8,6 +8,27 @@ use crate::special::TailResult;
 use crate::value::Value;
 use crate::zos::object::{Class, ClassRef, ObjectFlags, SlotDefinition};
 use crate::zos::class;
+use crate::zos::gf::{GenericFunction, Method, MethodQualifier, Specializer};
+use crate::value::Function;
+
+/// A ZosObject wrapper for GenericFunction so it can be stored as Value::Object.
+#[derive(Debug, Clone)]
+pub struct GFObject {
+    pub header: crate::zos::object::ObjectHeader,
+    pub gf: Arc<std::cell::RefCell<GenericFunction>>,
+}
+
+impl crate::zos::object::ZosObject for GFObject {
+    fn header(&self) -> &crate::zos::object::ObjectHeader {
+        &self.header
+    }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+    fn clone_box(&self) -> Box<dyn crate::zos::object::ZosObject> {
+        Box::new(self.clone())
+    }
+}
 
 /// (defclass name superclass slots)
 /// superclass: a symbol or nil (for root classes)
@@ -125,4 +146,157 @@ pub fn do_defclass(
     Ok(TailResult::Value(Value::Object(Box::new(
         crate::value::ZosInstance::new(class)
     ))))
+}
+/// (defgeneric name (params...))
+/// Declare a generic function.
+pub fn do_defgeneric(
+    args: &[Sexp],
+    env: &Arc<Env>,
+    _engine: &dyn EvalEngine,
+) -> Result<TailResult, EvalError> {
+    if args.len() < 2 {
+        return Err(EvalError::wrong_arg_count_min(2, args.len()));
+    }
+
+    let name = match &args[0] {
+        Sexp::Symbol(s, _) => s.clone(),
+        other => return Err(EvalError::type_error("symbol", format!("gf name: {}", other.kind()))),
+    };
+
+    // Parse lambda list: (shape) or (a b c)
+    let lambda_list = match &args[1] {
+        Sexp::List(l, _) | Sexp::Vector(l, _) => {
+            l.iter().map(|item| match item {
+                Sexp::Symbol(s, _) => s.clone(),
+                _ => "<param>".into(),
+            }).collect()
+        }
+        other => return Err(EvalError::type_error("list", format!("lambda list: {}", other.kind()))),
+    };
+
+    let gf = GenericFunction::new(name.clone(), lambda_list);
+    let header = crate::zos::object::ObjectHeader {
+        class: Arc::new(crate::zos::object::Class {
+            name: "GenericFunction".into(),
+            superclass: None,
+            slots: Vec::new(),
+        }),
+        flags: ObjectFlags::MUTABLE,
+        identity: None,
+    };
+
+    let gf_obj = GFObject {
+        header,
+        gf: Arc::new(std::cell::RefCell::new(gf)),
+    };
+
+    env.set(name, Value::Object(Box::new(gf_obj)));
+    Ok(TailResult::Value(Value::Nil))
+}
+
+/// (defmethod name (specializer ...) body)
+/// (defmethod name :qualifier (specializer ...) body)
+/// Add a method to a generic function.
+pub fn do_defmethod(
+    args: &[Sexp],
+    env: &Arc<Env>,
+    _engine: &dyn EvalEngine,
+) -> Result<TailResult, EvalError> {
+    if args.len() < 3 {
+        return Err(EvalError::wrong_arg_count_min(3, args.len()));
+    }
+
+    let gf_name = match &args[0] {
+        Sexp::Symbol(s, _) => s.clone(),
+        other => return Err(EvalError::type_error("symbol", format!("gf name: {}", other.kind()))),
+    };
+
+    // Check for qualifier after gf name
+    let mut arg_idx = 1;
+    let qualifier = match &args[arg_idx] {
+        Sexp::Keyword(k, _) if k == "before" || k == ":before" => {
+            arg_idx = 2;
+            MethodQualifier::Before
+        }
+        Sexp::Keyword(k, _) if k == "after" || k == ":after" => {
+            arg_idx = 2;
+            MethodQualifier::After
+        }
+        Sexp::Keyword(k, _) if k == "around" || k == ":around" => {
+            arg_idx = 2;
+            MethodQualifier::Around
+        }
+        _ => MethodQualifier::Primary,
+    };
+
+    // Parse specializers: (shape) or ((name type) ...)
+    let specializers_sexp = &args[arg_idx];
+    arg_idx += 1;
+    let specializer_list = match specializers_sexp {
+        Sexp::List(l, _) | Sexp::Vector(l, _) => l,
+        other => return Err(EvalError::type_error("list", format!("specializers: {}", other.kind()))),
+    };
+
+    let mut specializers = Vec::new();
+    let mut param_names = Vec::new();
+    for item in specializer_list {
+        match item {
+            Sexp::Symbol(s, _) => {
+                // Bare symbol: (name) — accepts any type (T specializer)
+                specializers.push(Specializer::T);
+                param_names.push(s.clone());
+            }
+            Sexp::List(inner, _) if inner.len() == 2 => {
+                // ((name TypeName))
+                if let Sexp::Symbol(name_s, _) = &inner[0] {
+                    if let Sexp::Symbol(type_s, _) = &inner[1] {
+                        specializers.push(Specializer::Exact(type_s.clone()));
+                        param_names.push(name_s.clone());
+                    }
+                }
+            }
+            _ => return Err(EvalError::invalid_form(
+                format!("invalid specializer: {item}"),
+            )),
+        }
+    }
+
+    // Parse body
+    let body_exprs = &args[arg_idx..];
+    let body = if body_exprs.len() == 1 {
+        body_exprs[0].clone()
+    } else {
+        Sexp::List(body_exprs.iter().cloned().collect(), None)
+    };
+
+    // Create a function value for the method body
+    let function = Arc::new(Function {
+        params: param_names.into_iter().collect(),
+        rest_param: None,
+        body,
+        env: env.clone(),
+    });
+
+    let method = Arc::new(Method {
+        specializers,
+        qualifier,
+        body: function,
+    });
+
+    // Look up the GF and add the method
+    let gf_val = env.get(&gf_name).ok_or_else(|| {
+        EvalError::custom(format!("generic function not found: {gf_name}"))
+    })?;
+
+    match &gf_val {
+        Value::Object(o) => {
+            if let Some(gf_obj) = o.as_any().downcast_ref::<GFObject>() {
+                gf_obj.gf.borrow_mut().add_method(method);
+                Ok(TailResult::Value(Value::Nil))
+            } else {
+                Err(EvalError::type_error("GenericFunction", "non-GF object"))
+            }
+        }
+        _ => Err(EvalError::type_error("GenericFunction", gf_val.value_type())),
+    }
 }
