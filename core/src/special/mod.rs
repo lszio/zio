@@ -65,6 +65,7 @@ pub fn eval_special_form(
         "defclass" => Some(zos_forms::do_defclass(args, env, engine)?),
         "defgeneric" => Some(zos_forms::do_defgeneric(args, env, engine)?),
         "defmethod" => Some(zos_forms::do_defmethod(args, env, engine)?),
+        "call-next-method" => Some(zos_forms::do_call_next_method(args, env, engine)?),
         _ => None,
     };
     Ok(result)

@@ -199,16 +199,15 @@ pub fn apply(func: Value, args: Vector<Value>, engine: &dyn EvalEngine) -> Resul
             let result = nf.call(args, engine)?;
             Ok(TailResult::Value(result))
         }
-        // ZOS Generic Function dispatch
+        // ZOS Generic Function dispatch with full method combination
         Value::Object(o) => {
             if let Some(gf_obj) = o.as_any().downcast_ref::<crate::special::zos_forms::GFObject>() {
                 let mut gf = gf_obj.gf.borrow_mut();
                 let arg_classes: Vec<crate::zos::object::ClassRef> = args.iter().map(value_class_ref).collect();
                 let dispatch = gf.dispatch(&arg_classes);
 
-                // Execute primary methods (simplified: call first applicable)
-                let primaries = &dispatch.primary;
-                if primaries.is_empty() {
+                // No applicable methods?
+                if dispatch.primary.is_empty() && dispatch.around.is_empty() {
                     return Err(EvalError::custom(format!(
                         "no applicable method for {} with args {:?}",
                         gf.name,
@@ -216,20 +215,111 @@ pub fn apply(func: Value, args: Vector<Value>, engine: &dyn EvalEngine) -> Resul
                     )));
                 }
 
-                // Execute the most specific method (first in primary list)
-                let method = &primaries[0];
-                let env = if method.body.rest_param.is_some() {
-                    Env::bind_variadic(&method.body.env, &method.body.params, &method.body.rest_param, &args)?
+                // Build the method combination chain from innermost to outermost.
+                // The innermost step: execute :before → :primary → :after
+                let primary_step = build_primary_combination(&dispatch, &args, engine.env())?;
+
+                // Wrap in :around methods (outermost → innermost)
+                let chain = if dispatch.around.is_empty() {
+                    primary_step
                 } else {
-                    Env::bind(&method.body.env, &method.body.params, &args)?
+                    build_around_wrappers(&dispatch.around, &args, primary_step, engine.env())?
                 };
-                engine.eval_expr(&method.body.body, &env, true)
+
+                // chain is a NativeFn. Call it with empty args (args captured in closures)
+                let result = chain.call(im::vector![], engine)?;
+                Ok(TailResult::Value(result))
             } else {
                 Err(EvalError::not_a_function(format!("#<{}>", o.header().class.name)))
             }
         }
         _ => Err(EvalError::not_a_function(other_display(&func))),
     }
+}
+
+/// Build the primary combination: :before → :primary → :after
+fn build_primary_combination(
+    dispatch: &crate::zos::gf::DispatchResult,
+    args: &im::Vector<Value>,
+    parent_env: &Arc<Env>,
+) -> Result<crate::value::NativeFn, EvalError> {
+    let args = args.clone();
+    let before = dispatch.before.clone();
+    let primary = dispatch.primary.clone();
+    let after = dispatch.after.clone();
+    let parent_env = parent_env.clone();
+
+    Ok(crate::value::NativeFn::new("__primary_combination__", move |_: im::Vector<Value>, engine: &dyn EvalEngine| -> Result<Value, EvalError> {
+        // Execute :before methods (most specific first)
+        for m in &before {
+            let env = if m.body.rest_param.is_some() {
+                Env::bind_variadic(&m.body.env, &m.body.params, &m.body.rest_param, &args)?
+            } else {
+                Env::bind(&m.body.env, &m.body.params, &args)?
+            };
+            engine.eval_expr(&m.body.body, &env, false)?;
+        }
+
+        // Execute :primary methods (most specific first — take the first)
+        if let Some(m) = primary.first() {
+            let env = if m.body.rest_param.is_some() {
+                Env::bind_variadic(&m.body.env, &m.body.params, &m.body.rest_param, &args)?
+            } else {
+                Env::bind(&m.body.env, &m.body.params, &args)?
+            };
+            let result = engine.eval_expr(&m.body.body, &env, false)?.into_value();
+
+            // Execute :after methods (least specific first → reverse order)
+            for m in after.iter().rev() {
+                let env = if m.body.rest_param.is_some() {
+                    Env::bind_variadic(&m.body.env, &m.body.params, &m.body.rest_param, &args)?
+                } else {
+                    Env::bind(&m.body.env, &m.body.params, &args)?
+                };
+                engine.eval_expr(&m.body.body, &env, false)?;
+            }
+
+            Ok(result)
+        } else {
+            Ok(Value::Nil)
+        }
+    }))
+}
+
+/// Wrap the primary combination in :around methods (outermost first).
+/// Each :around method can call (call-next-method) to invoke the next in chain.
+fn build_around_wrappers(
+    around_methods: &[Arc<crate::zos::gf::Method>],
+    args: &im::Vector<Value>,
+    inner: crate::value::NativeFn,
+    parent_env: &Arc<Env>,
+) -> Result<crate::value::NativeFn, EvalError> {
+    let mut chain: crate::value::NativeFn = inner;
+    let args = args.clone();
+    let parent_env = parent_env.clone();
+
+    // Build from innermost to outermost
+    for m in around_methods.iter().rev() {
+        let prev_chain = chain.clone();
+        let args = args.clone();
+        let method = Arc::clone(m);
+
+        chain = crate::value::NativeFn::new("__around_method__", move |_: im::Vector<Value>, engine: &dyn EvalEngine| -> Result<Value, EvalError> {
+            let env: Arc<Env>;
+            if method.body.rest_param.is_some() {
+                let mut e = Env::bind_variadic(&method.body.env, &method.body.params, &method.body.rest_param, &args)?;
+                e.set("*next-method*".into(), Value::NativeFunction(prev_chain.clone()));
+                env = e;
+            } else {
+                let mut e = Env::bind(&method.body.env, &method.body.params, &args)?;
+                e.set("*next-method*".into(), Value::NativeFunction(prev_chain.clone()));
+                env = e;
+            }
+            engine.eval_expr(&method.body.body, &env, false).map(|r| r.into_value())
+        });
+    }
+
+    Ok(chain)
 }
 
 /// Get the class ref for a Value (used by GF dispatch).
@@ -868,5 +958,31 @@ mod tests {
         let s = test_read("(draw (make-instance circle))").unwrap();
         let result = eval_in_context(&s, &ctx).unwrap();
         assert!(result.to_string().contains("circle"), "circle method should be called, got: {result}");
+    }
+
+    #[test]
+    fn test_zos_method_combination() {
+        // Test :around and call-next-method
+        let ctx = make_ctx();
+
+        let s = test_read("(defclass thing nil ())").unwrap();
+        eval_in_context(&s, &ctx).unwrap();
+        let s = test_read("(defgeneric process (x))").unwrap();
+        eval_in_context(&s, &ctx).unwrap();
+
+        // Primary method
+        let s = test_read("(defmethod process ((x thing)) (str \"primary\"))").unwrap();
+        eval_in_context(&s, &ctx).unwrap();
+
+        // Around method with call-next-method
+        let s = test_read("(defmethod process :around ((x thing)) (str \"before-\" (call-next-method) \"-after\"))").unwrap();
+        eval_in_context(&s, &ctx).unwrap();
+
+        let s = test_read("(process (make-instance thing))").unwrap();
+        let result = eval_in_context(&s, &ctx).unwrap();
+        let result_str = result.to_string();
+        assert!(result_str.contains("before"), "should contain 'before', got: {result_str}");
+        assert!(result_str.contains("primary"), "should contain 'primary', got: {result_str}");
+        assert!(result_str.contains("after"), "should contain 'after', got: {result_str}");
     }
 }

@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use im::Vector;
 
 use crate::context::EvalEngine;
 use crate::env::Env;
@@ -298,5 +299,22 @@ pub fn do_defmethod(
             }
         }
         _ => Err(EvalError::type_error("GenericFunction", gf_val.value_type())),
+    }
+}
+/// (call-next-method) → value
+/// Calls the next method in the method combination chain.
+/// Must be called from within a method body bound to a GF dispatch.
+pub fn do_call_next_method(
+    args: &[Sexp],
+    env: &Arc<Env>,
+    engine: &dyn EvalEngine,
+) -> Result<TailResult, EvalError> {
+    match env.get("*next-method*") {
+        Some(Value::NativeFunction(nf)) => {
+            let result = nf.call(im::Vector::new(), engine)?;
+            Ok(TailResult::Value(result))
+        }
+        Some(_) => Err(EvalError::custom("*next-method* is not a function")),
+        None => Err(EvalError::custom("no next method available (call-next-method outside method)")),
     }
 }

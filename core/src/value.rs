@@ -24,7 +24,7 @@ pub struct Function {
 pub struct NativeFn {
     id: usize,
     name: &'static str,
-    func: Arc<dyn Fn(Vector<Value>, &dyn EvalEngine) -> Result<Value, EvalError> + Send + Sync>,
+    func: Arc<dyn Fn(Vector<Value>, &dyn EvalEngine) -> Result<Value, EvalError>>,
 }
 
 impl std::fmt::Debug for NativeFn {
@@ -41,7 +41,7 @@ static NATIVE_ID_COUNTER: AtomicUsize = AtomicUsize::new(1);
 impl NativeFn {
     pub fn new(
         name: &'static str,
-        f: impl Fn(Vector<Value>, &dyn EvalEngine) -> Result<Value, EvalError> + Send + Sync + 'static,
+        f: impl Fn(Vector<Value>, &dyn EvalEngine) -> Result<Value, EvalError> + 'static,
     ) -> Self {
         let id = NATIVE_ID_COUNTER.fetch_add(1, Ordering::Relaxed);
         NativeFn {
