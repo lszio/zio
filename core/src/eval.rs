@@ -743,4 +743,26 @@ mod tests {
         let result = eval_in_context(&s, &ctx).unwrap();
         assert_eq!(result, Value::Integer(42));
     }
+
+    #[test]
+    fn test_zos_defclass_and_make_instance() {
+        let ctx = make_ctx();
+
+        // Define a class
+        let s = test_read("(defclass point nil ((x :initarg :x :accessor point-x)
+                                                (y :initarg :y :accessor point-y)))").unwrap();
+        eval_in_context(&s, &ctx).unwrap();
+
+        // Create an instance
+        let s = test_read("(def p (make-instance point :x 10 :y 20))").unwrap();
+        eval_in_context(&s, &ctx).unwrap();
+
+        let s = test_read("(slot-value p :x)").unwrap();
+        let result = eval_in_context(&s, &ctx).unwrap();
+        assert_eq!(result, Value::Integer(10), "slot-value :x should be 10");
+
+        let s = test_read("(slot-value p :y)").unwrap();
+        let result = eval_in_context(&s, &ctx).unwrap();
+        assert_eq!(result, Value::Integer(20), "slot-value :y should be 20");
+    }
 }

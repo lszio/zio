@@ -464,6 +464,71 @@ pub fn count_fn(args: Vector<Value>, _engine: &dyn EvalEngine) -> Result<Value, 
     };
     Ok(Value::Integer(result))
 }
+// ── ZOS Object Operations ─────────────────────────────────────────
+
+/// (slot-value instance slot-name) → value
+pub fn slot_value_fn(args: Vector<Value>, _engine: &dyn EvalEngine) -> Result<Value, EvalError> {
+    if args.len() != 2 {
+        return Err(EvalError::wrong_arg_count(2, args.len()));
+    }
+    let instance = match &args[0] {
+        Value::Object(o) => o,
+        other => return Err(EvalError::type_error("object", other.value_type())),
+    };
+    let slot_name = match &args[1] {
+        Value::Keyword(k) => k.clone(),
+        Value::Symbol(s) => s.clone(),
+        other => return Err(EvalError::type_error("keyword or symbol", other.value_type())),
+    };
+    if let Some(inst) = instance.as_any().downcast_ref::<crate::value::ZosInstance>() {
+        inst.slots.get(&slot_name).cloned().ok_or_else(|| {
+            EvalError::custom(format!("slot not found: {slot_name}"))
+        })
+    } else {
+        Err(EvalError::type_error("ZosInstance", "non-instance object"))
+    }
+}
+
+/// (make-instance class-name :slot1 val1 :slot2 val2 ...) → object
+pub fn make_instance_fn(args: Vector<Value>, engine: &dyn EvalEngine) -> Result<Value, EvalError> {
+    if args.is_empty() || args.len() % 2 != 1 {
+        return Err(EvalError::wrong_arg_count_min(1, args.len()));
+    }
+
+    // First arg is a class (as Value::Object from defclass, or looked up symbol)
+    let class_ref = match &args[0] {
+        Value::Object(o) => o.header().class.clone(),
+        Value::Symbol(s) => {
+            let class_val = engine.env().get(s).ok_or_else(|| {
+                EvalError::custom(format!("class not found: {s}"))
+            })?;
+            match &class_val {
+                Value::Object(o) => o.header().class.clone(),
+                _ => return Err(EvalError::type_error("class object", class_val.value_type())),
+            }
+        }
+        other => return Err(EvalError::type_error("class object", other.value_type())),
+    };
+
+    let mut instance = crate::value::ZosInstance::new(class_ref.clone());
+
+    // Process initargs
+    let mut i = 1;
+    while i < args.len() {
+        let key = match &args[i] {
+            Value::Keyword(k) => k.clone(),
+            Value::Symbol(s) => s.clone(),
+            other => return Err(EvalError::type_error("keyword or symbol", other.value_type())),
+        };
+        i += 1;
+        if i < args.len() {
+            instance.slots.insert(key, args[i].clone());
+            i += 1;
+        }
+    }
+
+    Ok(Value::Object(Box::new(instance)))
+}
 
 // ── Type Reflection ────────────────────────────────────────────────
 
@@ -954,6 +1019,10 @@ pub fn setup_env(env: &Arc<Env>) {
     env.set("char->integer".into(), Value::NativeFunction(NativeFn::new("char->integer", char_to_integer)));
     env.set("integer->char".into(), Value::NativeFunction(NativeFn::new("integer->char", integer_to_char)));
     env.set("char=?".into(), Value::NativeFunction(NativeFn::new("char=?", char_eq)));
+
+    // ZOS operations
+    env.set("slot-value".into(), Value::NativeFunction(NativeFn::new("slot-value", slot_value_fn)));
+    env.set("make-instance".into(), Value::NativeFunction(NativeFn::new("make-instance", make_instance_fn)));
 
     // Map operations
     env.set("put".into(), Value::NativeFunction(NativeFn::new("put", put_fn)));
