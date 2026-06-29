@@ -862,6 +862,16 @@ pub fn macroexpand_1_fn(args: Vector<Value>, engine: &dyn EvalEngine) -> Result<
         _ => Ok(args[0].clone()),
     }
 }
+/// (pprint value) → nil — pretty-print a value with indentation.
+pub fn pprint_fn(args: Vector<Value>, _engine: &dyn EvalEngine) -> Result<Value, EvalError> {
+    if args.len() != 1 {
+        return Err(EvalError::wrong_arg_count(1, args.len()));
+    }
+    let mut output = String::new();
+    args[0].pretty_print(&mut output, 0).map_err(|_| EvalError::custom("pprint formatting error"))?;
+    println!("{output}");
+    Ok(Value::Nil)
+}
 
 /// Fully expand a form: recursively expand until no more macro calls remain.
 pub fn macroexpand_fn(args: Vector<Value>, engine: &dyn EvalEngine) -> Result<Value, EvalError> {
@@ -962,6 +972,8 @@ pub fn setup_env(env: &Arc<Env>) {
     // Macroexpand
     env.set("macroexpand-1".into(), Value::NativeFunction(NativeFn::new("macroexpand-1", macroexpand_1_fn)));
     env.set("macroexpand".into(), Value::NativeFunction(NativeFn::new("macroexpand", macroexpand_fn)));
+    // Pretty-print
+    env.set("pprint".into(), Value::NativeFunction(NativeFn::new("pprint", pprint_fn)));
     // I/O
     env.set("println".into(), Value::NativeFunction(NativeFn::new("println", println)));
     env.set("prn".into(), Value::NativeFunction(NativeFn::new("prn", prn)));

@@ -257,6 +257,84 @@ impl std::fmt::Display for Value {
         }
     }
 }
+impl Value {
+    /// Pretty-print this value with indentation for readability.
+    pub fn pretty_print(&self, f: &mut impl std::fmt::Write, indent: usize) -> std::fmt::Result {
+        match self {
+            Value::List(l) => {
+                // Check if this is a "short" list (all atoms, ≤5 elements)
+                let is_short = l.len() <= 5 && l.iter().all(|v| matches!(v,
+                    Value::Nil | Value::Boolean(_) | Value::Integer(_)
+                    | Value::Float(_) | Value::String(_) | Value::Symbol(_)
+                    | Value::Keyword(_) | Value::Char(_)));
+                if is_short {
+                    write!(f, "(")?;
+                    for (i, val) in l.iter().enumerate() {
+                        if i > 0 { write!(f, " ")?; }
+                        val.pretty_print(f, indent + 1)?;
+                    }
+                    write!(f, ")")
+                } else {
+                    writeln!(f, "(")?;
+                    for val in l.iter() {
+                        write!(f, "{:indent$}", "", indent = indent + 2)?;
+                        val.pretty_print(f, indent + 2)?;
+                        writeln!(f)?;
+                    }
+                    write!(f, "{:indent$})", "", indent = indent)
+                }
+            }
+            Value::Vector(v) => {
+                let is_short = v.len() <= 5 && v.iter().all(|val| matches!(val,
+                    Value::Nil | Value::Boolean(_) | Value::Integer(_)
+                    | Value::Float(_) | Value::String(_) | Value::Symbol(_)
+                    | Value::Keyword(_) | Value::Char(_)));
+                if is_short {
+                    write!(f, "[")?;
+                    for (i, val) in v.iter().enumerate() {
+                        if i > 0 { write!(f, " ")?; }
+                        val.pretty_print(f, indent + 1)?;
+                    }
+                    write!(f, "]")
+                } else {
+                    writeln!(f, "[")?;
+                    for val in v.iter() {
+                        write!(f, "{:indent$}", "", indent = indent + 2)?;
+                        val.pretty_print(f, indent + 2)?;
+                        writeln!(f)?;
+                    }
+                    write!(f, "{:indent$}]", "", indent = indent)
+                }
+            }
+            Value::Map(m) => {
+                if m.is_empty() {
+                    write!(f, "{{}}")
+                } else if m.len() <= 3 {
+                    write!(f, "{{")?;
+                    for (i, (k, v)) in m.iter().enumerate() {
+                        if i > 0 { write!(f, " ")?; }
+                        k.pretty_print(f, indent + 1)?;
+                        write!(f, " ")?;
+                        v.pretty_print(f, indent + 1)?;
+                    }
+                    write!(f, "}}")
+                } else {
+                    writeln!(f, "{{")?;
+                    for (k, v) in m.iter() {
+                        write!(f, "{:indent$}", "", indent = indent + 2)?;
+                        k.pretty_print(f, indent + 2)?;
+                        write!(f, " ")?;
+                        v.pretty_print(f, indent + 2)?;
+                        writeln!(f)?;
+                    }
+                    write!(f, "{:indent$}}}", "", indent = indent)
+                }
+            }
+            // Atoms: use Display
+            _ => write!(f, "{self}"),
+        }
+    }
+}
 
 /// Check if a Value is truthy (everything except nil and false).
 pub fn is_truthy(v: &Value) -> bool {

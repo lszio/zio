@@ -120,7 +120,17 @@ fn run_repl(sm: &Arc<SourceMap>) {
 
         match reader::read_with_source(input, source_id) {
             Ok(sexp) => match eval::eval_in_context(&sexp, &ctx) {
-                Ok(val) => println!("{val}"),
+                Ok(val) => {
+                    // Pretty-print compound values for readability
+                    match &val {
+                        Value::List(_) | Value::Vector(_) | Value::Map(_) => {
+                            let mut output = String::new();
+                            let _ = val.pretty_print(&mut output, 0);
+                            println!("{output}");
+                        }
+                        _ => println!("{val}"),
+                    }
+                }
                 Err(e) => eprintln!("Error: {e}"),
             },
             Err(e) => eprintln!("Parse error: {e}"),
