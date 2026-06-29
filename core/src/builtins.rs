@@ -1024,6 +1024,9 @@ pub fn setup_env(env: &Arc<Env>) {
     env.set("slot-value".into(), Value::NativeFunction(NativeFn::new("slot-value", slot_value_fn)));
     env.set("make-instance".into(), Value::NativeFunction(NativeFn::new("make-instance", make_instance_fn)));
 
+    // Error signaling
+    env.set("error".into(), Value::NativeFunction(NativeFn::new("error", crate::special::zos_forms::do_error_fn)));
+
     // Map operations
     env.set("put".into(), Value::NativeFunction(NativeFn::new("put", put_fn)));
 

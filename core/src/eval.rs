@@ -985,4 +985,36 @@ mod tests {
         assert!(result_str.contains("primary"), "should contain 'primary', got: {result_str}");
         assert!(result_str.contains("after"), "should contain 'after', got: {result_str}");
     }
+
+    #[test]
+    fn test_try_catch() {
+        let ctx = make_ctx();
+
+        // try with no error
+        let s = test_read("(try 42)").unwrap();
+        let result = eval_in_context(&s, &ctx).unwrap();
+        assert_eq!(result, Value::Integer(42));
+
+        // try/catch with caught error
+        let s = test_read("(try (error \"oops\") (catch any \"caught\"))").unwrap();
+        let result = eval_in_context(&s, &ctx);
+        match result {
+            Ok(v) => assert_eq!(v.to_string(), "\"caught\""),
+            Err(e) => panic!("try/catch should catch error, got: {e}"),
+        }
+    }
+
+    #[test]
+    fn test_defpackage() {
+        let ctx = make_ctx();
+
+        let s = test_read("(defpackage :my-pkg (:use :core) (:export :my-fn))").unwrap();
+        let result = eval_in_context(&s, &ctx).unwrap();
+        assert_eq!(result, Value::Keyword("my-pkg".into()));
+
+        // Check that package metadata was stored
+        let s = test_read("(get *packages* :my-pkg)").unwrap();
+        let result = eval_in_context(&s, &ctx).unwrap();
+        assert_eq!(result, Value::Keyword("package".into()));
+    }
 }

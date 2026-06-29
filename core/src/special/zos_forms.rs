@@ -5,7 +5,7 @@ use crate::context::EvalEngine;
 use crate::env::Env;
 use crate::error::EvalError;
 use crate::sexp::Sexp;
-use crate::special::TailResult;
+use crate::special::{eval_last_body, TailResult};
 use crate::value::Value;
 use crate::zos::object::{Class, ClassRef, ObjectFlags, SlotDefinition};
 use crate::zos::class;
@@ -317,4 +317,177 @@ pub fn do_call_next_method(
         Some(_) => Err(EvalError::custom("*next-method* is not a function")),
         None => Err(EvalError::custom("no next method available (call-next-method outside method)")),
     }
+}
+/// (defpackage name (:use :pkg1 :pkg2) (:export :sym1 :sym2))
+/// Declare a package with optional :use and :export clauses.
+pub fn do_defpackage(
+    args: &[Sexp],
+    env: &Arc<Env>,
+    _engine: &dyn EvalEngine,
+) -> Result<TailResult, EvalError> {
+    if args.is_empty() {
+        return Err(EvalError::invalid_form("defpackage requires a name"));
+    }
+
+    let pkg_name = match &args[0] {
+        Sexp::Keyword(s, _) | Sexp::Symbol(s, _) => s.clone(),
+        other => return Err(EvalError::type_error("keyword or symbol", other.kind())),
+    };
+
+    let mut uses = Vec::new();
+    let mut exports = Vec::new();
+
+    let mut i = 1;
+    while i < args.len() {
+        let clause = match &args[i] {
+            Sexp::List(l, _) | Sexp::Vector(l, _) => l,
+            other => return Err(EvalError::invalid_form(
+                format!("defpackage clause must be a list, got {}", other.kind()),
+            )),
+        };
+        if clause.is_empty() {
+            i += 1;
+            continue;
+        }
+        let clause_name = match &clause[0] {
+            Sexp::Keyword(k, _) | Sexp::Symbol(k, _) => k.clone(),
+            _ => { i += 1; continue; }
+        };
+
+        if clause_name == "use" || clause_name == ":use" {
+            for item in clause.iter().skip(1) {
+                if let Sexp::Keyword(s, _) | Sexp::Symbol(s, _) = item {
+                    uses.push(s.clone());
+                }
+            }
+        } else if clause_name == "export" || clause_name == ":export" {
+            for item in clause.iter().skip(1) {
+                if let Sexp::Keyword(s, _) | Sexp::Symbol(s, _) = item {
+                    exports.push(s.clone());
+                }
+            }
+        }
+        i += 1;
+    }
+
+    // Build package
+    let mut pkg = crate::zos::package::Package::new(pkg_name.clone());
+    for sym_name in &exports {
+        pkg.exports.insert(sym_name.clone());
+    }
+    for use_name in &uses {
+        pkg.uses.push(use_name.clone());
+    }
+
+    // Store package in env as a special value
+    // For simplicity, store as a map under *packages*
+    let packages_val = env.get("*packages*").unwrap_or(Value::Map(im::HashMap::new()));
+    let mut packages_map = match &packages_val {
+        Value::Map(m) => m.clone(),
+        _ => im::HashMap::new(),
+    };
+    // We can't easily store Package as Value, so store the package name as marker
+    // The actual package data is managed separately
+    // For now, just store a keyword indicator
+    packages_map.insert(
+        Value::Keyword(pkg_name.clone()),
+        Value::Keyword("package".into()),
+    );
+    env.set("*packages*".into(), Value::Map(packages_map));
+
+    // Also store :use info for resolution
+    env.set(format!("*package-uses-{pkg_name}*").into(),
+        Value::List(uses.iter().map(|u| Value::Keyword(u.clone())).collect()));
+    env.set(format!("*package-exports-{pkg_name}*").into(),
+        Value::List(exports.iter().map(|e| Value::Keyword(e.clone())).collect()));
+
+    Ok(TailResult::Value(Value::Keyword(pkg_name)))
+}
+
+/// (try body (catch type handler-body))
+/// Simple condition handling: evaluate body, catch type signals.
+pub fn do_try(
+    args: &[Sexp],
+    env: &Arc<Env>,
+    engine: &dyn EvalEngine,
+) -> Result<TailResult, EvalError> {
+    if args.is_empty() {
+        return Err(EvalError::invalid_form("try requires a body"));
+    }
+
+    // Parse: (try body (catch type handler-body) ...)
+    let body_exprs: Vec<Sexp> = args.iter().cloned().collect();
+
+    // Separate body from catch clauses
+    let mut body_end = body_exprs.len();
+    let mut catch_clauses: Vec<(String, Vec<Sexp>)> = Vec::new();
+
+    for i in (0..body_exprs.len()).rev() {
+        if let Sexp::List(list, _) = &body_exprs[i] {
+            if !list.is_empty() {
+                if let Sexp::Symbol(s, _) = &list[0] {
+                    if s == "catch" {
+                        body_end = i;
+                        let type_name = if list.len() > 1 {
+                            match &list[1] {
+                                Sexp::Keyword(k, _) | Sexp::Symbol(k, _) => k.clone(),
+                                _ => "any".into(),
+                            }
+                        } else {
+                            "any".into()
+                        };
+                        let handler: Vec<Sexp> = list.iter().skip(2).cloned().collect();
+                        catch_clauses.push((type_name, handler));
+                        continue;
+                    }
+                }
+            }
+        }
+        break;
+    }
+
+    // Evaluate body
+    let body_slice = &body_exprs[..body_end];
+    let result = if body_slice.is_empty() {
+        eval_last_body(body_slice, env, false, engine)
+    } else {
+        // Wrap in error handling: catch any error and try catch clauses
+        eval_last_body(body_slice, env, false, engine)
+    };
+    match result {
+        Ok(r) => Ok(r),
+        Err(e) => {
+            let error_type = extract_error_type(&e);
+            for (catch_type, handler) in &catch_clauses {
+                if catch_type == "any" || catch_type == &error_type {
+                    let catch_env = Arc::new(Env::new(Some(env.clone())));
+                    catch_env.set("*error*".into(), Value::String(e.to_string()));
+                    return eval_last_body(handler, &catch_env, true, engine);
+                }
+            }
+            Err(e)
+        }
+    }
+}
+
+/// Extract a simplified error type name from an EvalError.
+fn extract_error_type(e: &EvalError) -> String {
+    let s = e.to_string();
+    if s.starts_with("symbol not found") { "symbol-not-found".into() }
+    else if s.starts_with("type error") { "type-error".into() }
+    else if s.starts_with("wrong argument count") { "wrong-arg-count".into() }
+    else if s.starts_with("division by zero") { "division-by-zero".into() }
+    else { "error".into() }
+}
+
+/// (error message) — signal an error condition
+pub fn do_error_fn(args: Vector<Value>, engine: &dyn EvalEngine) -> Result<Value, EvalError> {
+    let msg = if args.is_empty() {
+        "error".to_string()
+    } else {
+        format!("{}", args[0])
+    };
+    // Check if there's a try/catch in the call chain via *in-try* flag
+    // For now, just return an error
+    Err(EvalError::custom(msg))
 }
