@@ -27,11 +27,17 @@ printf '%s\n' \
   > "$work_dir/map-loop.zio"
 
 cargo build --release --bin zio-cli
-binary="$root/target/release/zio-cli"
+binary="${ZIO_AST_BASELINE_BINARY:-$root/target/release/zio-cli}"
 measure() {
-  local name="$1" program="$2" elapsed
+  local name="$1" program="$2" elapsed status
   local TIMEFORMAT='%R'
-  { time "$binary" "$program" >/dev/null; } 2> "$work_dir/$name.time"
+  if { time "$binary" "$program" >/dev/null; } 2> "$work_dir/$name.time"; then
+    :
+  else
+    status="$?"
+    printf 'benchmark %s failed with status %s\n' "$name" "$status" >&2
+    return "$status"
+  fi
   elapsed="$(tr -d '\n' < "$work_dir/$name.time")"
   case "$elapsed" in
     *[!0-9.]*|'') printf 'invalid elapsed value for %s: %s\n' "$name" "$elapsed" >&2; exit 1 ;;
