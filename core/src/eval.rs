@@ -877,6 +877,36 @@ mod tests {
     }
 
     #[test]
+    fn test_stdlib_nth_and_last_use_function_tail_calls() {
+        let ctx = make_ctx();
+        let stdlib = include_str!("../stdlib/zio/core.zio");
+        let stdlib = test_read(&format!("(do\n{stdlib}\n)")).unwrap();
+        eval_in_context(&stdlib, &ctx).unwrap();
+
+        for (input, expected) in [
+            ("(nth (list 10 20 30) 1)", Value::Integer(20)),
+            ("(last (list 10 20 30))", Value::Integer(30)),
+            ("(nth (list 10 20 30) 99)", Value::Nil),
+        ] {
+            let expression = test_read(input).unwrap();
+            assert_eq!(eval_in_context(&expression, &ctx).unwrap(), expected);
+        }
+    }
+
+    #[test]
+    fn test_macro_example_generates_variadic_logger_functions() {
+        let ctx = make_ctx();
+        let stdlib = include_str!("../stdlib/zio/core.zio");
+        let stdlib = test_read(&format!("(do\n{stdlib}\n)")).unwrap();
+        eval_in_context(&stdlib, &ctx).unwrap();
+
+        let example = include_str!("../../examples/macros.zio");
+        let example = test_read(&format!("(do\n{example}\n)")).unwrap();
+
+        assert_eq!(eval_in_context(&example, &ctx).unwrap(), Value::Nil);
+    }
+
+    #[test]
     fn test_syntax_rules_macro() {
         let ctx = make_ctx();
 

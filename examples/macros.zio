@@ -49,7 +49,7 @@
 (defmacro def-logger [name level]
   (list 'defn name '[& msg]
     (list 'println
-      (str "[" level "] " (apply str msg)))))
+      (list 'str "[" level "] " (list 'apply 'str 'msg)))))
 
 (def-logger log-info "INFO")
 (def-logger log-error "ERROR")

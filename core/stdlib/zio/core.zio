@@ -69,12 +69,12 @@
 (defn last [coll]
   (if (nil? (cdr coll))
     (car coll)
-    (recur (cdr coll))))
+    (last (cdr coll))))
 
 (defn nth [coll n]
   (if (nil? coll)
     nil
-    (if (= n 0) (first coll) (recur (rest coll) (dec n)))))
+    (if (= n 0) (first coll) (nth (rest coll) (dec n)))))
 
 ;; ── Higher-order ─────────────────────────────────────────────
 
