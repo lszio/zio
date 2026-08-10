@@ -1,84 +1,9 @@
-;; ── Datalog Concept ─────────────────────────────────────────────
-;; This file demonstrates the intended API for zio-datalog.
-;; NOT YET RUNNABLE — requires zio-datalog library (Phase 5+).
-;;
-;; Shows the design: queries are Sexp data, macros compose queries.
+(println "=== Datalog as Data ===")
 
-;; ── Database setup ─────────────────────────────────────────────
-
-(println "=== Datalog Concept ===")
-
-;; In the future, with zio-datalog loaded:
-#|
-(require :zio.datalog)
-
-;; Define schema
-(def db (datalog/create-db
-  {:person/name   {:type :string  :index :eav}
-   :person/age    {:type :int     :index :eav}
-   :person/email  {:type :string  :index :eav}}))
-
-;; Insert data (transaction)
-(def db (datalog/transact db [
-  [:add 1 :person/name "Alice"]
-  [:add 1 :person/age  30]
-  [:add 2 :person/name "Bob"]
-  [:add 2 :person/age  25]
-  [:add 3 :person/name "Charlie"]
-  [:add 3 :person/age  35]]))
-
-;; Query: find names of people over 30
-(def result (datalog/q '[:find ?name
-                          :where
-                          [?e :person/name ?name]
-                          [?e :person/age ?age]
-                          [(> ?age 30)]]
-                        db))
-;; → #{["Charlie"] ["Alice"]}
-|#
-
-;; ── Query as data (homioiconicity demo) ────────────────────────
-
-;; The key insight: queries are just nested lists (Sexp data)
-;; They can be composed, generated, and transformed by macros
-
-(println "Query as data structure:")
-(println '[:find ?name
-           :where [?e :person/name ?name]])
-
-;; ── Query composition macro (concept) ──────────────────────────
-
-#|
-;; Macro that combines queries
-(defmacro q [query-spec db]
-  `(datalog/run '~query-spec ~db))
-
-;; Parameterized query generator
-(defmacro q-by-age [age]
-  `[:find ?name
-    :in $
+(def person-query
+  '[:find ?name
     :where
-    [?e :person/name ?name]
-    [?e :person/age ~age]])    ;; ~ unquotes the age parameter
+    [?entity :person/name ?name]])
 
-;; Usage:
-; (q (q-by-age 30) my-db)     ;; → #{["Alice"]}
-|#
-
-;; ── Time travel (concept) ──────────────────────────────────────
-
-#|
-;; Time travel — query past state
-(q [:find ?salary
-    :where [?e :employee/salary ?salary]]
-   (as-of db tx-42))           ;; database snapshot at tx-42
-
-;; Since query, show changes after a point
-(q [:find ?name ?salary
-    :where [?e :employee/name ?name]
-           [?e :employee/salary ?salary]]
-   (since db tx-42))
-|#
-
-(println "Datalog queries are Sexp data — can be composed by macros.")
-(println "zio-datalog library: Phase 5+ target.")
+(println "query-form:" person-query)
+(println "zio-datalog library: planned capability.")

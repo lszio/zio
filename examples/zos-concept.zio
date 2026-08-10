@@ -1,89 +1,16 @@
-;; ── ZOS Object System Concept ────────────────────────────────────
-;; This file demonstrates the intended ZOS API.
-;; NOT YET RUNNABLE — requires ZOS Phase 2 implementation.
-;;
-;; Shows the design: AMOP-based object system with generic functions.
+(println "=== ZOS Capability Probe ===")
 
-(println "=== ZOS Object System Concept ===")
+(defclass point nil
+  ((x :initarg :x)
+   (y :initarg :y)))
 
-;; ── Class definition ─────────────────────────────────────────────
+(def p (make-instance point :x 10 :y 20))
+(println "point-x:" (slot-value p :x))
+(println "point-y:" (slot-value p :y))
 
-#|
-(defclass point ()
-  ((x :initarg :x :accessor point-x)
-   (y :initarg :y :accessor point-y)))
+(defgeneric describe (shape))
+(defmethod describe ((shape point))
+  (str "Point(" (slot-value shape :x) ", " (slot-value shape :y) ")"))
 
-(defclass circle ()
-  ((center :initarg :center :accessor circle-center)
-   (radius :initarg :radius :accessor circle-radius)))
-
-;; ── Create instances ─────────────────────────────────────────────
-
-(def p (make-instance 'point :x 10 :y 20))
-(def c (make-instance 'circle :center p :radius 5))
-
-;; ── Slot access ──────────────────────────────────────────────────
-
-(point-x p)            ;; → 10
-(slot-value p 'x)      ;; → 10 (reflective)
-(setf (point-x p) 30)  ;; → 30
-
-;; ── Generic function ─────────────────────────────────────────────
-
-(defgeneric draw (shape))
-
-(defmethod draw ((p point))
-  (println "Point at" (point-x p) (point-y p)))
-
-(defmethod draw ((c circle))
-  (println "Circle at" (circle-center c) "radius" (circle-radius c)))
-
-;; ── Multi-method dispatch ────────────────────────────────────────
-
-(defgeneric distance (a b))
-
-(defmethod distance ((p1 point) (p2 point))
-  ;; sqrt((x2-x1)^2 + (y2-y1)^2)
-  (let [dx (- (point-x p2) (point-x p1))
-        dy (- (point-y p2) (point-y p1))]
-    (sqrt (+ (* dx dx) (* dy dy)))))
-
-;; ── Method combination ───────────────────────────────────────────
-
-(defmethod draw :before ((p point))
-  (println "About to draw point"))
-
-(defmethod draw :after ((p point))
-  (println "Finished drawing point"))
-
-;; Calling draw(p) executes:
-;;   :before → "About to draw point"
-;;   :primary → "Point at 10 20"
-;;   :after → "Finished drawing point"
-|#
-
-;; ── Macro-based DSL (the intended ZOS API style) ─────────────────
-
-;; ZOS is built through macros, not special forms.
-;; defclass expands to register-class + slot definitions.
-;; defgeneric expands to create-generic-function.
-;; defmethod expands to add-method.
-
-;; This means users can extend the object system with their own
-;; macros that produce the same MOP calls:
-
-#|
-;; Example: defining an entity (persistent object)
-(defmacro defentity [name slots]
-  `(progn
-     (defclass ,name () ,(map (fn [s] (list s :initarg (keyword s) :accessor s)) slots))
-     (defmethod persist :before ((obj ,name))
-       (println "Persisting" (type-of obj)))))
-
-(defentity user [name email])
-;; Expands to defclass + :before persist method
-|#
-
-(println "ZOS brings CLOS-style object system to Zio.")
-(println "ZOS Phase 1: defclass, defgeneric, defmethod, slot-value.")
-(println "ZOS Phase 2: MOP, metaclass, multi-dispatch.")
+(println (describe p))
+(println "ZOS capability probe completed.")

@@ -20,7 +20,7 @@
 (println [1 2 3])             ;; [1 2 3] — vector literal
 (println #(1 2 3))            ;; [1 2 3] — dispatch reader vector
 (println {:a 1 :b 2})         ;; {:a 1 :b 2}
-(println #{a b c})            ;; (set a b c) — set via dispatch
+;; Set literals are documented as planned in docs/feature-matrix.md.
 
 (println (cons 1 (list 2 3))) ;; (1 2 3)
 (println (car (list 1 2 3)))  ;; 1
