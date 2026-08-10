@@ -1,0 +1,12 @@
+{
+  "engine": "ast",
+  "command": "target/release/zio-cli PROGRAM",
+  "revision": "0665b5ad8f99efd48e38b267dbdf0c9e58cff2ce",
+  "machine": "Linux 7.1.6-arch1-1 x86_64",
+  "units": "seconds",
+  "benchmarks": {
+    "sum-loop": 0.029,
+    "function-call": 0.022,
+    "map-loop": 0.013
+  }
+}
