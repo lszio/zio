@@ -1,6 +1,11 @@
 # Zio 语言哲学
 
 > Version 1.0 — 核心设计原则与语言哲学
+>
+> 本文讨论设计原则时也会提到未来能力。当前执行引擎与能力成熟度以
+> [特性矩阵](feature-matrix.md)为准：AST evaluator 为 Stable，ZOS
+> class/generic dispatch 子集为 Experimental，VM/JIT、领域扩展库和
+> homoiconic learner 均为 Planned。
 
 ---
 
@@ -10,16 +15,17 @@
 
 Zio 是一门以同像性（homoiconicity）为基石的通用 Lisp 语言。代码即数据，数据即代码。宏在语法域变换程序，eval 在运行时域执行程序。两个域通过 Sexp ↔ Value 转换桥接。
 
-在此基础上，Zio 构建了：
+当前可验证的实现基础是：
 
 ```text
-Zio = 核心语言
-    ├── Lisp 核心（Sexp + eval/apply + 宏）
-    ├── ZOS（AMOP 运行时对象模型：Class · GF · Method · MOP · Package · Condition）
-    └── Rust 宿主（零开销嵌入 · EvalEngine trait · NativeFn）
+Zio = Stable Lisp 核心（Reader + Sexp + AST eval/apply + 宏 + stdlib）
+    + Experimental ZOS 子集（Class + Generic Function dispatch）
+    + Rust 宿主（EvalContext + NativeFn）
 ```
 
-所有领域能力（Datalog、Agent、持久化集合等）都是通过宏 + MOP 构建的 `.zio` 扩展库，不进入核心。
+领域能力被设计为未来通过宏 + MOP 构建的 `.zio` 扩展库，不进入核心。
+Datalog、Agent、persistent collection 与 homoiconic learner 当前均为
+[Planned](feature-matrix.md)，不是可加载的实现。
 
 ### 1.2 核心命题
 
@@ -32,16 +38,18 @@ Zio = 核心语言
        → eval(env, expr) = agent(state, action)
 ```
 
-Zio 的扩充分解：
+Zio 的规划扩充分解（不是当前组件清单）：
 
 ```text
-Zio = Lisp 核心（同像性 + eval/apply + 宏）
-    + Rust 宿主（FFI + 嵌入 + 零开销）
-    + ZOS（AMOP + MOP + 多分派）
-    + 宏系统（模式匹配 → 显式重命名）
-    + 扩展库（Datalog · Agent · 自学习）
-    + 自举工具链（编辑器 · LSP · Debugger）
+Zio = 当前 AST Lisp 核心
+    + Experimental ZOS 子集
+    + Planned ZIR / bytecode VM / JIT
+    + Planned 扩展库（Datalog · Agent · persistent collections）
+    + Planned homoiconic learner
+    + Planned 自举工具链（编辑器 · LSP · Debugger）
 ```
+
+所有 Planned 项的批准设计和状态见[特性矩阵](feature-matrix.md)。
 
 ---
 
@@ -70,7 +78,9 @@ Zio = Lisp 核心（同像性 + eval/apply + 宏）
 
 ### 定理 4: 核心最小，其余是库
 
-**推论**: 任何领域能力（Datalog、Agent、自学习、Clojure 风格集合）都不进入 Zio 核心。核心只包含：Sexp/Value/Eval、ZOS（Class/GF/MOP/Package/Condition）、Builtin（最小编程原语）。
+**推论**: 任何领域能力（Datalog、Agent、自学习、Clojure 风格集合）都不
+进入 Zio 核心。这些领域能力仍为 [Planned](feature-matrix.md)；当前核心
+状态由矩阵中的 Stable 与 Experimental 行定义。
 
 **原理**: 核心的稳定性取决于它不做多少事。领域能力通过宏 + MOP + 库来构建，可以独立迭代、版本、替换。
 
@@ -103,7 +113,9 @@ Library      → 模块级扩展
 四个扩展点形成**递进系统**：从最轻量的 Reader Macro 到最重量级的 MOP。
 
 ### 3.4 运行时优先（Runtime First）
-ZOS 描述的是**运行时对象**，不是语言语法。Reader、Macro、Compiler 负责**生成**对象；ZOS 负责**运行**这些对象。
+ZOS 描述的是**运行时对象**，不是语言语法。当前 Reader、Macro 和 AST
+evaluator 读取、变换并执行对象；未来 ZIR/bytecode compiler 与 JIT 仍为
+[Planned](feature-matrix.md)。
 
 ### 3.5 机制而非策略（Mechanism over Policy）
 ZOS 只提供机制，不提供策略。Multiple Dispatch 是机制；Protocol 是策略。Immutable Entity、Datomic、AI Runtime 都是策略——全部通过宏 + MOP 构建。
@@ -126,16 +138,17 @@ Zio 的核心特性构成一个自洽的整体，不是其他语言特性的组�
 | **持久化数据结构** | 核心语言 | 不可变 + 结构共享（im crate） |
 | **零开销嵌入** | Rust 宿主 | 任意 Rust 程序可嵌入 Zio |
 
-### 4.1 扩展库（纯 Zio 实现）
-所有领域能力都是通过宏 + MOP 构建的 `.zio` 库，不进入核心：
+### 4.1 规划中的扩展库
 
-| 库 | 目录 | 说明 |
-|----|------|------|
-| `zio-persistent` | `lib/zio/persistent.zio` | 持久化集合（Vector / Map / Set） |
-| `zio-datalog` | `lib/zio/datalog.zio` | 内存 Datalog 数据库 |
-| `zio-agent` | `lib/zio/agent/` | Agent 编排框架 |
-| `zio-entity` | `lib/zio/entity.zio` | 带身份的对象 |
-| `zio-protocol` | `lib/zio/protocol.zio` | Protocol 系统 |
+领域能力按设计将通过宏 + MOP 构建为 `.zio` 库，不进入核心。下列路径
+是 placeholder 或规划位置，不代表库可加载；状态以
+[特性矩阵](feature-matrix.md)为准：
+
+| 规划能力 | 规划或 placeholder 路径 | 状态 |
+|----------|-------------------------|------|
+| Persistent collection library | `lib/zio/persistent.zio` | Planned；API 未实现 |
+| Datalog evaluator | `lib/zio/datalog.zio` | Planned；API 未实现 |
+| Agent / Entity / Protocol libraries | 规划中的 `lib/zio/` modules | Planned；尚不可加载 |
 
 ### 4.2 自举
 Zio 的自举路径是**工具链自举**，不是「编译器用 Zio 写」：
@@ -175,34 +188,35 @@ ZOS（Zio Object System）是 Zio 的统一运行时对象模型。它不是传�
 - Actor / 并发模型（→ 库: `zio-actor`）
 - Graph / 图分析（→ 库: `zio-graph`）
 
+这些名称描述未来职责边界；persistent collection、Datalog 与应用库仍为
+[Planned](feature-matrix.md)。
+
 ---
 
 ## 6 架构分层
 
-```
+```text
+Current
 ┌──────────────────────────────────────────────────┐
-│                   Application                      │
-│   CLI · REPL · Editor · LSP · Embed · WASM        │
+│ zio-cli: CLI + REPL                              │
 ├──────────────────────────────────────────────────┤
-│                 Extension Library                  │
-│   zio-datalog · zio-agent · zio-ai · zio-persist  │
-│   zio-entity · zio-protocol · zio-actor · zio-gr  │
+│ zio-core: Stable AST evaluator, closures,        │
+│           core macros and stdlib                  │
+│           Experimental ZOS Class/GF subset        │
 ├──────────────────────────────────────────────────┤
-│               Standard Library (.zio)              │
-│   collections · math · io · json · test · llm      │
-├──────────────────────────────────────────────────┤
-│              Runtime + Compiler (ZOS)              │
-│   ZOS: Class · GF · Method · MOP · Package · Cond  │
-│   Eval · TCO · Macroexpand · Compiler · JIT        │
-├──────────────────────────────────────────────────┤
-│                 Frontend (Reader)                   │
-│   Reader · Parser · Sexp · Span · Reader Macro     │
-├──────────────────────────────────────────────────┤
-│               Rust 宿主层 (Host)                    │
-│   EvalContext · EvalEngine · ModuleRegistry        │
-│   NativeFn · IoHost · FFI · #[zio_export]          │
+│ Reader + Sexp + EvalContext + NativeFn            │
+└──────────────────────────────────────────────────┘
+
+Planned (not current runtime components)
+┌──────────────────────────────────────────────────┐
+│ ZIR + bytecode VM + JIT                          │
+│ persistent/Datalog/application libraries         │
+│ homoiconic learner + landing site                │
 └──────────────────────────────────────────────────┘
 ```
+
+The current/planned boundary above follows the
+[authoritative feature matrix](feature-matrix.md).
 
 ---
 
@@ -244,23 +258,12 @@ ZOS（Zio Object System）是 Zio 的统一运行时对象模型。它不是传�
 (draw (make-instance 'point :x 10 :y 20))
 ```
 
-### 7.3 扩展库
+### 7.3 规划中的扩展库
 
-```lisp
-;; Datalog 查询（库）
-(require :zio.datalog)
-(q '[:find ?name :where [?e :person/name ?name]] db)
-
-;; Agent 编排（库）
-(require :zio.agent)
-(def agent (agent "assistant" "help user" [calculator]))
-(agent/run agent "calculate 2^10")
-
-;; 持久化集合（库）
-(require :zio.persistent)
-(def m (assoc {} :a 1 :b 2))
-(get m :a)            ;; → 1
-```
+Persistent collection library、Datalog evaluator 与应用库尚不可加载，
+因此本页不提供 `require` 或调用示例。`examples/datalog-concept.zio` 只证明
+查询可以作为普通数据读取，不执行查询。所有这些能力均为
+[Planned](feature-matrix.md)。
 
 ---
 
@@ -278,4 +281,5 @@ ZOS（Zio Object System）是 Zio 的统一运行时对象模型。它不是传�
 1. 与其他 Lisp 方言的完全兼容（ZOS 是自己的对象模型，不是移植）
 2. Java / JS / Python 生态兼容性（Zio 通过 Rust FFI 与 C ABI 对接）
 3. 无 GC 性能担保（当前使用 Arc + im 结构共享，不引入追踪式 GC）
-4. 通过 AOT 编译达到原生性能（Phase 6 JIT 是可选加速器，非硬依赖）
+4. 通过 AOT 编译达到原生性能（JIT/VM 仍为
+   [Planned](feature-matrix.md)，不是当前加速器）
