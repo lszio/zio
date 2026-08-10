@@ -1,10 +1,7 @@
 use std::sync::Arc;
 
-use im::Vector;
-
-use crate::value::Value;
-use crate::zos::object::{ClassRef, ObjectHeader, ObjectFlags, ZosObject};
 use crate::zos::class::is_subclass_of;
+use crate::zos::object::ClassRef;
 
 /// The qualifier of a method in a generic function.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

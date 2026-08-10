@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use crate::error::EvalError;
 use crate::value::Value;
-use crate::zos::object::{Class, ClassRef, SlotDefinition};
+use crate::zos::object::{Class, ClassRef};
 
 /// Global registry of built-in classes.
 #[derive(Debug)]
@@ -169,5 +169,4 @@ fn c3_merge(cpls: &mut [Vec<String>], direct_supers: &[ClassRef]) -> Vec<String>
 
     result
 }
-
 

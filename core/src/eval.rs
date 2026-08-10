@@ -241,14 +241,12 @@ pub fn apply(func: Value, args: Vector<Value>, engine: &dyn EvalEngine) -> Resul
 fn build_primary_combination(
     dispatch: &crate::zos::gf::DispatchResult,
     args: &im::Vector<Value>,
-    parent_env: &Arc<Env>,
+    _parent_env: &Arc<Env>,
 ) -> Result<crate::value::NativeFn, EvalError> {
     let args = args.clone();
     let before = dispatch.before.clone();
     let primary = dispatch.primary.clone();
     let after = dispatch.after.clone();
-    let parent_env = parent_env.clone();
-
     Ok(crate::value::NativeFn::new("__primary_combination__", move |_: im::Vector<Value>, engine: &dyn EvalEngine| -> Result<Value, EvalError> {
         // Execute :before methods (most specific first)
         for m in &before {
@@ -292,12 +290,10 @@ fn build_around_wrappers(
     around_methods: &[Arc<crate::zos::gf::Method>],
     args: &im::Vector<Value>,
     inner: crate::value::NativeFn,
-    parent_env: &Arc<Env>,
+    _parent_env: &Arc<Env>,
 ) -> Result<crate::value::NativeFn, EvalError> {
     let mut chain: crate::value::NativeFn = inner;
     let args = args.clone();
-    let parent_env = parent_env.clone();
-
     // Build from innermost to outermost
     for m in around_methods.iter().rev() {
         let prev_chain = chain.clone();
@@ -307,11 +303,11 @@ fn build_around_wrappers(
         chain = crate::value::NativeFn::new("__around_method__", move |_: im::Vector<Value>, engine: &dyn EvalEngine| -> Result<Value, EvalError> {
             let env: Arc<Env>;
             if method.body.rest_param.is_some() {
-                let mut e = Env::bind_variadic(&method.body.env, &method.body.params, &method.body.rest_param, &args)?;
+                let e = Env::bind_variadic(&method.body.env, &method.body.params, &method.body.rest_param, &args)?;
                 e.set("*next-method*".into(), Value::NativeFunction(prev_chain.clone()));
                 env = e;
             } else {
-                let mut e = Env::bind(&method.body.env, &method.body.params, &args)?;
+                let e = Env::bind(&method.body.env, &method.body.params, &args)?;
                 e.set("*next-method*".into(), Value::NativeFunction(prev_chain.clone()));
                 env = e;
             }
@@ -376,17 +372,7 @@ mod tests {
     use crate::builtins;
     use crate::env::Env;
 
-    /// Re-export of `parse` for other test modules (control, letloop).
-    pub fn parse_for_tests(input: &str) -> Sexp {
-        parse(input)
-    }
     use crate::error::ReaderError;
-
-    /// Minimal S-expression reader for core crate tests.
-    /// Avoids a circular dev-dependency on zio-reader.
-    pub fn parse(input: &str) -> Sexp {
-        test_read(input).unwrap()
-    }
 
     fn test_read(input: &str) -> Result<Sexp, ReaderError> {
         let tokens = test_tokenize(input);

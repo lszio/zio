@@ -189,7 +189,7 @@ mod tests {
                     "(" | "[" | "{" => { stack.push((token, im::Vector::new())); }
                     ")" => { let (_, items) = stack.pop().ok_or(())?; let val = Sexp::List(items, None); if let Some(parent) = stack.last_mut() { parent.1.push_back(val); } else { return Ok(val); } }
                     "]" => { let (_, items) = stack.pop().ok_or(())?; let val = Sexp::Vector(items, None); if let Some(parent) = stack.last_mut() { parent.1.push_back(val); } else { return Ok(val); } }
-                    "}" => { let (_, items) = stack.pop().ok_or(())?; return Err(()); }
+                    "}" => { let _ = stack.pop().ok_or(())?; return Err(()); }
                     _ => { let val = test_parse_atom(&token); if let Some(parent) = stack.last_mut() { parent.1.push_back(val); } else { return Ok(val); } }
                 }
             }

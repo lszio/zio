@@ -8,7 +8,6 @@ use crate::sexp::Sexp;
 use crate::special::{eval_last_body, TailResult};
 use crate::value::Value;
 use crate::zos::object::{Class, ClassRef, ObjectFlags, SlotDefinition};
-use crate::zos::class;
 use crate::zos::gf::{GenericFunction, Method, MethodQualifier, Specializer};
 use crate::value::Function;
 
@@ -352,7 +351,7 @@ pub fn do_defmethod(
 /// Calls the next method in the method combination chain.
 /// Must be called from within a method body bound to a GF dispatch.
 pub fn do_call_next_method(
-    args: &[Sexp],
+    _args: &[Sexp],
     env: &Arc<Env>,
     engine: &dyn EvalEngine,
 ) -> Result<TailResult, EvalError> {
@@ -528,7 +527,7 @@ fn extract_error_type(e: &EvalError) -> String {
 }
 
 /// (error message) — signal an error condition
-pub fn do_error_fn(args: Vector<Value>, engine: &dyn EvalEngine) -> Result<Value, EvalError> {
+pub fn do_error_fn(args: Vector<Value>, _engine: &dyn EvalEngine) -> Result<Value, EvalError> {
     let msg = if args.is_empty() {
         "error".to_string()
     } else {

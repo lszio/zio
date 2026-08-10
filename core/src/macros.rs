@@ -97,7 +97,7 @@ pub fn value_to_sexp(value: &Value) -> Result<Sexp, EvalError> {
         Value::NativeFunction(_) => Err(EvalError::macro_error("macro returned a native function value")),
         Value::Macro(_) => Err(EvalError::macro_error("macro returned a macro value")),
         Value::Char(c) => Ok(Sexp::Char(*c, None)),
-        Value::Object(o) => Err(EvalError::macro_error("macro returned an object value")),
+        Value::Object(_) => Err(EvalError::macro_error("macro returned an object value")),
     }
 }
 

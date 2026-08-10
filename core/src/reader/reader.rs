@@ -46,41 +46,6 @@ pub fn read_with_source(input: &str, source_id: SourceId) -> Result<Sexp, Reader
     Ok(sexp)
 }
 
-/// Create a Span from token start/end positions, computing real line/col.
-fn make_span(source_id: SourceId, start: BytePos, end: BytePos, input: &str) -> Span {
-    // Compute line/col by counting newlines from start of input.
-    let (line, col) = if start.0 == 0 {
-        (1usize, 1usize)
-    } else {
-        let before = &input[..start.0.min(input.len())];
-        let line = before.matches('\n').count() + 1;
-        let last_newline = before.rfind('\n').map(|i| i + 1).unwrap_or(0);
-        let col = start.0 - last_newline + 1;
-        (line, col)
-    };
-    Span {
-        source_id,
-        start,
-        end,
-        line,
-        col,
-    }
-}
-
-/// Attach a span to a Sexp node, using the source_id and the Sexp's token range.
-/// Only attaches a real span when source_id is not NONE (so that read() without
-/// explicit source info returns bare Sexp nodes for backward compat).
-fn with_span(sexp: Sexp, source_id: SourceId, start: BytePos, end: BytePos, input: &str) -> Sexp {
-    if source_id == SourceId::NONE {
-        return sexp; // strip spans when no source info provided
-    }
-    if start == end && matches!(sexp, Sexp::Nil) {
-        return sexp; // synthetic Nil
-    }
-    let span = make_span(source_id, start, end, input);
-    sexp.with_span(Some(span))
-}
-
 /// Read from tokens using an explicit stack.
 /// Stack entries: (open_delim, items, start_pos_of_delim).
 fn read_from_tokens(
@@ -343,6 +308,15 @@ mod tests {
 
     fn parse_for_test(input: &str) -> Result<Sexp, ReaderError> {
         read(input)
+    }
+
+    #[test]
+    fn read_with_source_preserves_root_byte_range() {
+        let parsed = read_with_source("  (+ 1 2)", SourceId(7)).unwrap();
+        let span = parsed.span().expect("root form should have a source span");
+
+        assert_eq!(span.start, BytePos(2));
+        assert_eq!(span.end, BytePos(9));
     }
 
     #[test]

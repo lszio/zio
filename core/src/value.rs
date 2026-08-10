@@ -462,29 +462,6 @@ mod tests {
 
     #[test]
     fn test_nativefn_eq_hash() {
-        // Use a helper that provides a dummy engine
-        fn dummy_engine() -> &'static dyn EvalEngine {
-            // Used only in tests that don't need actual eval
-            struct DummyEngine;
-            impl crate::context::EvalRuntime for DummyEngine {
-                fn eval_expr(&self, _: &Sexp, _: &Arc<Env>, _: bool) -> Result<crate::special::TailResult, EvalError> {
-                    unimplemented!()
-                }
-                fn env(&self) -> &Arc<Env> { panic!("DummyEngine has no env") }
-            }
-            impl crate::context::ModuleRegistry for DummyEngine {
-                fn register_module(&self, _: crate::module::Module) {}
-                fn find_module(&self, _: &[String]) -> Option<crate::module::Module> { None }
-                fn is_module_loaded(&self, _: &[String]) -> bool { false }
-                fn call_loader(&self, _: &[String], _: &str, _: &Arc<Env>) -> Option<Result<crate::module::Module, EvalError>> { None }
-                fn begin_loading(&self, _: &std::path::Path) -> Result<(), EvalError> { Ok(()) }
-                fn end_loading(&self, _: &std::path::Path) {}
-            }
-            impl crate::context::EvalEngine for DummyEngine {}
-            static ENGINE: DummyEngine = DummyEngine;
-            &ENGINE
-        }
-
         let a = NativeFn::new("test", |_, _| Ok(Value::Nil));
         let b = NativeFn::new("test", |_, _| Ok(Value::Nil));
         assert_ne!(a, b);
