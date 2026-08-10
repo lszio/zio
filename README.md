@@ -2,17 +2,13 @@
 
 > A Modern Lisp for the Agent Era.
 
-Zio 是一门面向未来的通用 Lisp 语言，用 Rust 实现。当前处于 **v0.2 架构重组完成阶段** —— 所有全局状态已显式化，核心可嵌入、可测试。ZOS（Zio Object System）规范已发布，进入实现阶段。
+Zio 是一门面向未来的通用 Lisp 语言，用 Rust 实现。当前 workspace
+包含两个 crate：`zio-core` 和 `zio-cli`。实时生成的测试、语法和内置
+绑定数量见 [项目状态](docs/status.md)；能力成熟度以
+[特性矩阵](docs/feature-matrix.md)为准。
 
-| **指标** | **值** |
-|----------|--------|
-| 测试 | 103 passing, 0 warnings |
-| 代码 | ~3,500 LOC Rust (core) + 规范 |
-| 线程局部全局变量 | **0**（已全部移除） |
-| Crates | `zio-core`、`zio-reader`、`zio` (CLI) |
-| 特殊形式 | 12 种 |
-| 内置函数 | 30 个 |
-| 设计原则 | 最小、正交、可扩展、运行时优先、机制而非策略 |
+仓库数量不在 README 中手工维护；运行 `tools/project-status.sh` 可重新生成
+[项目状态](docs/status.md)。
 
 ## 哲学
 
@@ -23,10 +19,12 @@ Zio 是一门以同像性（homoiconicity）为基石的 Lisp 语言。代码即
 Zio = Lisp 核心（同像性 + eval/apply + 宏）
     + Rust 宿主（FFI + 嵌入 + 零开销）
     + 统一运行时对象模型（ZOS：AMOP + MOP）
-    + 扩展库生态（Datalog · Agent · 自学习）
+    + 规划中的扩展库生态（Datalog · Agent · 自学习）
 ```
 
-核心原则：**核心最小，其余是库**。Datalog、Agent、自学习模型框架都是通过宏 + MOP 构建的 `.zio` 扩展库，不进入核心。
+核心原则：**核心最小，其余是库**。Datalog、Agent、自学习模型框架的
+扩展库边界已经设计，但这些能力仍是
+[Planned](docs/feature-matrix.md)，不属于当前已实现核心。
 
 详细哲学：[docs/zio-philosophy.md](docs/zio-philosophy.md)
 
@@ -54,9 +52,20 @@ zio> (load "program.zio")
 zio> (require :my.module)
 ```
 
+## 示例
+
+[`examples/manifest.tsv`](examples/manifest.tsv) 中列出的所有文件都可由
+CLI 运行，并受可执行示例合同测试保护。`datalog-concept.zio` 只演示查询
+数据是可读取的 Zio 值，并不执行 Datalog 查询；Datalog evaluator 仍是
+[Planned](docs/feature-matrix.md)。当前不支持 `#{...}` set literal，限制及
+状态也记录在[特性矩阵](docs/feature-matrix.md)。
+
 ## 文档
 
 | 文档 | 说明 |
+|------|------|
+| [docs/status.md](docs/status.md) | 自动生成的 workspace、测试和语言表面数量 |
+| [docs/feature-matrix.md](docs/feature-matrix.md) | **权威能力状态：Stable / Experimental / Planned** |
 | [docs/zio-philosophy.md](docs/zio-philosophy.md) | 语言哲学、设计定理、设计原则、特性来源 |
 | [docs/zos-spec.md](docs/zos-spec.md) | **ZOS 完整规范**（Object/Class/GF/Method/MOP/Condition） |
 | [docs/zio-architecture.md](docs/zio-architecture.md) | 系统架构总览、分层、组件状态 |
@@ -84,11 +93,12 @@ zio> (require :my.module)
 | **Phase 2** — ZOS Phase 1 | 2-3 周 | Class/GF/Method/Package/Condition, `defclass` `defgeneric` `defmethod` |
 | **Phase 3** — 卫生宏 + ZOS Phase 2 | 2-3 周 | `syntax-rules` 模式匹配宏, MOP, 多分派, 完整反射 |
 | **Phase 4** — 标准库 + 系统编程 | 2-4 周 | FFI, File I/O, 懒序列, Future/Channel, 包管理器, 标准库 |
-| **Phase 5** — ZOS Phase 3 + 生态 | 2-3 周 | 官方扩展库（persistent、entity、protocol） |
-| **Phase 6** — 高级生态 | 3-4 周 | zio-datalog, zio-agent, zio-ai, Baseline JIT |
+| **Phase 5** — ZOS Phase 3 + 生态（Planned） | 2-3 周 | 官方扩展库（persistent、entity、protocol） |
+| **Phase 6** — 高级生态（Planned） | 3-4 周 | zio-datalog, zio-agent, zio-ai, Baseline JIT |
 | **Phase 7** — 生产化 | 持续 | LSP, Debugger, WASM, Profiler, 自举编辑器 |
 
-详见 [docs/roadmap.md](docs/roadmap.md)。
+以上是规划目标，不代表已经交付。详见 [docs/roadmap.md](docs/roadmap.md)，
+当前实现状态以[特性矩阵](docs/feature-matrix.md)为准。
 
 ## License
 

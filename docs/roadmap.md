@@ -1,12 +1,18 @@
 # Zio 路线图 — v0.2 → v1.0
 
-> 从 103 tests 的 Lisp 内核 + ZOS 规范到自举的通用语言
+> 从可验证的 AST Lisp 内核 + experimental ZOS 子集到自举的通用语言
+>
+> 本页所有 Phase、交付标准和应用蓝图都是规划目标，并不表示已经实现。
+> 当前 Stable / Experimental / Planned 状态以
+> [特性矩阵](feature-matrix.md)为准，生成的仓库数量见
+> [项目状态](status.md)。
 
 ---
 
 ## 概要
 
-**当前**：v0.2 — 架构重构完成。0 thread-local 全局变量。103 tests passing。ZOS 规范已发布。
+**当前**：v0.2 — AST evaluator 可运行，ZOS class/generic dispatch 子集为
+Experimental；可验证数量见[项目状态](status.md)。
 
 **目标**：v1.0 — 自举工具链、嵌入式友好、ZOS 对象系统完整、扩展库生态 MVP。
 
@@ -18,8 +24,8 @@
 
 两条核心原则驱动路线图：
 
-1. **核心最小，其余是库** — Datalog、Agent、自学习全部作为扩展库，不进入 Core
-2. **先做对再做快** — AST 解释器 + ZOS 运行时先验证语义，JIT/ZIR 只在验证性能瓶颈后引入
+1. **核心最小，其余是库** — Datalog、Agent、自学习按设计作为扩展库，当前均为 [Planned](feature-matrix.md)
+2. **先做对再做快** — AST 解释器先验证语义；JIT/ZIR/bytecode VM 当前均为 [Planned](feature-matrix.md)
 
 ---
 
@@ -36,13 +42,13 @@
 | 1.5 | EvalEngine 拆分（ADR-005） | P1 | `context.rs`, `eval.rs`, `special/*.rs` | +60 | 无 |
 | 1.6 | IoHost trait（ADR-011） | P1 | [new] `io.rs`, `builtins.rs` | +80 | 1.5 |
 | 1.7 | 错误类型扩展 + 更多变体 | P1 | `error.rs` | +50 | 1.1 |
-| 1.8 | 测试覆盖提升（103 → 200+） | P1 | 全模块 | +200 | 1.1-1.4 |
+| 1.8 | 测试覆盖提升（目标由当前生成基线提升至 200+） | P1 | 全模块 | +200 | 1.1-1.4 |
 
 ### 交付标准
 
 ```
 cargo test → 200+ tests passing
-cargo clippy → 0 warnings
+cargo clippy → warning-free target
 
 ;; 带行号的错误消息
 (car 1) → "Not a list (car expects a list)"
@@ -196,7 +202,7 @@ cargo clippy → 0 warnings
 
 ---
 
-## Phase 5: 扩展库生态（2-3 周）
+## Phase 5: 扩展库生态（Planned，2-3 周）
 
 **目标**：通过 Macro + MOP 构建官方扩展库。
 
@@ -233,7 +239,7 @@ cargo clippy → 0 warnings
 
 ---
 
-## Phase 6: 高级生态（3-4 周）
+## Phase 6: 高级生态（Planned，3-4 周）
 
 **目标**：Datalog、Agent、AI 原型。Baseline JIT 可行性验证。
 
@@ -283,9 +289,11 @@ cargo clippy → 0 warnings
 
 ---
 
-## 应用蓝图
+## 应用蓝图（Planned）
 
-以下应用是扩展库，独立于核心路线图，可并行推进。
+以下应用是规划中的扩展库，独立于核心路线图；它们不是当前已实现
+能力。Persistent collection、Datalog、JIT 及应用能力的权威状态见
+[特性矩阵](feature-matrix.md)。
 
 ### zio-datalog 数据库
 

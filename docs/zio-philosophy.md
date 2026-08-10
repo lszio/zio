@@ -51,7 +51,8 @@ Zio = Lisp 核心（同像性 + eval/apply + 宏）
 
 **推论**: 无 thread-local 全局变量。所有可变状态由 `EvalContext` 持有，通过 `&dyn EvalEngine` trait 注入。
 
-**状态**: 已达成 (0 thread_local! globals, 103 tests passing)。
+**状态**: 已达成。测试数量由[项目状态](status.md)生成，能力成熟度见
+[特性矩阵](feature-matrix.md)。
 
 **原理**: 隐藏的可变状态是测试、嵌入、并发的最大敌人。显式状态使系统可隔离、可 mock、可缩放。
 

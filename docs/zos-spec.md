@@ -1,6 +1,11 @@
 # ZOS（Zio Object System）规范
 
 > Version 0.1 — 统一运行时对象模型规范
+>
+> 本文是规范与演化设计，不是逐项实现清单。当前只有 ZOS classes 和
+> generic dispatch 子集为 Experimental；完整 MOP、persistent collection
+> library、Datalog 及 VM/application 能力均为 Planned。权威状态与证据见
+> [特性矩阵](feature-matrix.md)。
 
 ---
 
@@ -47,6 +52,9 @@ ZOS（Zio Object System）是 Zio 的统一运行时对象模型（Unified Runti
 | Actor 并发模型 | `zio-actor` |
 | 图分析 | `zio-graph` |
 | Clojure 风格集合 | `zio-persistent` |
+
+这些推荐库名定义职责边界，不表示库已经实现；Persistent collection 与
+Datalog evaluator 的当前状态都是 [Planned](feature-matrix.md)。
 
 ---
 
@@ -101,7 +109,9 @@ pub struct ObjectHeader {
 - 一定可变
 - 一定是 Class 的实例
 
-**Object 是运行时最基本的单位**。不是所有 Object 都是 Class 的实例——内置类型（Integer、String 等）也是 Object，但它们由 VM 直接管理。
+**Object 是运行时最基本的单位**。不是所有 Object 都是 Class 的实例——
+内置类型（Integer、String 等）也是 Object；当前由 AST runtime 管理。
+未来 bytecode VM 对这些类型的管理仍为 [Planned](feature-matrix.md)。
 
 ### 2.3 Immediate vs Heap
 
@@ -238,7 +248,7 @@ Function 是第一类对象。包括：
 
 | 类型 | 说明 |
 |------|------|
-| `CompiledFunction` | Zio 源定义或编译后的函数 |
+| `CompiledFunction` | 规划中的编译表示；当前函数由 AST runtime 执行 |
 | `Closure` | 带词法环境的函数 |
 | `BuiltinFunction` | Rust 实现的 NativeFn |
 
@@ -590,9 +600,10 @@ pub fn class_of(val: &Value) -> ClassRef {
 | MOP | 运行时行为 | 对象创建、分派、槽位存储 | Zio + Rust |
 | Library | 模块打包 | 独立功能包 | Zio + Rust |
 
-### 13.2 扩展库注册表
+### 13.2 规划中的扩展库布局
 
-ZOS 不内置包管理器，但定义库注册标准：
+以下是规划布局，不是已安装或可用库的注册表。ZOS 不内置包管理器，但
+规范提出了库注册标准；这些库的状态见[特性矩阵](feature-matrix.md)：
 
 ```
 zio-persistent/          — 持久化数据结构
@@ -706,7 +717,11 @@ pub fn apply(func: Value, args: Vector<Value>, engine: &dyn ZosRuntime) -> Resul
 
 ---
 
-## 15 实现路线
+## 15 实现路线（规划）
+
+以下 Phase 是设计目标。当前只有 class/generic dispatch 子集为
+Experimental；完整 ZOS、persistent library 与 Datalog evaluator 不应从
+本节推断为已交付，权威状态见[特性矩阵](feature-matrix.md)。
 
 ### Phase 1: 最小对象系统
 
@@ -742,7 +757,7 @@ pub fn apply(func: Value, args: Vector<Value>, engine: &dyn ZosRuntime) -> Resul
 | Dispatch Cache 失效策略 | 80 |
 | **总计** | **~690** |
 
-### Phase 3: 官方扩展库
+### Phase 3: 官方扩展库（Planned）
 
 **目标**：通过 Macro + MOP 构建标准扩展生态。
 
@@ -752,7 +767,7 @@ pub fn apply(func: Value, args: Vector<Value>, engine: &dyn ZosRuntime) -> Resul
 | `zio-entity` | Entity 模型（带身份的对象） |
 | `zio-protocol` | Protocol 系统（类似 Clojure protocols） |
 
-### Phase 4: 高级生态
+### Phase 4: 高级生态（Planned）
 
 **目标**：高级运行时框架。
 
@@ -784,7 +799,10 @@ pub trait ZosRuntime: EvalRuntime {
 
 非 ZOS 的嵌入场景只需实现 `EvalRuntime`，不承担 ZOS 复杂度。
 
-### 16.2 编译器交互
+### 16.2 规划中的编译器交互
+
+以下流程是设计草案。ZIR、bytecode VM 与 JIT 尚未实现，状态为
+[Planned](feature-matrix.md)。
 
 ```
 (defclass point () (x y))

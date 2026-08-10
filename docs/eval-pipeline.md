@@ -1,6 +1,10 @@
 # Eval 求值与编译管线
 
 > Version 0.4 — eval/apply 循环、TCO、ZOS 集成、编译器未来规划
+>
+> 当前可执行路径是 AST evaluator；ZOS class/generic dispatch 只有
+> experimental subset。ZIR、bytecode VM 和 JIT 均为
+> [Planned](feature-matrix.md)。仓库数量见[项目状态](status.md)。
 
 ---
 
@@ -26,14 +30,14 @@ Source text
 │    ├─ Macro expand  │  try_expand_by_name → re-eval
 │    ├─ Eval args     │  eval_inner on each arg
 │    └─ apply()       │  match func type → bind env → eval body
-│                     │    or ZOS GF dispatch → method combination
+│                     │    or experimental ZOS subset dispatch
 └─────────────────────┘
     │
     ▼
 Value / TailResult
 ```
 
-### 1.2 ZOS 集成后的求值流程
+### 1.2 Experimental ZOS 子集求值流程
 
 ```
 Sexp::List([Symbol("draw"), Symbol("rect")])
@@ -51,7 +55,7 @@ eval_inner: Symbol("draw") → 环境查找
     └─ Value::NativeFunction(nf) → 直接 Rust 调用
 ```
 
-### 1.3 未来管线（Phase 5+, 加入 JIT）
+### 1.3 Planned VM/JIT 管线
 
 ```
 Source text → Reader → Sexp
@@ -68,7 +72,9 @@ Source text → Reader → Sexp
              Value / Object      machine code
 ```
 
-ZIR 的引入是 Phase 5+ 的事。在此之前，AST 解释器 + ZOS 运行时足够验证语言语义。
+ZIR、bytecode VM 与 JIT 尚未实现；其批准设计和状态见
+[特性矩阵](feature-matrix.md)。当前 AST 解释器及 experimental ZOS 子集
+用于验证语言语义。
 
 ---
 
@@ -150,7 +156,7 @@ zio-core/src/
 ├── env.rs            — 词法环境
 ├── eval.rs           — eval/apply 循环
 ├── context.rs        — EvalRuntime trait + EvalContext
-├── builtins.rs       — 30 个内置函数
+├── builtins.rs       — native bindings（数量见 status.md）
 ├── macros.rs         — 宏展开引擎
 ├── module.rs         — 模块系统
 ├── error.rs          — 错误类型
@@ -165,24 +171,23 @@ zio-core/src/
     └── module_forms.rs — module, require
 ```
 
-ZOS Phase 1 新增：
+当前 experimental ZOS subset：
 
 ```
 zio-core/src/zos/
 ├── mod.rs            — ZOS 模块入口
 ├── object.rs         — ObjectHeader + ZosObject trait
 ├── class.rs          — Class 定义 + 注册表 + defclass
-├── slot.rs           — SlotDefinition + slot-value + (setf slot-value)
-├── gf.rs             — GenericFunction + dispatch cache
-├── method.rs         — Method 定义 + method combination
 ├── package.rs        — Package 符号管理
-├── condition.rs      — Condition System（简化版）
-└── reflection.rs     — class-of + type-of + 反射 API
+└── gf.rs             — GenericFunction 与 Method 子集
 ```
+
+完整 MOP、Condition System 等更广的 ZOS 规范不是当前稳定实现；状态以
+[特性矩阵](feature-matrix.md)为准。
 
 ### 3.2 EvalEngine 拆分
 
-Phase 1 架构重构：将当前单一的 `EvalEngine` trait 拆分为 3 个子 trait：
+以下是保留的设计草案，不是当前 API：它计划将运行时能力拆分为多个 trait。
 
 ```rust
 /// 最小编译/求值能力。不含模块和 ZOS。
@@ -219,7 +224,7 @@ pub trait ModuleRegistry {
 
 ---
 
-## 4 编译管线（未来）
+## 4 编译管线（Planned）
 
 ### 4.1 ZIR 设计要点
 
@@ -248,6 +253,8 @@ ZIR 分以下阶段引入：
 | 文档 | 内容 |
 |------|------|
 | [zio-architecture.md](zio-architecture.md) | 系统架构总览、分层、当前状态 |
+| [feature-matrix.md](feature-matrix.md) | 权威 Stable / Experimental / Planned 状态 |
+| [status.md](status.md) | 自动生成的仓库事实 |
 | [zos-spec.md](zos-spec.md) | ZOS 完整规范 |
 | [zio-philosophy.md](zio-philosophy.md) | 语言哲学和设计定理 |
 | [adrs.md](adrs.md) | 架构决策记录（特别是 ADR-005, 006, 008） |

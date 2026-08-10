@@ -1,6 +1,10 @@
 # Zio 架构决策记录（ADRs）
 
 > 轻量级架构决策日志。每个 ADR 记录一个关键决策的背景、决策、理由、代价、备选方案。
+>
+> ADR 的“已采纳”只表示设计决策成立，不表示其所有下游能力都已实现。
+> 当前实现状态以[特性矩阵](feature-matrix.md)为准；其中 ZIR/VM/JIT、
+> persistent collection library、Datalog 和应用能力均为 Planned。
 
 ---
 
@@ -96,9 +100,13 @@ pub struct EvalContext {
 
 ---
 
-## ADR-003: 持久化数据结构（im crate）
+## ADR-003: Core 值的结构共享（im crate）
 
 **状态**: ✅ 已实现
+
+此 ADR 只覆盖 core 中 `im` 类型的结构共享，不表示
+`lib/zio/persistent.zio` collection API 已实现；该 library 在
+[特性矩阵](feature-matrix.md)中仍为 Planned。
 
 ### 背景
 
@@ -401,7 +409,8 @@ pub struct DispatchCache {
 
 ### 背景
 
-Zio 的路线图中包含了 Datalog 数据库、自学习模型框架、Agent 框架、Clojure 风格集合等特性。如果全部进入 core，核心将膨胀到不可维护。
+Zio 的路线图中规划了 Datalog 数据库、自学习模型框架、Agent 框架、
+Clojure 风格集合等特性。如果全部进入 core，核心将膨胀到不可维护。
 
 ### 决策
 
@@ -420,6 +429,9 @@ Zio 的路线图中包含了 Datalog 数据库、自学习模型框架、Agent �
 - Entity/Protocol（→ `zio-entity` / `zio-protocol`）
 - Actor 并发（→ `zio-actor`）
 - LLM API（→ `zio-llm`）
+
+以上库名表达架构边界，不是交付声明；相关能力当前均为
+[Planned](feature-matrix.md)。
 
 ### 理由
 
