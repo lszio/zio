@@ -113,7 +113,7 @@ fn eval_inner(expr, env, tail, engine) {
 ### 2.2 apply 核心逻辑
 
 ```rust
-pub fn apply(func: Value, args: Vector<Value>, engine: &dyn ZosRuntime) -> TailResult {
+pub fn apply(func: Value, args: Vector<Value>, engine: &dyn EvalEngine) -> TailResult {
     match func {
         Function(f)        → bind env → eval body (tail = true)
         NativeFunction(nf) → nf.call(args, engine)
@@ -126,19 +126,19 @@ pub fn apply(func: Value, args: Vector<Value>, engine: &dyn ZosRuntime) -> TailR
 
 ### 2.3 TCO 策略
 
-所有尾位置（Phase 1 目标）：
+当前 evaluator 有两条不同的无栈增长路径：
 
-| 位置 | 当前 | Phase 1 |
-|------|------|---------|
-| `loop` body | ✅ `recur` | ✅ 同上 |
-| `if` 的 then/else 分支 | ❌ 新建帧 | ✅ 不建帧 |
-| `cond` 的最后一个表达式 | ❌ 新建帧 | ✅ 不建帧 |
-| `and` / `or` 的最后一个参数 | ❌ 新建帧 | ✅ 不建帧 |
-| `let` / `let*` body | ❌ 新建帧 | ✅ 不建帧 |
-| `do` 的最后一个表达式 | ❌ 新建帧 | ✅ 不建帧 |
-| 函数 `apply` 的尾调用 | ❌ 新建帧 | ✅ 不建帧 |
+- 普通函数调用出现在尾位置时，`eval_inner` 返回
+  `TailResult::TailCall(Value, Vector<Value>)`。`eval()` trampoline（以及非尾调用
+  内部的 trampoline）反复调用 `apply`，因此普通自递归和 `even?`/`odd?`
+  这类互递归都不会为每次尾调用增加 Rust 栈帧。函数体以及 `if`、`cond`、
+  `do`、`let`、`let*` 等控制形式会传播尾位标记。
+- `(loop ...)`/`recur` 使用独立的 `TailResult::Recur(Vector<Value>)`。
+  `loop` 消费参数向量、重新绑定 loop 局部变量并继续；`Recur` 不是通用函数
+  尾调用，也不携带环境。
 
-通过 `TailResult::TailCall(env, body)` 变体实现（当前仅 `Recur`，扩展到通用尾调用）。
+因此 `TailResult` 当前包含 `Value(Value)`、`Recur(Vector<Value>)` 和
+`TailCall(Value, Vector<Value>)` 三个变体；通用函数尾调用不是未来规划。
 
 ---
 
@@ -187,7 +187,8 @@ zio-core/src/zos/
 
 ### 3.2 EvalEngine 拆分
 
-以下是保留的设计草案，不是当前 API：它计划将运行时能力拆分为多个 trait。
+这是 `core/src/context.rs` 中已经存在的当前 API。求值与模块注册分别由两个
+能力 trait 表达，`EvalEngine` 是组合二者的 marker supertrait：
 
 ```rust
 /// 最小编译/求值能力。不含模块和 ZOS。
@@ -195,17 +196,6 @@ pub trait EvalRuntime {
     fn eval_expr(&self, expr: &Sexp, env: &Arc<Env>, tail: bool)
         -> Result<TailResult, EvalError>;
     fn env(&self) -> &Arc<Env>;
-}
-
-/// ZOS 运行时能力。需要 EvalRuntime 作为基础。
-pub trait ZosRuntime: EvalRuntime {
-    fn class_of(&self, val: &Value) -> ClassRef;
-    fn find_and_apply_gf(&self, gf: &GenericFunction, args: &[Value])
-        -> Result<TailResult, EvalError>;
-    fn signal_condition(&self, c: Condition)
-        -> Result<Option<TailResult>, EvalError>;
-    fn invoke_restart(&self, name: &Symbol, args: &[Value])
-        -> Result<TailResult, EvalError>;
 }
 
 /// 模块注册表。独立于求值。
@@ -218,9 +208,15 @@ pub trait ModuleRegistry {
     fn begin_loading(&self, path: &Path) -> Result<(), EvalError>;
     fn end_loading(&self, path: &Path);
 }
+
+pub trait EvalEngine: EvalRuntime + ModuleRegistry {}
 ```
 
-**嵌入场景**：只需实现 `EvalRuntime`，不需要 ZOS 和模块。CLI 场景使用完整的 `EvalContext` 实现所有三个 trait。
+`EvalContext` 持有根环境、`ModuleTable` 和可选 loader，并分别实现
+`EvalRuntime` 与 `ModuleRegistry`，最后实现 `EvalEngine`。只需要最小求值能力
+的嵌入边界可以依赖 `EvalRuntime`；当前完整 AST evaluator 和 CLI 路径使用
+`EvalEngine`。单独的 `ZosRuntime`/VM 能力边界不在当前 `context.rs` API 中；
+ZIR、bytecode VM 与 JIT 仍是下节所述的规划范围。
 
 ---
 

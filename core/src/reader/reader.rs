@@ -15,8 +15,6 @@ pub fn read(input: &str) -> Result<Sexp, ReaderError> {
     Ok(strip_spans(sexp))
 }
 
-/// Read a single S-expression with a known source file.
-
 /// Recursively strip all spans from a Sexp tree.
 fn strip_spans(sexp: Sexp) -> Sexp {
     fn go(s: Sexp) -> Sexp {
@@ -39,6 +37,8 @@ fn strip_spans(sexp: Sexp) -> Sexp {
     }
     go(sexp)
 }
+
+/// Read a single S-expression with a known source file.
 pub fn read_with_source(input: &str, source_id: SourceId) -> Result<Sexp, ReaderError> {
     let tokens = tokenize(input);
     let mut tokens = tokens.into_iter().peekable();

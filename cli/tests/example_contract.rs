@@ -15,14 +15,32 @@ fn run_example(file: &str) -> Output {
         .expect("run zio-cli example")
 }
 
+fn parse_manifest(manifest: &str) -> Vec<[&str; 3]> {
+    manifest
+        .lines()
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .map(|line| {
+            let fields: Vec<_> = line.split('|').collect();
+            assert_eq!(fields.len(), 3, "invalid manifest row: {line}");
+            assert!(
+                matches!(fields[1], "runnable" | "documentary"),
+                "invalid manifest status {:?} in row: {line}; expected \"runnable\" or \"documentary\"",
+                fields[1]
+            );
+            [fields[0], fields[1], fields[2]]
+        })
+        .collect()
+}
+
+#[test]
+#[should_panic(expected = "invalid manifest status \"broken\"")]
+fn manifest_rejects_unknown_status() {
+    parse_manifest("example.zio|broken|marker");
+}
+
 #[test]
 fn runnable_examples_exit_successfully_and_print_their_marker() {
-    for line in include_str!("../../examples/manifest.tsv").lines() {
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-        let fields: Vec<_> = line.split('|').collect();
-        assert_eq!(fields.len(), 3, "invalid manifest row: {line}");
+    for fields in parse_manifest(include_str!("../../examples/manifest.tsv")) {
         if fields[1] != "runnable" {
             continue;
         }

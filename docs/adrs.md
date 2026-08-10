@@ -73,12 +73,13 @@ Zio 早期有 4 个 `thread_local!` 全局变量（MODULES、LOADING_STACK、REQ
 ```rust
 pub struct EvalContext {
     pub env: Arc<Env>,
-    pub modules: RefCell<ModuleRegistry>,
+    pub modules: RefCell<ModuleTable>,
     pub loader: RefCell<Option<Box<ModuleLoader>>>,
 }
 ```
 
-通过 `&dyn EvalEngine` trait 注入到特殊形式和 builtin 函数（随后拆分为 `EvalRuntime` + `ZosRuntime` + `ModuleRegistry`）。
+通过 `&dyn EvalEngine` trait 注入到特殊形式和 builtin 函数；当前
+`EvalEngine` 组合已拆出的 `EvalRuntime` 与 `ModuleRegistry`。
 
 ### 理由
 
@@ -204,15 +205,17 @@ Reader 在 parse 时填充 Span。Error 显示时格式化。
 
 ## ADR-005: EvalEngine 拆分为子 trait
 
-**状态**: 📋 待实现（Phase 1，ZOS Phase 1 之前）
+**状态**: ✅ 已实现（当前 AST evaluator）
 
 ### 背景
 
-当前 `EvalEngine` trait 有 8 个方法，混合了求值（`eval_expr`、`env`）、模块操作（`register_module`、`find_module` 等）、ZOS 操作（未来需要）。对于嵌入场景（不想做模块加载），需要 mock 不需要的方法。
+早期 `EvalEngine` 把求值（`eval_expr`、`env`）和模块操作
+（`register_module`、`find_module` 等）放在同一个 trait 中。对于不加载模块的
+嵌入边界，这会暴露不需要的能力。
 
 ### 决策
 
-拆分为 3 个独立的 trait：
+当前实现拆分为两个能力 trait，并用 marker supertrait 组合完整 evaluator：
 
 ```rust
 /// 最小编译/求值能力。不含模块和 ZOS。
@@ -220,17 +223,6 @@ pub trait EvalRuntime {
     fn eval_expr(&self, expr: &Sexp, env: &Arc<Env>, tail: bool)
         -> Result<TailResult, EvalError>;
     fn env(&self) -> &Arc<Env>;
-}
-
-/// ZOS 运行时能力。
-pub trait ZosRuntime: EvalRuntime {
-    fn class_of(&self, val: &Value) -> ClassRef;
-    fn find_and_apply_gf(&self, gf: &GenericFunction, args: &[Value])
-        -> Result<TailResult, EvalError>;
-    fn signal_condition(&self, c: Condition)
-        -> Result<Option<TailResult>, EvalError>;
-    fn invoke_restart(&self, name: &Symbol, args: &[Value])
-        -> Result<TailResult, EvalError>;
 }
 
 /// 模块注册表。
@@ -242,19 +234,25 @@ pub trait ModuleRegistry {
     fn begin_loading(&self, path: &Path) -> Result<(), EvalError>;
     fn end_loading(&self, path: &Path);
 }
+
+pub trait EvalEngine: EvalRuntime + ModuleRegistry {}
 ```
+
+`EvalContext` 持有 `Arc<Env>`、`RefCell<ModuleTable>` 和可选 loader，分别实现
+`EvalRuntime`、`ModuleRegistry` 与组合后的 `EvalEngine`。独立的
+`ZosRuntime` 或 VM 能力 trait 尚不是当前 `context.rs` API；需要时另行决策。
 
 ### 理由
 
 - 嵌入场景只需要 `EvalRuntime`，不需要模块和 ZOS
-- ZOS 场景需要 `EvalRuntime + ZosRuntime`，不一定需要模块
-- CLI 场景实现全部三个 trait
-- Future 可以添加 `IoHost` trait 而不污染求值接口
+- 模块能力有独立的 `ModuleRegistry` 边界
+- CLI/完整 AST evaluator 通过 `EvalEngine` 同时要求两种能力
+- Future 可以添加 `IoHost`、ZOS 或 VM 能力 trait，而不污染核心求值接口
 
 ### 代价
 
-- 多 trait 边界：某些函数需要 `where T: EvalRuntime + ZosRuntime`
-- 重构旧代码：所有 `&dyn EvalEngine` 使用点需要更新
+- 需要求值与模块的调用点仍使用 `&dyn EvalEngine`
+- 只实现 `EvalRuntime` 的嵌入器不能直接传给要求完整 `EvalEngine` 的 API
 
 ---
 

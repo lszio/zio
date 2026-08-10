@@ -8,7 +8,12 @@ emit_status() {
   local tests special_forms native_bindings runnable_examples
   tests="$(cargo test --workspace -- --list | awk '/: test$/ { count += 1 } END { print count + 0 }')"
   special_forms="$(rg -n '=> Some\(' core/src/special/mod.rs | wc -l | tr -d ' ')"
-  native_bindings="$(rg -n 'env\.set\(' core/src -g '*.rs' | wc -l | tr -d ' ')"
+  native_bindings="$(awk '
+    /^pub fn setup_env\(env: &Arc<Env>\) \{/ { in_setup = 1; next }
+    in_setup && /^}/ { in_setup = 0 }
+    in_setup && /Value::NativeFunction/ { count += 1 }
+    END { print count + 0 }
+  ' core/src/builtins.rs)"
   runnable_examples="$(awk -F '|' '$1 !~ /^#/ && $2 == "runnable" { count += 1 } END { print count + 0 }' examples/manifest.tsv)"
 
   printf '# Zio Project Status\n\n'

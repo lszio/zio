@@ -64,7 +64,8 @@ GF（Generic Function）的参数类型 → 方法列表的缓存。ZOS 使用 4
 
 ### EvalEngine
 
-Zio 运行时对「如何管理状态」的抽象 trait。所有可变状态（环境、模块注册表、加载器）通过它注入到特殊形式和 builtin 函数。是实现嵌入、测试、隔离的关键协议。
+当前 AST evaluator 的组合 trait：`EvalEngine: EvalRuntime + ModuleRegistry`。
+特殊形式和 builtin 函数通过它访问求值与模块能力。
 
 ### EvalContext
 
@@ -72,7 +73,8 @@ Zio 运行时对「如何管理状态」的抽象 trait。所有可变状态（�
 
 ### EvalRuntime
 
-`EvalEngine` 拆分后的核心求值 trait。只包含 `eval_expr` 和 `env()`，不包含模块和 ZOS 操作。
+当前核心求值 trait。只包含 `eval_expr` 和 `env()`；模块加载与缓存由独立的
+`ModuleRegistry` trait 提供。
 
 ---
 
@@ -206,11 +208,15 @@ ZOS 中类的属性定义。每个 Slot 有名称、类型约束（可选）、�
 
 ### TCO（Tail Call Optimization）
 
-尾调用优化。尾调用位置不创建新栈帧，等效于 goto。Zio 当前仅支持 `loop/recur`，Phase 1 扩展到所有尾位置。
+尾调用优化。当前 AST evaluator 把尾位置的普通函数调用编码为
+`TailResult::TailCall(Value, Vector<Value>)`，由 trampoline 反复执行，支持
+普通自递归和互递归而不按调用次数增长 Rust 栈。`loop/recur` 是另一条专用路径。
 
 ### TailResult
 
-eval 的返回值类型。有两个变体：`Value(v)` 普通返回值；`Recur(env)` 尾递归跳转。
+eval 的返回值类型。有三个变体：`Value(Value)` 是普通返回值；
+`TailCall(Value, Vector<Value>)` 把函数与已求值参数交给通用 trampoline；
+`Recur(Vector<Value>)` 只把新参数交回 `loop` 重新绑定，不表示普通函数尾调用。
 
 ---
 
@@ -230,7 +236,9 @@ Zio 的统一运行时对象模型。AMOP 的参考实现。定义了 Object、C
 
 ### ZosRuntime
 
-EvalEngine 的扩展 trait，包含 ZOS 特有的运行时操作（class_of、GF 分派、condition signal）。非 ZOS 的嵌入场景只需要 `EvalRuntime`。
+ZOS 规范中规划的能力 trait，用于隔离 `class_of`、GF 分派和 condition
+signal 等操作。当前 `core/src/context.rs` 尚无独立 `ZosRuntime` trait；现有
+experimental ZOS 分派仍经 `EvalEngine` 路径执行。
 
 ### ZIR（Zio Intermediate Representation）
 
