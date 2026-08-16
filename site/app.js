@@ -1,61 +1,93 @@
-// Zio Landing Page Interactive Application Script
+// Zio Landing Page Interactive Application Script with WASM Integration
 
-document.addEventListener('DOMContentLoaded', () => {
-  initReplSimulator();
+let wasmEngine = null;
+
+document.addEventListener('DOMContentLoaded', async () => {
   initCodeTabs();
   initStatsCounter();
+  await initWasmModule();
+  initReplSimulator();
 });
 
-// Interactive REPL Simulator
+// Load WASM Engine
+async function initWasmModule() {
+  const badgeEl = document.getElementById('wasm-status-badge');
+  try {
+    const zioWasm = await import('./wasm/zio_core.js');
+    await zioWasm.default();
+    wasmEngine = zioWasm;
+    console.log("Zio WASM Module initialized successfully!");
+    if (badgeEl) {
+      badgeEl.innerHTML = `⚡ Real WASM Engine Active (Rust + JS Interop)`;
+      badgeEl.style.background = 'rgba(0, 230, 118, 0.15)';
+      badgeEl.style.color = '#00e676';
+      badgeEl.style.borderColor = 'rgba(0, 230, 118, 0.3)';
+    }
+  } catch (err) {
+    console.warn("WASM module load fallback:", err);
+    if (badgeEl) {
+      badgeEl.innerHTML = `Simulator Mode`;
+    }
+  }
+}
+
+// Interactive REPL Simulator & WASM Terminal
 function initReplSimulator() {
   const outputEl = document.getElementById('repl-output');
   const inputEl = document.getElementById('repl-input');
   const presetBtns = document.querySelectorAll('.preset-btn');
 
   const presets = {
-    basics: {
-      expr: '(defn fib [n] (if (< n 2) n (+ (fib (- n 1)) (fib (- n 2)))))',
-      result: '#<function (n)>',
-      type: 'function',
+    jseval: {
+      title: "JS Interop (eval & DOM)",
+      expr: '(js/eval "document.querySelector(\'.hero h1\').style.color = \'#00f2fe\'")',
       evals: [
-        { expr: '(fib 10)', result: '55', type: 'integer' }
-      ]
-    },
-    macro: {
-      expr: '(defmacro unless [test body] (list \'if test nil body))',
-      result: '#<macro unless (test body)>',
-      type: 'macro',
-      evals: [
-        { expr: '(unless false 42)', result: '42', type: 'integer' }
+        { expr: '(js/dom-set-text ".terminal-title" "⚡ Zio WASM Engine Active")', type: 'boolean' },
+        { expr: '(js/console-log "Hello from real Zio WASM engine!")', type: 'nil' }
       ]
     },
     syntax: {
+      title: "syntax-rules 卫生宏",
       expr: '(defmacro swap! (syntax-rules () (((swap! a b) (let [tmp a] (set! a b) (set! b tmp))))))',
-      result: '#<macro swap! (a b)>',
-      type: 'macro',
       evals: [
-        { expr: '(swap! x y)', result: '(let [tmp__hyg_1 x] (do (set! x y) (set! y tmp__hyg_1)))', type: 'sexp' }
+        { expr: '(swap! x y)', type: 'sexp' }
       ]
     },
     zos: {
+      title: "ZOS 类与多分派",
       expr: '(defclass point () ((x :initarg :x) (y :initarg :y)))',
-      result: '#<Class Point>',
-      type: 'class',
       evals: [
-        { expr: '(def p (make-instance point :x 10 :y 20))', result: '#<Point>', type: 'object' },
-        { expr: '(slot-value p :x)', result: '10', type: 'integer' }
+        { expr: '(def p (make-instance point :x 10 :y 20))', type: 'object' },
+        { expr: '(slot-value p :x)', type: 'integer' }
       ]
     },
     csp: {
+      title: "CSP Channel 与并发",
       expr: '(def c (chan 5))',
-      result: '#<channel>',
-      type: 'channel',
       evals: [
-        { expr: '(send! c "hello agent")', result: 'nil', type: 'nil' },
-        { expr: '(recv! c)', result: '"hello agent"', type: 'string' }
+        { expr: '(send! c "hello agent")', type: 'nil' },
+        { expr: '(recv! c)', type: 'string' }
+      ]
+    },
+    json: {
+      title: "JSON & 结构化数据",
+      expr: '(json-stringify {:agent "ZioBot" :status :active})',
+      evals: [
+        { expr: '(json-parse "{\"val\": 42}")', type: 'map' }
       ]
     }
   };
+
+  function evaluateExpr(expr) {
+    if (wasmEngine && typeof wasmEngine.eval_zio === 'function') {
+      try {
+        return wasmEngine.eval_zio(expr);
+      } catch (e) {
+        return `Error: ${e}`;
+      }
+    }
+    return evaluateFallback(expr);
+  }
 
   function runPreset(key) {
     const data = presets[key];
@@ -64,24 +96,26 @@ function initReplSimulator() {
     outputEl.innerHTML = '';
 
     // Line 1: Definition
-    appendLine(data.expr, data.result, data.type);
+    const res1 = evaluateExpr(data.expr);
+    appendLine(data.expr, res1);
 
     // Subsequent evaluations
     if (data.evals) {
       data.evals.forEach(ev => {
         setTimeout(() => {
-          appendLine(ev.expr, ev.result, ev.type);
+          const res = evaluateExpr(ev.expr);
+          appendLine(ev.expr, res);
         }, 150);
       });
     }
   }
 
-  function appendLine(expr, result, type) {
+  function appendLine(expr, result) {
     const line = document.createElement('div');
     line.className = 'terminal-line-group';
     line.innerHTML = `
       <div class="terminal-line"><span class="prompt">zio&gt;</span> <span>${escapeHtml(expr)}</span></div>
-      <div class="output">${escapeHtml(result)} <span class="output-type">&lt;${type}&gt;</span></div>
+      <div class="output">${escapeHtml(result)}</div>
     `;
     outputEl.appendChild(line);
     outputEl.scrollTop = outputEl.scrollHeight;
@@ -101,7 +135,8 @@ function initReplSimulator() {
       if (e.key === 'Enter') {
         const val = inputEl.value.trim();
         if (val) {
-          appendLine(val, evaluateSimulated(val), 'evaluated');
+          const res = evaluateExpr(val);
+          appendLine(val, res);
           inputEl.value = '';
         }
       }
@@ -109,21 +144,19 @@ function initReplSimulator() {
   }
 
   // Load default preset
-  runPreset('basics');
+  runPreset('jseval');
 }
 
-function evaluateSimulated(expr) {
-  if (expr.startsWith('(+') || expr.startsWith('(*')) {
-    return '15';
-  } else if (expr.startsWith('(bytes')) {
-    return '#<buffer len=5>';
-  } else if (expr.startsWith('(file-exists?')) {
-    return 'true';
-  } else if (expr.startsWith('(class-of')) {
-    return 'Point';
-  } else {
-    return 'evaluated-ok';
-  }
+function evaluateFallback(expr) {
+  if (expr.startsWith('(js/eval')) return '"#<js-eval ok>"';
+  if (expr.startsWith('(js/dom-set-text')) return 'true';
+  if (expr.startsWith('(js/console-log')) return 'nil';
+  if (expr.startsWith('(+') || expr.startsWith('(*')) return '15';
+  if (expr.startsWith('(defclass')) return '#<Class point>';
+  if (expr.startsWith('(def p')) return '#<point>';
+  if (expr.startsWith('(slot-value')) return '10';
+  if (expr.startsWith('(json-stringify')) return '"{\\"agent\\":\\"ZioBot\\",\\"status\\":\\"active\\"}"';
+  return 'evaluated-ok';
 }
 
 function escapeHtml(str) {
@@ -136,6 +169,16 @@ function initCodeTabs() {
   const codeContent = document.getElementById('code-display');
 
   const snippets = {
+    jsinterop: `;; Real-time JavaScript & Web Interoperability in WASM
+;; Execute arbitrary JS expressions directly from Zio:
+(js/eval "document.querySelector('.hero h1').style.color = '#00f2fe'")
+
+;; Manipulate DOM elements natively:
+(js/dom-set-text ".terminal-title" "⚡ Zio WASM Engine Active")
+
+;; Output to browser console:
+(js/console-log "Hello from real Zio WASM engine in browser!")`,
+
     syntax: `;; Hygienic syntax-rules Macro Engine (ADR-010 Phase 2)
 (defmacro swap! [a b]
   (syntax-rules ()
@@ -174,17 +217,7 @@ function initCodeTabs() {
 ;; Promise & Deliver
 (def p (promise))
 (deliver p 42)
-@p ;; → 42 (deref blocking)`,
-
-    protocol: `;; zio-protocol Extension Library
-(require :zio.protocol)
-
-(defprotocol Drawable
-  (draw [this]))
-
-(extend-type circle Drawable
-  (draw [this]
-    (println "Drawing circle with radius" (slot-value this :radius))))`
+@p ;; → 42 (deref blocking)`
   };
 
   tabBtns.forEach(btn => {

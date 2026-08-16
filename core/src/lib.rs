@@ -18,6 +18,7 @@ pub mod reader;
 pub mod context;
 pub mod io;
 pub mod zos;
+pub mod wasm;
 /// Return the embedded core standard library source.
 pub fn stdlib_source() -> &'static str {
     include_str!("../stdlib/zio/core.zio")

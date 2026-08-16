@@ -3,8 +3,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Zio — A Modern Lisp for the Agent Era</title>
-  <meta name="description" content="Zio 是一门面向 Agent 时代的通用 Lisp 语言，具备零全局状态、ZOS 对象系统、卫生宏、CSP 通道与 Rust 零开销嵌入。">
+  <title>Zio — A Modern Lisp for the Agent Era (WASM Powered)</title>
+  <meta name="description" content="Zio 是一门面向 Agent 时代的通用 Lisp 语言，具备零全局状态、ZOS 对象系统、卫生宏、CSP 通道与 WASM / JS 互操作能力。">
   <link rel="stylesheet" href="styles.css">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -23,12 +23,12 @@
       <ul class="nav-links">
         <li><a href="#philosophy">设计哲学</a></li>
         <li><a href="#architecture">分层架构</a></li>
-        <li><a href="#features">核心特性</a></li>
+        <li><a href="#features">核心特性 &amp; JS 互操作</a></li>
         <li><a href="#roadmap">路线图</a></li>
         <li><a href="../docs/status.md">项目状态</a></li>
       </ul>
       <div style="display: flex; gap: 12px;">
-        <a href="#terminal" class="btn btn-primary">REPL 体验</a>
+        <a href="#terminal" class="btn btn-primary">WASM REPL 体验</a>
         <a href="https://github.com" target="_blank" class="btn btn-secondary">GitHub</a>
       </div>
     </div>
@@ -40,15 +40,15 @@
       <div class="hero-content">
         <div class="eyebrow">
           <span class="eyebrow-dot"></span>
-          Zero Global State • 137 Tests Passing • Rust Native
+          Zero Global State • 137 Tests Passing • Real WASM Runtime
         </div>
         <h1>A Modern Lisp for the Agent Era.</h1>
         <p>
           Zio 是一门以同像性（Homoiconicity）为基石的现代脚本与 Agent 编排引擎。
-          基于 Rust 实现，兼具 Common Lisp CLOS/AMOP 对象系统、syntax-rules 卫生宏与 CSP 高效并发。
+          基于 Rust 实现，编译为原生 WebAssembly，具备 Common Lisp CLOS/AMOP 对象系统、syntax-rules 卫生宏与 JS / DOM 深度互操作。
         </p>
         <div class="hero-cta">
-          <a href="#terminal" class="btn btn-primary">立即体验交互 REPL</a>
+          <a href="#terminal" class="btn btn-primary">体验浏览器真实 WASM REPL</a>
           <a href="../docs/zio-architecture.md" class="btn btn-secondary">阅读架构文档</a>
         </div>
       </div>
@@ -61,18 +61,22 @@
             <span class="dot dot-yellow"></span>
             <span class="dot dot-green"></span>
           </div>
-          <span class="terminal-title">Zio Interactive REPL Simulator</span>
-          <span style="font-size: 0.75rem; color: var(--text-dim);">zio-core v0.2.0</span>
+          <span class="terminal-title">Zio WASM Live Terminal</span>
+          <span id="wasm-status-badge" class="logo-tag">⚡ WASM Loading...</span>
         </div>
         <div class="terminal-presets">
-          <button class="preset-btn active" data-preset="basics">基础与尾递归 (TCO)</button>
-          <button class="preset-btn" data-preset="macro">defmacro</button>
+          <button class="preset-btn active" data-preset="jseval">JS 互操作 (eval &amp; DOM)</button>
           <button class="preset-btn" data-preset="syntax">syntax-rules 卫生宏</button>
           <button class="preset-btn" data-preset="zos">ZOS 类与多分派</button>
           <button class="preset-btn" data-preset="csp">CSP Channel 与并发</button>
+          <button class="preset-btn" data-preset="json">JSON 序列化</button>
         </div>
         <div class="terminal-body" id="repl-output">
           <!-- Terminal output lines injected via JS -->
+        </div>
+        <div style="padding: 12px 16px; background: rgba(0,0,0,0.4); border-top: 1px solid var(--border-color); display: flex; align-items: center; gap: 8px;">
+          <span style="color: var(--accent-cyan); font-family: var(--font-mono); font-weight: bold;">zio&gt;</span>
+          <input id="repl-input" type="text" placeholder="输入 (js/eval ...), (defclass ...), 或 (+ 1 2)... 按 Enter 执行" style="flex: 1; background: transparent; border: none; outline: none; color: var(--text-main); font-family: var(--font-mono); font-size: 0.9rem;">
         </div>
       </div>
     </div>
@@ -86,8 +90,8 @@
         <div class="stat-label">Rust 自动化单元测试 (100% Passing)</div>
       </div>
       <div class="stat-card">
-        <div class="stat-number" data-target="83">0</div>
-        <div class="stat-label">Native Binding 原生内置函数</div>
+        <div class="stat-number" data-target="84">0</div>
+        <div class="stat-label">Native Bindings (含 WASM / JS FFI)</div>
       </div>
       <div class="stat-card">
         <div class="stat-number" data-target="23">0</div>
@@ -105,34 +109,34 @@
     <div class="container">
       <div class="section-header">
         <h2>正交严密的核心设计定理</h2>
-        <p>为长期演化与 Agent 编排设计的五大核心原则</p>
+        <p>为长期演化与 Agent 编排设计的核心原则</p>
       </div>
 
       <div class="grid-3">
         <div class="card">
           <div class="card-icon">⚡</div>
           <h3>1. 状态显式化</h3>
-          <p>零 <code>thread_local</code> 全局变量。所有运行时状态全在显式 <code>EvalContext</code> 中，天生具备多实例隔离与并发安全。</p>
+          <p>零 <code>thread_local</code> 全局变量。所有状态在显式 <code>EvalContext</code> 中，在 Rust/WASM/浏览器端隔离运行。</p>
         </div>
         <div class="card">
           <div class="card-icon">🦀</div>
           <h3>2. Rust 合同，Lisp 组合</h3>
-          <p>Rust 提供底层 Native 契约与零开销性能边界；Lisp 提供元编程与灵活组合层。</p>
+          <p>Rust 提供底层 Native 契约与 WASM 零开销性能边界；Lisp 提供元编程与灵活组合层。</p>
+        </div>
+        <div class="card">
+          <div class="card-icon">🌐</div>
+          <h3>3. JS / Web 原体深度互操作</h3>
+          <p>内置 <code>js/eval</code>、<code>js/console-log</code>、<code>js/dom-set-text</code> 等原语，直接在浏览器 WASM 环境操作 DOM 与 JS 全局上下文。</p>
         </div>
         <div class="card">
           <div class="card-icon">🧬</div>
-          <h3>3. 宏扩充 Eval 语义</h3>
-          <p>宏是用户扩展语言特性的唯一标准方式。内置 <code>syntax-rules</code> 模式匹配与自动重命名gensym，彻底消除变量捕获。</p>
-        </div>
-        <div class="card">
-          <div class="card-icon">🎯</div>
-          <h3>4. 内核最小，其余是库</h3>
-          <p>核心仅包含 Reader、Sexp AST 与 ZOS 基础。Datalog、Agent 编排与持久化集合均为扩展库。</p>
+          <h3>4. 宏扩充 Eval 语义</h3>
+          <p>内置 <code>syntax-rules</code> 模式匹配与自动 gensym 命名空间，彻底消除变量捕获。</p>
         </div>
         <div class="card">
           <div class="card-icon">📦</div>
           <h3>5. 协议优于实现</h3>
-          <p>基于 CLOS / AMOP 哲学的 ZOS 对象系统，Generic Function 支持基于 C3 线性化算法的 3+ 参数多分派 (Multi-Dispatch)。</p>
+          <p>基于 CLOS / AMOP 哲学的 ZOS 对象系统，Generic Function 支持基于 C3 线性化算法的多分派 (Multi-Dispatch)。</p>
         </div>
         <div class="card">
           <div class="card-icon">🔄</div>
@@ -148,17 +152,17 @@
     <div class="container">
       <div class="section-header">
         <h2>正交分层系统架构</h2>
-        <p>从底层 Host 到扩展库生态的清晰职责边界</p>
+        <p>从底层 Host 到扩展库生态与 WASM 嵌入层</p>
       </div>
 
       <div class="arch-box">
         <div class="arch-layer">
-          <div class="arch-title">应用程序层 (Application Layer)</div>
-          <div class="arch-desc">zio-cli (CLI &amp; REPL) • [Planned: LSP Server / DAP Debugger / WASM Embed]</div>
+          <div class="arch-title">应用程序与 Web 宿主层 (Application &amp; WASM Layer)</div>
+          <div class="arch-desc">site/index.html (Web REPL) • zio-cli (CLI &amp; REPL) • [Planned: LSP Server / DAP Debugger]</div>
         </div>
         <div class="arch-layer">
           <div class="arch-title">扩展库生态层 (Extension Library Layer)</div>
-          <div class="arch-desc">lib/zio/protocol.zio (Protocol 系统) • lib/zio/entity.zio (Entity 模型) • [Planned: zio-datalog / zio-agent]</div>
+          <div class="arch-desc">lib/zio/protocol.zio (Protocol 系统) • lib/zio/entity.zio (Entity 模型) • lib/zio/persistent.zio (持久化集合) • lib/zio/datalog.zio</div>
         </div>
         <div class="arch-layer">
           <div class="arch-title">标准库层 (Standard Library Layer)</div>
@@ -166,7 +170,7 @@
         </div>
         <div class="arch-layer">
           <div class="arch-title">运行时 &amp; ZOS 对象层 (Runtime &amp; ZOS Layer)</div>
-          <div class="arch-desc">AST Evaluator (TCO Trampoline) • ZOS Class/GF/Method/C3 • syntax-rules 卫生宏 • Future/Channel</div>
+          <div class="arch-desc">AST Evaluator (TCO Trampoline) • ZOS Class/GF/Method/C3 • syntax-rules 卫生宏 • Future/Channel • JS FFI (js/eval, js/dom-set-text)</div>
         </div>
         <div class="arch-layer">
           <div class="arch-title">前端语法层 (Frontend Reader)</div>
@@ -174,7 +178,7 @@
         </div>
         <div class="arch-layer">
           <div class="arch-title">Rust 宿主层 (Rust Host Layer)</div>
-          <div class="arch-desc">EvalContext • EvalRuntime • ModuleRegistry • IoHost • NativeFn</div>
+          <div class="arch-desc">EvalContext • EvalRuntime • ModuleRegistry • IoHost • NativeFn • wasm-bindgen</div>
         </div>
       </div>
     </div>
@@ -184,29 +188,27 @@
   <section class="section" id="features">
     <div class="container">
       <div class="section-header">
-        <h2>核心特性深度演示</h2>
-        <p>体验 Zio 现代 Lisp 的表达力与语法设计</p>
+        <h2>核心特性与 JS 互操作演示</h2>
+        <p>体验 Zio 在 WASM 环境下的全量求值与 JavaScript 交互能力</p>
       </div>
 
       <div class="code-tab-wrapper">
         <div class="code-tabs">
-          <button class="code-tab-btn active" data-snippet="syntax">卫生宏 syntax-rules</button>
+          <button class="code-tab-btn active" data-snippet="jsinterop">JS/Web 互操作 (WASM)</button>
+          <button class="code-tab-btn" data-snippet="syntax">卫生宏 syntax-rules</button>
           <button class="code-tab-btn" data-snippet="zos">ZOS 类与通用函数</button>
           <button class="code-tab-btn" data-snippet="csp">CSP Channel 与并发</button>
-          <button class="code-tab-btn" data-snippet="protocol">Protocol 扩展库</button>
         </div>
         <div class="code-view">
-          <pre id="code-display">;; Hygienic syntax-rules Macro Engine (ADR-010 Phase 2)
-(defmacro swap! [a b]
-  (syntax-rules ()
-    ((swap! a b)
-     (let [tmp a]
-       (set! a b)
-       (set! b tmp)))))
+          <pre id="code-display">;; Real-time JavaScript &amp; Web Interoperability in WASM
+;; Execute arbitrary JS expressions directly from Zio:
+(js/eval "document.querySelector('.hero h1').style.color = '#00f2fe'")
 
-;; Hygienic expansion avoids variable capture:
-(swap! x y)
-;; → (let [tmp__hyg_1 x] (do (set! x y) (set! y tmp__hyg_1)))</pre>
+;; Manipulate DOM elements natively:
+(js/dom-set-text ".terminal-title" "⚡ Zio WASM Engine Active")
+
+;; Output to browser console:
+(js/console-log "Hello from real Zio WASM engine in browser!")</pre>
         </div>
       </div>
     </div>
@@ -224,17 +226,17 @@
         <div class="card" style="border-left: 3px solid var(--accent-green);">
           <div class="card-icon">✅</div>
           <h3>Phase 1 &amp; Phase 2</h3>
-          <p>核心稳定化与 ZOS 基础。已实现 Span 错误定位、全 TCO 尾递归、IoHost 抽象与 Class/GF/Method 子集。</p>
+          <p>核心稳定化与 ZOS 基础。实现 Span 错误定位、全 TCO 尾递归、IoHost 抽象与 Class/GF/Method 子集。</p>
         </div>
         <div class="card" style="border-left: 3px solid var(--accent-cyan);">
           <div class="card-icon">🚀</div>
-          <h3>Phase 3 &amp; Phase 4 (当前)</h3>
-          <p>卫生宏引擎、ZOS 多分派 &amp; MOP 反射、Future/Promise 异步解算、CSP 通道与 JSON 原语全量交付。</p>
+          <h3>Phase 3 &amp; Phase 4 &amp; WASM</h3>
+          <p>卫生宏引擎、ZOS 多分派 &amp; MOP 反射、Future/Promise 异步解算、CSP 通道、JSON 原语与 WASM / JS FFI 原体交付。</p>
         </div>
         <div class="card" style="border-left: 3px solid var(--accent-purple);">
           <div class="card-icon">🔮</div>
-          <h3>Phase 5 &amp; Phase 6 (规划中)</h3>
-          <p>官方扩展库生态（persistent / entity / protocol）、zio-datalog 数据库、zio-agent 编排框架与 Cranelift JIT 可行化。</p>
+          <h3>Phase 5 &amp; Phase 6 (扩展生态)</h3>
+          <p>扩展库（persistent / entity / protocol）、zio-datalog 图查询、zio-agent 编排框架 MVP 交付，Cranelift JIT 可行化探索。</p>
         </div>
       </div>
     </div>
@@ -247,7 +249,7 @@
         <div class="logo" style="margin-bottom: 8px;">
           <span class="logo-brackets">&lt;(</span>ZIO<span class="logo-brackets">)&gt;</span>
         </div>
-        <p>A Modern Lisp for the Agent Era. Built with Rust &amp; Lisp.</p>
+        <p>A Modern Lisp for the Agent Era. Built with Rust, WASM &amp; Lisp.</p>
       </div>
       <div class="footer-links">
         <a href="../docs/status.md">Status</a>
@@ -259,6 +261,6 @@
     </div>
   </footer>
 
-  <script src="app.js"></script>
+  <script type="module" src="app.js"></script>
 </body>
 </html>

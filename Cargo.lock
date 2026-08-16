@@ -688,7 +688,10 @@ dependencies = [
  "criterion",
  "im",
  "itertools 0.12.1",
+ "js-sys",
  "thiserror",
+ "wasm-bindgen",
+ "web-sys",
 ]
 
 [[package]]
