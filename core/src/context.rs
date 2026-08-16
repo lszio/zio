@@ -15,7 +15,14 @@ pub trait EvalRuntime {
 
     /// Get the current (root/top-level) environment for this execution context.
     fn env(&self) -> &Arc<Env>;
+
+    /// Get the host I/O implementation for this evaluation runtime (ADR-011).
+    fn io(&self) -> &dyn crate::io::IoHost {
+        &DEFAULT_STD_IO
+    }
 }
+
+static DEFAULT_STD_IO: crate::io::StdIoHost = crate::io::StdIoHost;
 
 /// Module registry — loading, caching, and dependency tracking for modules.
 /// Independent from evaluation; embedders that don't load modules skip this.
@@ -50,6 +57,7 @@ pub struct EvalContext {
     pub env: Arc<Env>,
     pub modules: std::cell::RefCell<ModuleTable>,
     pub loader: std::cell::RefCell<Option<Box<ModuleLoader>>>,
+    pub io: Arc<dyn crate::io::IoHost>,
 }
 
 impl EvalContext {
@@ -58,6 +66,16 @@ impl EvalContext {
             env,
             modules: std::cell::RefCell::new(ModuleTable::new()),
             loader: std::cell::RefCell::new(None),
+            io: Arc::new(crate::io::StdIoHost),
+        }
+    }
+
+    pub fn with_io(env: Arc<Env>, io: Arc<dyn crate::io::IoHost>) -> Self {
+        EvalContext {
+            env,
+            modules: std::cell::RefCell::new(ModuleTable::new()),
+            loader: std::cell::RefCell::new(None),
+            io,
         }
     }
 
@@ -66,6 +84,20 @@ impl EvalContext {
             env,
             modules: std::cell::RefCell::new(ModuleTable::new()),
             loader: std::cell::RefCell::new(Some(loader)),
+            io: Arc::new(crate::io::StdIoHost),
+        }
+    }
+
+    pub fn with_loader_and_io(
+        env: Arc<Env>,
+        loader: Box<ModuleLoader>,
+        io: Arc<dyn crate::io::IoHost>,
+    ) -> Self {
+        EvalContext {
+            env,
+            modules: std::cell::RefCell::new(ModuleTable::new()),
+            loader: std::cell::RefCell::new(Some(loader)),
+            io,
         }
     }
 }

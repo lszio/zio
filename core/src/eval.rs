@@ -20,6 +20,10 @@ impl EvalRuntime for EvalContext {
     fn env(&self) -> &Arc<Env> {
         &self.env
     }
+
+    fn io(&self) -> &dyn crate::io::IoHost {
+        &*self.io
+    }
 }
 
 // ── ModuleRegistry implementation for EvalContext ─────────────────
@@ -347,6 +351,9 @@ fn value_class_name(v: &Value) -> String {
         Value::Macro(_) => "Macro".into(),
         Value::Char(_) => "Character".into(),
         Value::Object(o) => o.header().class.name.clone(),
+        Value::Buffer(_) => "Buffer".into(),
+        Value::Future(_) => "Future".into(),
+        Value::Channel(_) => "Channel".into(),
     }
 }
 
@@ -1133,5 +1140,90 @@ mod tests {
         let s = test_read("(generic-function-methods collide)").unwrap();
         let result = eval_in_context(&s, &ctx).unwrap();
         assert!(matches!(result, Value::List(_)), "methods should be a list");
+    }
+    #[test]
+    fn test_io_host_capture() {
+        use std::sync::Arc;
+        use crate::io::BufferIoHost;
+
+        let env = Arc::new(Env::new(None));
+        builtins::setup_env(&env);
+        let io = Arc::new(BufferIoHost::with_input(vec!["test-input-line\n".into()]));
+        let ctx = EvalContext::with_io(env, io.clone());
+
+        let expr = test_read("(println \"hello\" \"world\")").unwrap();
+        eval_in_context(&expr, &ctx).unwrap();
+
+        let expr = test_read("(print \"foo\")").unwrap();
+        eval_in_context(&expr, &ctx).unwrap();
+
+        assert_eq!(io.get_output(), "\"hello\" \"world\"\n\"foo\"");
+
+        let expr = test_read("(read-line)").unwrap();
+        let val = eval_in_context(&expr, &ctx).unwrap();
+        assert_eq!(val, Value::String("test-input-line".into()));
+    }
+    #[test]
+    fn test_syntax_rules_eval() {
+        let ctx = make_ctx();
+        let s = test_read("(defmacro my-unless (syntax-rules () ((my-unless test body) (if test nil body))))").unwrap();
+        eval_in_context(&s, &ctx).unwrap();
+
+        let s = test_read("(my-unless false 42)").unwrap();
+        let val = eval_in_context(&s, &ctx).unwrap();
+        assert_eq!(val, Value::Integer(42));
+
+        let s = test_read("(my-unless true 42)").unwrap();
+        let val = eval_in_context(&s, &ctx).unwrap();
+        assert_eq!(val, Value::Nil);
+    }
+    #[test]
+    fn test_buffer_eval() {
+        let ctx = make_ctx();
+        let s = test_read("(def buf (bytes \"hello\"))").unwrap();
+        eval_in_context(&s, &ctx).unwrap();
+
+        let s = test_read("(buffer-length buf)").unwrap();
+        let val = eval_in_context(&s, &ctx).unwrap();
+        assert_eq!(val, Value::Integer(5));
+
+        let s = test_read("(buffer-get buf 0)").unwrap();
+        let val = eval_in_context(&s, &ctx).unwrap();
+        assert_eq!(val, Value::Integer(b'h' as i64));
+
+        let s = test_read("(buffer-set! buf 0 74)").unwrap(); // 'J'
+        eval_in_context(&s, &ctx).unwrap();
+
+        let s = test_read("(buffer-get buf 0)").unwrap();
+        let val = eval_in_context(&s, &ctx).unwrap();
+        assert_eq!(val, Value::Integer(74));
+    }
+
+    #[test]
+    fn test_future_promise_eval() {
+        let ctx = make_ctx();
+        let s = test_read("(def p (promise))").unwrap();
+        eval_in_context(&s, &ctx).unwrap();
+
+        let s = test_read("(deliver p 42)").unwrap();
+        eval_in_context(&s, &ctx).unwrap();
+
+        let s = test_read("(deref p)").unwrap();
+        let val = eval_in_context(&s, &ctx).unwrap();
+        assert_eq!(val, Value::Integer(42));
+    }
+
+    #[test]
+    fn test_channel_csp_eval() {
+        let ctx = make_ctx();
+        let s = test_read("(def c (chan 10))").unwrap();
+        eval_in_context(&s, &ctx).unwrap();
+
+        let s = test_read("(send! c \"message\")").unwrap();
+        eval_in_context(&s, &ctx).unwrap();
+
+        let s = test_read("(recv! c)").unwrap();
+        let val = eval_in_context(&s, &ctx).unwrap();
+        assert_eq!(val, Value::String("message".into()));
     }
 }

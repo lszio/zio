@@ -1,0 +1,22 @@
+;; ── zio-protocol ──────────────────────────────────────────────────
+;; Clojure-style protocol system built on ZOS Generic Functions & Methods.
+
+(defmacro defprotocol [name & sigs]
+  (let [gf-forms (map (fn [sig]
+                        (let [fname (car sig)
+                              fnargs (car (cdr sig))]
+                          (list 'defgeneric fname fnargs)))
+                      sigs)]
+    (cons 'do gf-forms)))
+
+(defmacro extend-type [type-name protocol-name & method-impls]
+  (let [method-forms (map (fn [impl]
+                            (let [fname (car impl)
+                                  fnargs (car (cdr impl))
+                                  body (cdr (cdr impl))
+                                  first-arg (car fnargs)
+                                  rest-args (cdr fnargs)
+                                  spec-args (cons (list first-arg type-name) rest-args)]
+                              (cons 'defmethod (cons fname (cons spec-args body)))))
+                          method-impls)]
+    (cons 'do method-forms)))

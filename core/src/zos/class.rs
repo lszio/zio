@@ -48,6 +48,9 @@ impl ClassRegistry {
             Value::Macro(_) => self.find_by_name("Macro").unwrap_or_else(|| top.clone()),
             Value::Char(_) => self.find_by_name("Character").unwrap_or_else(|| top.clone()),
             Value::Object(o) => o.header().class.clone(),
+            Value::Buffer(_) => self.find_by_name("Buffer").unwrap_or_else(|| top.clone()),
+            Value::Future(_) => self.find_by_name("Future").unwrap_or_else(|| top.clone()),
+            Value::Channel(_) => self.find_by_name("Channel").unwrap_or_else(|| top.clone()),
         }
     }
 }
@@ -69,7 +72,7 @@ pub fn make_builtin_classes() -> Vec<ClassRef> {
     for name in &[
         "Nil", "Boolean", "Integer", "Float", "String", "Symbol",
         "Keyword", "List", "Vector", "Map", "Function", "NativeFunction",
-        "Macro", "Character",
+        "Macro", "Character", "Buffer", "Future", "Channel",
     ] {
         let cpl = vec![name.to_string(), "TObject".into()];
         let c = Arc::new(Class {
@@ -168,5 +171,37 @@ fn c3_merge(cpls: &mut [Vec<String>], direct_supers: &[ClassRef]) -> Vec<String>
     }
 
     result
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_c3_linearization_diamond() {
+        // Class O (TObject)
+        let o = Arc::new(Class {
+            name: "O".into(),
+            superclasses: vec![],
+            slots: vec![],
+            cpl: vec!["O".into()],
+        });
+        // Class A extends O
+        let a = Arc::new(Class {
+            name: "A".into(),
+            superclasses: vec![o.clone()],
+            slots: vec![],
+            cpl: vec!["A".into(), "O".into()],
+        });
+        // Class B extends O
+        let b = Arc::new(Class {
+            name: "B".into(),
+            superclasses: vec![o.clone()],
+            slots: vec![],
+            cpl: vec!["B".into(), "O".into()],
+        });
+        // Class C extends A, B
+        let cpl = c3_linearize("C", &[a, b]);
+        assert_eq!(cpl, vec!["C", "A", "B", "O"]);
+    }
 }
 

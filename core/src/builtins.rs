@@ -531,6 +531,34 @@ pub fn make_instance_fn(args: Vector<Value>, engine: &dyn EvalEngine) -> Result<
 }
 // ── ZOS Reflection API ─────────────────────────────────────────
 
+/// (class-of obj) → symbol
+pub fn class_of_fn(args: Vector<Value>, _engine: &dyn EvalEngine) -> Result<Value, EvalError> {
+    if args.len() != 1 {
+        return Err(EvalError::wrong_arg_count(1, args.len()));
+    }
+    let class_name = match &args[0] {
+        Value::Object(o) => o.header().class.name.clone(),
+        Value::Nil => "Nil".into(),
+        Value::Integer(_) => "Integer".into(),
+        Value::Float(_) => "Float".into(),
+        Value::Boolean(_) => "Boolean".into(),
+        Value::String(_) => "String".into(),
+        Value::Symbol(_) => "Symbol".into(),
+        Value::Keyword(_) => "Keyword".into(),
+        Value::List(_) => "List".into(),
+        Value::Vector(_) => "Vector".into(),
+        Value::Map(_) => "Map".into(),
+        Value::Function(_) => "Function".into(),
+        Value::NativeFunction(_) => "NativeFunction".into(),
+        Value::Macro(_) => "Macro".into(),
+        Value::Char(_) => "Character".into(),
+        Value::Buffer(_) => "Buffer".into(),
+        Value::Future(_) => "Future".into(),
+        Value::Channel(_) => "Channel".into(),
+    };
+    Ok(Value::Symbol(class_name))
+}
+
 /// (class-name class) → symbol
 pub fn class_name_fn(args: Vector<Value>, _engine: &dyn EvalEngine) -> Result<Value, EvalError> {
     if args.len() != 1 {
@@ -539,7 +567,6 @@ pub fn class_name_fn(args: Vector<Value>, _engine: &dyn EvalEngine) -> Result<Va
     let class_ref = value_to_class_ref(&args[0])?;
     Ok(Value::Symbol(class_ref.name.clone()))
 }
-
 /// (class-direct-superclasses class) → list
 pub fn class_direct_superclasses_fn(args: Vector<Value>, _engine: &dyn EvalEngine) -> Result<Value, EvalError> {
     if args.len() != 1 {
@@ -662,6 +689,9 @@ pub fn type_fn(args: Vector<Value>, _engine: &dyn EvalEngine) -> Result<Value, E
         Value::Macro(_) => "macro",
         Value::Char(_) => "character",
         Value::Object(_) => "object",
+        Value::Buffer(_) => "buffer",
+        Value::Future(_) => "future",
+        Value::Channel(_) => "channel",
     };
     Ok(Value::Keyword(kw.to_string()))
 }
@@ -811,37 +841,314 @@ pub fn sort_fn(args: Vector<Value>, engine: &dyn EvalEngine) -> Result<Value, Ev
     Ok(Value::Vector(items.into_iter().collect()))
 }
 // ── I/O ────────────────────────────────────────────────────────────
-pub fn println(args: Vector<Value>, _engine: &dyn EvalEngine) -> Result<Value, EvalError> {
+pub fn print_fn(args: Vector<Value>, engine: &dyn EvalEngine) -> Result<Value, EvalError> {
     let s: String = args
         .iter()
         .map(|v| format!("{v}"))
         .collect::<Vec<_>>()
         .join(" ");
-    println!("{s}");
+    engine.io().print(&s)?;
     Ok(Value::Nil)
 }
 
-pub fn prn(args: Vector<Value>, _engine: &dyn EvalEngine) -> Result<Value, EvalError> {
+pub fn println(args: Vector<Value>, engine: &dyn EvalEngine) -> Result<Value, EvalError> {
     let s: String = args
+        .iter()
+        .map(|v| format!("{v}"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    engine.io().println(&s)?;
+    Ok(Value::Nil)
+}
 
+pub fn prn(args: Vector<Value>, engine: &dyn EvalEngine) -> Result<Value, EvalError> {
+    let s: String = args
         .iter()
         .map(|v| format!("{v:?}"))
         .collect::<Vec<_>>()
         .join(" ");
-    println!("{s}");
+    engine.io().println(&s)?;
     Ok(Value::Nil)
 }
 
-pub fn read_line(_args: Vector<Value>, _engine: &dyn EvalEngine) -> Result<Value, EvalError> {
-    let mut input = String::new();
-    match std::io::stdin().read_line(&mut input) {
-        Ok(0) | Err(_) => Ok(Value::Nil),
-        Ok(_) => {
-            // Trim trailing newline
+pub fn read_line(_args: Vector<Value>, engine: &dyn EvalEngine) -> Result<Value, EvalError> {
+    match engine.io().read_line() {
+        Err(_) => Ok(Value::Nil),
+        Ok(input) => {
             let trimmed = input.trim_end_matches('\n').trim_end_matches('\r');
             Ok(Value::String(trimmed.to_string()))
         }
     }
+}
+
+// ── Buffer / Bytes ──────────────────────────────────────────────
+
+pub fn bytes_fn(args: Vector<Value>, _engine: &dyn EvalEngine) -> Result<Value, EvalError> {
+    if args.len() != 1 {
+        return Err(EvalError::wrong_arg_count(1, args.len()));
+    }
+    let data = match &args[0] {
+        Value::Integer(n) => vec![0u8; (*n).max(0) as usize],
+        Value::String(s) => s.as_bytes().to_vec(),
+        Value::Vector(vec) | Value::List(vec) => {
+            let mut buf = Vec::with_capacity(vec.len());
+            for item in vec {
+                match item {
+                    Value::Integer(b) => buf.push(*b as u8),
+                    other => return Err(EvalError::type_error("byte integer", other.value_type())),
+                }
+            }
+            buf
+        }
+        other => return Err(EvalError::type_error("size, list, or string", other.value_type())),
+    };
+    Ok(Value::Buffer(Arc::new(std::sync::Mutex::new(data))))
+}
+
+pub fn buffer_length_fn(args: Vector<Value>, _engine: &dyn EvalEngine) -> Result<Value, EvalError> {
+    if args.len() != 1 {
+        return Err(EvalError::wrong_arg_count(1, args.len()));
+    }
+    match &args[0] {
+        Value::Buffer(b) => Ok(Value::Integer(b.lock().unwrap().len() as i64)),
+        other => Err(EvalError::type_error("buffer", other.value_type())),
+    }
+}
+
+pub fn buffer_get_fn(args: Vector<Value>, _engine: &dyn EvalEngine) -> Result<Value, EvalError> {
+    if args.len() != 2 {
+        return Err(EvalError::wrong_arg_count(2, args.len()));
+    }
+    let buf = match &args[0] {
+        Value::Buffer(b) => b,
+        other => return Err(EvalError::type_error("buffer", other.value_type())),
+    };
+    let idx = match &args[1] {
+        Value::Integer(i) => *i as usize,
+        other => return Err(EvalError::type_error("integer index", other.value_type())),
+    };
+    let lock = buf.lock().unwrap();
+    if idx < lock.len() {
+        Ok(Value::Integer(lock[idx] as i64))
+    } else {
+        Err(EvalError::custom(format!("buffer index out of bounds: {idx} (len {})", lock.len())))
+    }
+}
+
+pub fn buffer_set_fn(args: Vector<Value>, _engine: &dyn EvalEngine) -> Result<Value, EvalError> {
+    if args.len() != 3 {
+        return Err(EvalError::wrong_arg_count(3, args.len()));
+    }
+    let buf = match &args[0] {
+        Value::Buffer(b) => b,
+        other => return Err(EvalError::type_error("buffer", other.value_type())),
+    };
+    let idx = match &args[1] {
+        Value::Integer(i) => *i as usize,
+        other => return Err(EvalError::type_error("integer index", other.value_type())),
+    };
+    let val = match &args[2] {
+        Value::Integer(b) => *b as u8,
+        other => return Err(EvalError::type_error("byte integer", other.value_type())),
+    };
+    let mut lock = buf.lock().unwrap();
+    if idx < lock.len() {
+        lock[idx] = val;
+        Ok(Value::Nil)
+    } else {
+        Err(EvalError::custom(format!("buffer index out of bounds: {idx} (len {})", lock.len())))
+    }
+}
+
+pub fn file_exists_fn(args: Vector<Value>, _engine: &dyn EvalEngine) -> Result<Value, EvalError> {
+    if args.len() != 1 {
+        return Err(EvalError::wrong_arg_count(1, args.len()));
+    }
+    let path = match &args[0] {
+        Value::String(s) => s,
+        other => return Err(EvalError::type_error("string path", other.value_type())),
+    };
+    Ok(Value::Boolean(std::path::Path::new(path).exists()))
+}
+
+pub fn read_string_fn(args: Vector<Value>, _engine: &dyn EvalEngine) -> Result<Value, EvalError> {
+    if args.len() != 1 {
+        return Err(EvalError::wrong_arg_count(1, args.len()));
+    }
+    let s = match &args[0] {
+        Value::String(s) => s,
+        other => return Err(EvalError::type_error("string", other.value_type())),
+    };
+    let sexp = crate::reader::reader::read(s).map_err(|e| EvalError::custom(e.to_string()))?;
+    Ok(Value::from(sexp))
+}
+
+// ── Concurrency & CSP ──────────────────────────────────────────────
+
+pub fn future_call_fn(args: Vector<Value>, engine: &dyn EvalEngine) -> Result<Value, EvalError> {
+    if args.len() != 1 {
+        return Err(EvalError::wrong_arg_count(1, args.len()));
+    }
+    let func = match &args[0] {
+        Value::Function(f) => f.clone(),
+        other => return Err(EvalError::type_error("function", other.value_type())),
+    };
+
+    let pair = Arc::new((std::sync::Mutex::new(None), std::sync::Condvar::new()));
+    let env = Env::bind(&func.env, &func.params, &im::vector![])?;
+    let res = engine.eval_expr(&func.body, &env, false);
+    let val = match res {
+        Ok(tr) => tr.into_value(),
+        Err(_) => Value::Nil,
+    };
+    {
+        let (lock, cvar) = &*pair;
+        let mut guard = lock.lock().unwrap();
+        *guard = Some(val);
+        cvar.notify_all();
+    }
+    Ok(Value::Future(pair))
+}
+
+pub fn promise_fn(_args: Vector<Value>, _engine: &dyn EvalEngine) -> Result<Value, EvalError> {
+    let pair = Arc::new((std::sync::Mutex::new(None), std::sync::Condvar::new()));
+    Ok(Value::Future(pair))
+}
+
+pub fn deliver_fn(args: Vector<Value>, _engine: &dyn EvalEngine) -> Result<Value, EvalError> {
+    if args.len() != 2 {
+        return Err(EvalError::wrong_arg_count(2, args.len()));
+    }
+    let pair = match &args[0] {
+        Value::Future(p) => p.clone(),
+        other => return Err(EvalError::type_error("future or promise", other.value_type())),
+    };
+    let val = args[1].clone();
+    let (lock, cvar) = &*pair;
+    {
+        let mut guard = lock.lock().unwrap();
+        if guard.is_none() {
+            *guard = Some(val);
+            cvar.notify_all();
+        }
+    }
+    Ok(Value::Future(pair))
+}
+
+pub fn deref_fn(args: Vector<Value>, _engine: &dyn EvalEngine) -> Result<Value, EvalError> {
+    if args.len() != 1 {
+        return Err(EvalError::wrong_arg_count(1, args.len()));
+    }
+    match &args[0] {
+        Value::Future(pair) => {
+            let (lock, cvar) = &**pair;
+            let mut guard = lock.lock().unwrap();
+            while guard.is_none() {
+                guard = cvar.wait(guard).unwrap();
+            }
+            Ok(guard.as_ref().unwrap().clone())
+        }
+        other => Err(EvalError::type_error("future or promise", other.value_type())),
+    }
+}
+
+pub fn chan_fn(args: Vector<Value>, _engine: &dyn EvalEngine) -> Result<Value, EvalError> {
+    let (tx, rx) = if args.len() == 1 {
+        let cap = match &args[0] {
+            Value::Integer(n) => (*n).max(1) as usize,
+            other => return Err(EvalError::type_error("integer capacity", other.value_type())),
+        };
+        let (tx, rx) = std::sync::mpsc::sync_channel(cap);
+        (crate::value::ChannelTx::Sync(tx), rx)
+    } else {
+        let (tx, rx) = std::sync::mpsc::channel();
+        (crate::value::ChannelTx::Async(tx), rx)
+    };
+    let pair = crate::value::ChannelPair {
+        tx: std::sync::Mutex::new(tx),
+        rx: std::sync::Mutex::new(rx),
+    };
+    Ok(Value::Channel(Arc::new(pair)))
+}
+
+pub fn send_fn(args: Vector<Value>, _engine: &dyn EvalEngine) -> Result<Value, EvalError> {
+    if args.len() != 2 {
+        return Err(EvalError::wrong_arg_count(2, args.len()));
+    }
+    let chan = match &args[0] {
+        Value::Channel(c) => c,
+        other => return Err(EvalError::type_error("channel", other.value_type())),
+    };
+    let val = args[1].clone();
+    let tx = chan.tx.lock().unwrap();
+    tx.send(val).map_err(|e| EvalError::custom(format!("send! error: {e}")))?;
+    Ok(Value::Nil)
+}
+
+pub fn recv_fn(args: Vector<Value>, _engine: &dyn EvalEngine) -> Result<Value, EvalError> {
+    if args.len() != 1 {
+        return Err(EvalError::wrong_arg_count(1, args.len()));
+    }
+    let chan = match &args[0] {
+        Value::Channel(c) => c,
+        other => return Err(EvalError::type_error("channel", other.value_type())),
+    };
+    let rx = chan.rx.lock().unwrap();
+    match rx.recv() {
+        Ok(v) => Ok(v),
+        Err(_) => Ok(Value::Nil),
+    }
+}
+
+// ── JSON Operations ────────────────────────────────────────────────
+
+fn value_to_json_string(val: &Value) -> String {
+    match val {
+        Value::Nil => "null".into(),
+        Value::Boolean(b) => b.to_string(),
+        Value::Integer(i) => i.to_string(),
+        Value::Float(f) => f.to_string(),
+        Value::String(s) => format!("{s:?}"),
+        Value::Keyword(k) | Value::Symbol(k) => format!("{k:?}"),
+        Value::List(l) | Value::Vector(l) => {
+            let items: Vec<String> = l.iter().map(value_to_json_string).collect();
+            format!("[{}]", items.join(","))
+        }
+        Value::Map(m) => {
+            let pairs: Vec<String> = m
+                .iter()
+                .map(|(k, v)| {
+                    let k_str = match k {
+                        Value::String(s) | Value::Symbol(s) | Value::Keyword(s) => format!("{s:?}"),
+                        _ => format!("{:?}", k.to_string()),
+                    };
+                    format!("{k_str}:{}", value_to_json_string(v))
+                })
+                .collect();
+            format!("{{{}}}", pairs.join(","))
+        }
+        Value::Char(c) => format!("{c:?}"),
+        _ => "null".into(),
+    }
+}
+
+pub fn json_stringify_fn(args: Vector<Value>, _engine: &dyn EvalEngine) -> Result<Value, EvalError> {
+    if args.len() != 1 {
+        return Err(EvalError::wrong_arg_count(1, args.len()));
+    }
+    Ok(Value::String(value_to_json_string(&args[0])))
+}
+
+pub fn json_parse_fn(args: Vector<Value>, _engine: &dyn EvalEngine) -> Result<Value, EvalError> {
+    if args.len() != 1 {
+        return Err(EvalError::wrong_arg_count(1, args.len()));
+    }
+    let s = match &args[0] {
+        Value::String(s) => s,
+        other => return Err(EvalError::type_error("string", other.value_type())),
+    };
+    let sexp = crate::reader::reader::read(s).map_err(|e| EvalError::custom(format!("JSON parse error: {e}")))?;
+    Ok(Value::from(sexp))
 }
 // ── File Loading ──────────────────────────────────────────────────
 
@@ -1039,13 +1346,13 @@ pub fn macroexpand_1_fn(args: Vector<Value>, engine: &dyn EvalEngine) -> Result<
     }
 }
 /// (pprint value) → nil — pretty-print a value with indentation.
-pub fn pprint_fn(args: Vector<Value>, _engine: &dyn EvalEngine) -> Result<Value, EvalError> {
+pub fn pprint_fn(args: Vector<Value>, engine: &dyn EvalEngine) -> Result<Value, EvalError> {
     if args.len() != 1 {
         return Err(EvalError::wrong_arg_count(1, args.len()));
     }
     let mut output = String::new();
     args[0].pretty_print(&mut output, 0).map_err(|_| EvalError::custom("pprint formatting error"))?;
-    println!("{output}");
+    engine.io().println(&output)?;
     Ok(Value::Nil)
 }
 
@@ -1136,15 +1443,30 @@ pub fn setup_env(env: &Arc<Env>) {
 
     // Error signaling
     env.set("error".into(), Value::NativeFunction(NativeFn::new("error", crate::special::zos_forms::do_error_fn)));
+    // Buffer / Bytes operations
+    env.set("bytes".into(), Value::NativeFunction(NativeFn::new("bytes", bytes_fn)));
+    env.set("buffer-length".into(), Value::NativeFunction(NativeFn::new("buffer-length", buffer_length_fn)));
+    env.set("buffer-get".into(), Value::NativeFunction(NativeFn::new("buffer-get", buffer_get_fn)));
+    env.set("buffer-set!".into(), Value::NativeFunction(NativeFn::new("buffer-set!", buffer_set_fn)));
 
-    // ZOS Reflection API
+    // Concurrency & CSP operations
+    env.set("future-call".into(), Value::NativeFunction(NativeFn::new("future-call", future_call_fn)));
+    env.set("promise".into(), Value::NativeFunction(NativeFn::new("promise", promise_fn)));
+    env.set("deliver".into(), Value::NativeFunction(NativeFn::new("deliver", deliver_fn)));
+    env.set("deref".into(), Value::NativeFunction(NativeFn::new("deref", deref_fn)));
+    env.set("chan".into(), Value::NativeFunction(NativeFn::new("chan", chan_fn)));
+    env.set("send!".into(), Value::NativeFunction(NativeFn::new("send!", send_fn)));
+    env.set("recv!".into(), Value::NativeFunction(NativeFn::new("recv!", recv_fn)));
+    env.set("file-exists?".into(), Value::NativeFunction(NativeFn::new("file-exists?", file_exists_fn)));
+    env.set("read-string".into(), Value::NativeFunction(NativeFn::new("read-string", read_string_fn)));
+    env.set("class-of".into(), Value::NativeFunction(NativeFn::new("class-of", class_of_fn)));
     env.set("class-name".into(), Value::NativeFunction(NativeFn::new("class-name", class_name_fn)));
     env.set("class-direct-superclasses".into(), Value::NativeFunction(NativeFn::new("class-direct-superclasses", class_direct_superclasses_fn)));
     env.set("class-precedence-list".into(), Value::NativeFunction(NativeFn::new("class-precedence-list", class_precedence_list_fn)));
     env.set("class-slots".into(), Value::NativeFunction(NativeFn::new("class-slots", class_slots_fn)));
+    env.set("slot-definitions".into(), Value::NativeFunction(NativeFn::new("slot-definitions", class_slots_fn)));
     env.set("generic-function-name".into(), Value::NativeFunction(NativeFn::new("generic-function-name", gf_name_fn)));
     env.set("generic-function-methods".into(), Value::NativeFunction(NativeFn::new("generic-function-methods", gf_methods_fn)));
-
     // Map operations
     env.set("put".into(), Value::NativeFunction(NativeFn::new("put", put_fn)));
 
@@ -1166,11 +1488,14 @@ pub fn setup_env(env: &Arc<Env>) {
     // Pretty-print
     env.set("pprint".into(), Value::NativeFunction(NativeFn::new("pprint", pprint_fn)));
     // I/O
+    env.set("print".into(), Value::NativeFunction(NativeFn::new("print", print_fn)));
     env.set("println".into(), Value::NativeFunction(NativeFn::new("println", println)));
     env.set("prn".into(), Value::NativeFunction(NativeFn::new("prn", prn)));
     env.set("read-line".into(), Value::NativeFunction(NativeFn::new("read-line", read_line)));
     env.set("slurp".into(), Value::NativeFunction(NativeFn::new("slurp", slurp)));
-    env.set("spit".into(), Value::NativeFunction(NativeFn::new("spit", spit)));
+    // JSON Operations
+    env.set("json-stringify".into(), Value::NativeFunction(NativeFn::new("json-stringify", json_stringify_fn)));
+    env.set("json-parse".into(), Value::NativeFunction(NativeFn::new("json-parse", json_parse_fn)));
 
     // File loading
     env.set("load".into(), Value::NativeFunction(NativeFn::new("load", do_load)));

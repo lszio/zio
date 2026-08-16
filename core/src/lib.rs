@@ -16,6 +16,7 @@ pub mod special;
 pub mod symbol;
 pub mod reader;
 pub mod context;
+pub mod io;
 pub mod zos;
 /// Return the embedded core standard library source.
 pub fn stdlib_source() -> &'static str {

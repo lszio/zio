@@ -36,8 +36,8 @@ pub struct GenericFunction {
     pub name: String,
     pub methods: Vec<Arc<Method>>,
     pub lambda_list: Vec<String>,
-    // Simplified dispatch cache: (specializer_0, ..., specializer_3) → methods list
-    pub dispatch_cache: std::collections::HashMap<(u64, u64, u64, u64), Vec<Arc<Method>>>,
+    // Dispatch cache: sequence of hashed argument class names → methods list
+    pub dispatch_cache: std::collections::HashMap<Vec<u64>, Vec<Arc<Method>>>,
 }
 
 impl GenericFunction {
@@ -129,12 +129,9 @@ impl GenericFunction {
     }
 
 
-    /// Build a cache key from argument class names.
-    fn cache_key(&self, arg_classes: &[ClassRef]) -> (u64, u64, u64, u64) {
-        let id = |i: usize| -> u64 {
-            arg_classes.get(i).map(|c| simple_hash(&c.name)).unwrap_or(0)
-        };
-        (id(0), id(1), id(2), id(3))
+    /// Build a cache key from argument class names (supports arbitrary argument counts).
+    fn cache_key(&self, arg_classes: &[ClassRef]) -> Vec<u64> {
+        arg_classes.iter().map(|c| simple_hash(&c.name)).collect()
     }
     /// Dispatch: find and sort applicable methods, return by qualifier.
     pub fn dispatch(&mut self, arg_classes: &[ClassRef]) -> DispatchResult {
@@ -143,7 +140,7 @@ impl GenericFunction {
         // Check cache first (separate lookup from insert to avoid borrow conflict)
         if !self.dispatch_cache.contains_key(&key) {
             let methods = self.find_applicable_methods(arg_classes);
-            self.dispatch_cache.insert(key, methods);
+            self.dispatch_cache.insert(key.clone(), methods);
         }
 
         let methods = self.dispatch_cache.get(&key).unwrap();
@@ -182,4 +179,57 @@ fn simple_hash(s: &str) -> u64 {
         h = h.wrapping_mul(33).wrapping_add(b as u64);
     }
     h
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::zos::object::Class;
+
+    #[test]
+    fn test_multi_dispatch_3_args() {
+        let t_obj = Arc::new(Class {
+            name: "TObject".into(),
+            superclasses: vec![],
+            slots: vec![],
+            cpl: vec!["TObject".into()],
+        });
+        let int_cls = Arc::new(Class {
+            name: "Integer".into(),
+            superclasses: vec![t_obj.clone()],
+            slots: vec![],
+            cpl: vec!["Integer".into(), "TObject".into()],
+        });
+        let str_cls = Arc::new(Class {
+            name: "String".into(),
+            superclasses: vec![t_obj.clone()],
+            slots: vec![],
+            cpl: vec!["String".into(), "TObject".into()],
+        });
+
+        let mut gf = GenericFunction::new("render-3d".into(), vec!["x".into(), "y".into(), "z".into()]);
+
+        let m1 = Arc::new(Method {
+            specializers: vec![
+                Specializer::Exact("Integer".into()),
+                Specializer::Exact("Integer".into()),
+                Specializer::Exact("Integer".into()),
+            ],
+            qualifier: MethodQualifier::Primary,
+            body: Arc::new(crate::value::Function {
+                params: im::vector!["x".into(), "y".into(), "z".into()],
+                rest_param: None,
+                body: crate::sexp::Sexp::Nil,
+                env: Arc::new(crate::env::Env::new(None)),
+            }),
+        });
+
+        gf.add_method(m1.clone());
+
+        let res = gf.dispatch(&[int_cls.clone(), int_cls.clone(), int_cls.clone()]);
+        assert_eq!(res.primary.len(), 1);
+
+        // Differs at 3rd arg: String instead of Integer -> no match
+        let res2 = gf.dispatch(&[int_cls.clone(), int_cls.clone(), str_cls.clone()]);
+        assert_eq!(res2.primary.len(), 0);
+    }
 }

@@ -98,6 +98,9 @@ pub fn value_to_sexp(value: &Value) -> Result<Sexp, EvalError> {
         Value::Macro(_) => Err(EvalError::macro_error("macro returned a macro value")),
         Value::Char(c) => Ok(Sexp::Char(*c, None)),
         Value::Object(_) => Err(EvalError::macro_error("macro returned an object value")),
+        Value::Buffer(_) => Err(EvalError::macro_error("macro returned a buffer value")),
+        Value::Future(_) => Err(EvalError::macro_error("macro returned a future value")),
+        Value::Channel(_) => Err(EvalError::macro_error("macro returned a channel value")),
     }
 }
 
@@ -142,7 +145,6 @@ pub fn expand_syntax_rules(rules: &Sexp, args: &[Sexp]) -> Result<Sexp, EvalErro
         }
         let pattern = &clause_list[0];
         let template = &clause_list[1];
-
         // Prepend a dummy symbol for the macro name (which is consumed before
         // apply_macro is called, but syntax-rules patterns expect it).
         let mut adjusted_args: Vec<Sexp> = Vec::new();
@@ -151,7 +153,8 @@ pub fn expand_syntax_rules(rules: &Sexp, args: &[Sexp]) -> Result<Sexp, EvalErro
 
         let mut bindings = Vec::new();
         if match_pattern(pattern, &adjusted_args, &literals, &mut bindings) {
-            return Ok(expand_template(template, &bindings, &literals));
+            let mut hygiene_map = std::collections::HashMap::new();
+            return Ok(expand_template(template, &bindings, &literals, &mut hygiene_map));
         }
     }
 
@@ -160,8 +163,17 @@ pub fn expand_syntax_rules(rules: &Sexp, args: &[Sexp]) -> Result<Sexp, EvalErro
 
 /// Try to match `args` against `pattern`, collecting bindings.
 /// Returns true if the match succeeds.
-fn match_single(pattern: &Sexp, arg: &Sexp, literals: &[String], bindings: &mut Vec<(String, Sexp)>) -> bool {
+fn match_single(
+    pattern: &Sexp,
+    arg: &Sexp,
+    literals: &[String],
+    bindings: &mut Vec<(String, Sexp)>,
+    is_root_head: bool,
+) -> bool {
     match (pattern, arg) {
+        // Root head (macro name position in pattern list) — consume without binding
+        (Sexp::Symbol(_, _), _) if is_root_head => true,
+
         // Wildcard
         (Sexp::Symbol(s, _), _) if s == "_" => true,
 
@@ -183,21 +195,24 @@ fn match_single(pattern: &Sexp, arg: &Sexp, literals: &[String], bindings: &mut 
 
         // List
         (Sexp::List(lp, _), Sexp::List(la, _)) => {
-            if lp.len() >= 3 && lp.last().map_or(false, |e| matches!(e, Sexp::Symbol(s, _) if s == "...")) {
+            let has_ellipsis = lp.len() >= 2 && matches!(lp.last(), Some(Sexp::Symbol(s, _)) if s == "...");
+            if has_ellipsis {
                 let prefix_end = lp.len() - 2;
                 let var_pat = &lp[prefix_end];
                 if la.len() < prefix_end { return false; }
                 for i in 0..prefix_end {
-                    if !match_single(&lp[i], &la[i], literals, bindings) { return false; }
+                    let head = is_root_head && i == 0;
+                    if !match_single(&lp[i], &la[i], literals, bindings, head) { return false; }
                 }
                 for i in prefix_end..la.len() {
-                    if !match_single(var_pat, &la[i], literals, bindings) { return false; }
+                    if !match_single(var_pat, &la[i], literals, bindings, false) { return false; }
                 }
                 true
             } else {
                 if lp.len() != la.len() { return false; }
                 for i in 0..lp.len() {
-                    if !match_single(&lp[i], &la[i], literals, bindings) { return false; }
+                    let head = is_root_head && i == 0;
+                    if !match_single(&lp[i], &la[i], literals, bindings, head) { return false; }
                 }
                 true
             }
@@ -207,7 +222,7 @@ fn match_single(pattern: &Sexp, arg: &Sexp, literals: &[String], bindings: &mut 
         (Sexp::Vector(vp, _), Sexp::Vector(va, _)) => {
             if vp.len() != va.len() { return false; }
             for i in 0..vp.len() {
-                if !match_single(&vp[i], &va[i], literals, bindings) { return false; }
+                if !match_single(&vp[i], &va[i], literals, bindings, false) { return false; }
             }
             true
         }
@@ -229,7 +244,7 @@ fn match_pattern(
     } else {
         Sexp::List(args.iter().cloned().collect(), None)
     };
-    match_single(pattern, &wrapped, literals, bindings)
+    match_single(pattern, &wrapped, literals, bindings, true)
 }
 
 /// Check if two Sexp values are structurally equal (ignoring spans).
@@ -256,20 +271,40 @@ fn sexp_equal(a: &Sexp, b: &Sexp) -> bool {
     }
 }
 
+/// Core builtins and syntax keywords that should not undergo hygienic renaming.
+fn is_core_keyword(s: &str) -> bool {
+    matches!(
+        s,
+        "let" | "if" | "do" | "set!" | "def" | "defn" | "fn" | "quote" | "try" | "catch"
+            | "defclass" | "defgeneric" | "defmethod" | "make-instance" | "slot-value"
+            | "when" | "unless" | "cond" | "and" | "or" | "+" | "-" | "*" | "/" | "="
+            | "list" | "vector" | "nil" | "true" | "false" | "_" | "..." | "handler"
+    )
+}
+
+static HYGIENE_COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(1);
+
 /// Expand a template by substituting pattern bindings and applying hygiene.
 fn expand_template(
     template: &Sexp,
     bindings: &[(String, Sexp)],
     literals: &[String],
+    hygiene_map: &mut std::collections::HashMap<String, String>,
 ) -> Sexp {
     match template {
         // Pattern variable: substitute bound value
         Sexp::Symbol(s, _) if !literals.contains(s) && s != "_" && s != "..." => {
             if let Some((_, val)) = bindings.iter().rev().find(|(k, _)| k == s) {
                 val.clone()
+            } else if is_core_keyword(s) || literals.contains(s) {
+                Sexp::Symbol(s.clone(), None)
             } else {
-                // Not a pattern variable — hygienic rename
-                Sexp::Symbol(format!("{s}"), None)
+                // Local identifier introduced in template — apply hygienic renaming
+                let renamed = hygiene_map.entry(s.clone()).or_insert_with(|| {
+                    let id = HYGIENE_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    format!("{s}__hyg_{id}")
+                });
+                Sexp::Symbol(renamed.clone(), None)
             }
         }
         // Literal symbol or special: keep as-is
@@ -293,7 +328,7 @@ fn expand_template(
                                     .map(|(_, v)| v)
                                     .collect();
                                 for val in vals {
-                                    result.push_back(expand_template(val, bindings, literals));
+                                    result.push_back(expand_template(val, bindings, literals, hygiene_map));
                                 }
                             }
                             i += 2; // skip var and ...
@@ -301,7 +336,7 @@ fn expand_template(
                         }
                     }
                 }
-                result.push_back(expand_template(&items[i], bindings, literals));
+                result.push_back(expand_template(&items[i], bindings, literals, hygiene_map));
                 i += 1;
             }
             Sexp::List(result, None)
@@ -310,7 +345,7 @@ fn expand_template(
         // Vector: expand each element
         Sexp::Vector(items, _) => {
             let result: Vector<Sexp> = items.iter()
-                .map(|item| expand_template(item, bindings, literals))
+                .map(|item| expand_template(item, bindings, literals, hygiene_map))
                 .collect();
             Sexp::Vector(result, None)
         }
@@ -319,8 +354,8 @@ fn expand_template(
         Sexp::Map(m, _) => {
             let mut result = im::HashMap::new();
             for (k, v) in m {
-                result.insert(expand_template(k, bindings, literals),
-                              expand_template(v, bindings, literals));
+                result.insert(expand_template(k, bindings, literals, hygiene_map),
+                              expand_template(v, bindings, literals, hygiene_map));
             }
             Sexp::Map(result, None)
         }
@@ -382,5 +417,53 @@ mod tests {
         let args = [Sexp::Integer(42, None)];
         let result = apply_macro(&m, &args, &ctx.env, &ctx).unwrap();
         assert_eq!(result, Sexp::Integer(42, None));
+    }
+    #[test]
+    fn test_syntax_rules_swap() {
+        // (syntax-rules () ((swap! a b) (let [tmp a] (do (set! a b) (set! b tmp)))))
+        let rules = Sexp::List(im::vector![
+            Sexp::Symbol("syntax-rules".into(), None),
+            Sexp::List(im::vector![], None),
+            Sexp::List(im::vector![
+                Sexp::List(im::vector![
+                    Sexp::Symbol("swap!".into(), None),
+                    Sexp::Symbol("a".into(), None),
+                    Sexp::Symbol("b".into(), None),
+                ], None),
+                Sexp::List(im::vector![
+                    Sexp::Symbol("let".into(), None),
+                    Sexp::Vector(im::vector![
+                        Sexp::Symbol("tmp".into(), None),
+                        Sexp::Symbol("a".into(), None),
+                    ], None),
+                    Sexp::List(im::vector![
+                        Sexp::Symbol("set!".into(), None),
+                        Sexp::Symbol("a".into(), None),
+                        Sexp::Symbol("b".into(), None),
+                    ], None),
+                    Sexp::List(im::vector![
+                        Sexp::Symbol("set!".into(), None),
+                        Sexp::Symbol("b".into(), None),
+                        Sexp::Symbol("tmp".into(), None),
+                    ], None),
+                ], None),
+            ], None),
+        ], None);
+
+        let args = [Sexp::Symbol("x".into(), None), Sexp::Symbol("y".into(), None)];
+        let expanded = expand_syntax_rules(&rules, &args).unwrap();
+        if let Sexp::List(items, _) = &expanded {
+            assert_eq!(items[0], Sexp::Symbol("let".into(), None));
+            if let Sexp::Vector(bindings, _) = &items[1] {
+                assert_eq!(bindings[1], Sexp::Symbol("x".into(), None));
+                // Local variable tmp is hygienically renamed
+                let renamed_tmp = bindings[0].to_string();
+                assert!(renamed_tmp.starts_with("tmp__hyg_"));
+            } else {
+                panic!("expected bindings vector");
+            }
+        } else {
+            panic!("expected expanded list");
+        }
     }
 }

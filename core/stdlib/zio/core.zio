@@ -34,6 +34,21 @@
           flds)]
     ;; (cons 'do (cons defn-form accessor-forms)) → (do defn-form acc1 acc2 ...)
     (cons 'do (cons defn-form accessor-forms))))
+(defn assoc [m k v]
+  (put m k v))
+
+(defn dissoc [m k]
+  (remove m k))
+
+(defn get-in [m ks]
+  (if (or (nil? ks) (= (count ks) 0))
+    m
+    (get-in (get m (first ks)) (rest ks))))
+
+(defn assoc-in [m ks v]
+  (if (= (count ks) 1)
+    (assoc m (first ks) v)
+    (assoc m (first ks) (assoc-in (get m (first ks) {}) (rest ks) v))))
 
 ;; ── Logical ──────────────────────────────────────────────────
 

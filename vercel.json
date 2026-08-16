@@ -1,0 +1,8 @@
+{
+  "version": 2,
+  "name": "zio-landing-site",
+  "cleanUrls": true,
+  "rewrites": [
+    { "source": "/(.*)", "destination": "/site/$1" }
+  ]
+}

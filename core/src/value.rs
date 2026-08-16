@@ -23,7 +23,7 @@ pub struct Function {
 #[derive(Clone)]
 pub struct NativeFn {
     id: usize,
-    name: &'static str,
+    name: String,
     func: Arc<dyn Fn(Vector<Value>, &dyn EvalEngine) -> Result<Value, EvalError>>,
 }
 
@@ -40,13 +40,13 @@ static NATIVE_ID_COUNTER: AtomicUsize = AtomicUsize::new(1);
 
 impl NativeFn {
     pub fn new(
-        name: &'static str,
+        name: impl Into<String>,
         f: impl Fn(Vector<Value>, &dyn EvalEngine) -> Result<Value, EvalError> + 'static,
     ) -> Self {
         let id = NATIVE_ID_COUNTER.fetch_add(1, Ordering::Relaxed);
         NativeFn {
             id,
-            name,
+            name: name.into(),
             func: Arc::new(f),
         }
     }
@@ -56,7 +56,7 @@ impl NativeFn {
     }
 
     pub fn name(&self) -> &str {
-        self.name
+        &self.name
     }
 
     pub fn id(&self) -> usize {
@@ -148,6 +148,33 @@ pub enum Value {
     Char(char),
     /// ZOS heap object — entry point for the runtime object system.
     Object(Box<dyn crate::zos::object::ZosObject>),
+    /// Mutable byte vector (Buffer).
+    Buffer(Arc<std::sync::Mutex<Vec<u8>>>),
+    /// Asynchronous Future / Promise.
+    Future(Arc<(std::sync::Mutex<Option<Value>>, std::sync::Condvar)>),
+    /// CSP Channel for concurrent message passing.
+    Channel(Arc<ChannelPair>),
+}
+
+#[derive(Debug)]
+pub enum ChannelTx {
+    Async(std::sync::mpsc::Sender<Value>),
+    Sync(std::sync::mpsc::SyncSender<Value>),
+}
+
+impl ChannelTx {
+    pub fn send(&self, val: Value) -> Result<(), std::sync::mpsc::SendError<Value>> {
+        match self {
+            ChannelTx::Async(tx) => tx.send(val),
+            ChannelTx::Sync(tx) => tx.send(val),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct ChannelPair {
+    pub tx: std::sync::Mutex<ChannelTx>,
+    pub rx: std::sync::Mutex<std::sync::mpsc::Receiver<Value>>,
 }
 impl PartialEq for Value {
     fn eq(&self, other: &Self) -> bool {
@@ -167,8 +194,11 @@ impl PartialEq for Value {
             (Value::Char(a), Value::Char(b)) => a == b,
             (Value::NativeFunction(a), Value::NativeFunction(b)) => a.eq(b),
             (Value::Object(a), Value::Object(b)) => a == b,
+            (Value::Buffer(a), Value::Buffer(b)) => Arc::ptr_eq(a, b),
+            (Value::Future(a), Value::Future(b)) => Arc::ptr_eq(a, b),
+            (Value::Channel(a), Value::Channel(b)) => Arc::ptr_eq(a, b),
             _ => false,
-}
+        }
     }
 }
 
@@ -193,6 +223,9 @@ impl Hash for Value {
             Value::NativeFunction(nf) => nf.hash(state),
             Value::Char(c) => c.hash(state),
             Value::Object(o) => o.hash(state),
+            Value::Buffer(b) => Arc::as_ptr(b).hash(state),
+            Value::Future(f) => Arc::as_ptr(f).hash(state),
+            Value::Channel(c) => Arc::as_ptr(c).hash(state),
         }
     }
 }
@@ -215,10 +248,12 @@ impl Value {
             Value::Macro(_) => "macro",
             Value::Char(_) => "character",
             Value::Object(_) => "object",
+            Value::Buffer(_) => "buffer",
+            Value::Future(_) => "future",
+            Value::Channel(_) => "channel",
         }
     }
 }
-/// Infallible conversion from Sexp (syntax tree) to Value (runtime).
 impl From<Sexp> for Value {
     fn from(s: Sexp) -> Self {
         match s {
@@ -300,6 +335,12 @@ impl std::fmt::Display for Value {
             }
             Value::Char(c) => write!(f, "#\\{c}"),
             Value::Object(o) => write!(f, "#<{}>", o.header().class.name),
+            Value::Buffer(b) => {
+                let len = b.lock().unwrap().len();
+                write!(f, "#<buffer len={len}>")
+            }
+            Value::Future(_) => write!(f, "#<future>"),
+            Value::Channel(_) => write!(f, "#<channel>"),
         }
     }
 }

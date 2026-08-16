@@ -1,0 +1,19 @@
+;; ── zio-entity ────────────────────────────────────────────────────
+;; Entity model with identity tracking, metadata, and entity-id lookups.
+
+(defmacro defentity [name fields]
+  (let [entity-class-name (symbol (str "entity-" name))]
+    (list 'defclass entity-class-name nil
+          (map (fn [f] (list f :initarg (keyword f))) fields))))
+
+(defn make-entity [type-sym & kvs]
+  (let [inst (apply make-instance type-sym kvs)
+        id (str "entity-" (str type-sym) "-" (str (bytes 8)))]
+    {:entity/type type-sym
+     :entity/id id
+     :entity/instance inst}))
+
+(defn entity-id [entity]
+  (if (map? entity)
+    (get entity :entity/id)
+    nil))

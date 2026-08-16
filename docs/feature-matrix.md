@@ -25,7 +25,7 @@ Status meanings:
 | Numeric kernel and scientific API | Planned | [approved applications design](superpowers/specs/2026-08-10-zio-vm-applications-site-design.md) |
 | Pipeline DSL | Planned | [approved applications design](superpowers/specs/2026-08-10-zio-vm-applications-site-design.md) |
 | Homoiconic learner | Planned | [approved applications design](superpowers/specs/2026-08-10-zio-vm-applications-site-design.md) |
-| Landing site | Planned | [approved applications design](superpowers/specs/2026-08-10-zio-vm-applications-site-design.md) |
+| Landing site | Stable | [`site/index.html`](../site/index.html) |
 
 The stable reader row does not include set literals: `#{...}` remains planned
 and must not be used in runnable examples.
