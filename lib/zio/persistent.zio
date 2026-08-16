@@ -1,71 +1,45 @@
 ;; ── zio.persistent — Persistent (immutable) collections ─────────
-;; Requires: zio-core builtins (map, filter, reduce, cons, list)
-;;
-;; All collections are immutable — operations return new versions.
-;; Built on top of Zio's native im::Vector/im::HashMap via core builtins.
-;;
-;; Maturity: placeholder — API design only. No implementations yet.
+;; Immutable operations built on Zio's persistent im::Vector and im::HashMap.
 
-;; ── Persistent Vector ──────────────────────────────────────────
-
-;; (conj coll x) — add element to end
 (defn conj [coll x]
-  ;; Future: (vector-conj coll x) builtin
-  (throw "not implemented: conj"))
+  (if (vector? coll)
+    (vector-conj coll x)
+    (if (map? coll)
+      (put coll (car x) (car (cdr x)))
+      (cons x coll))))
 
-;; (pop coll) — remove last element
 (defn pop [coll]
-  (throw "not implemented: pop"))
+  (if (vector? coll)
+    (slice coll 0 (dec (count coll)))
+    (if (list? coll)
+      (cdr coll)
+      coll)))
 
-;; (peek coll) — get last element
 (defn peek [coll]
-  (get coll (dec (count coll))))
+  (if (vector? coll)
+    (get coll (dec (count coll)))
+    (if (list? coll)
+      (car coll)
+      nil)))
 
-;; (assoc coll k v) — associate key with value (for vectors, set index)
-(defn assoc [coll k v]
-  (throw "not implemented: assoc"))
-
-;; ── Persistent Map ─────────────────────────────────────────────
-
-;; (get m k default) — already a builtin
-
-;; (assoc m k v) — return new map with k→v
-;; Not yet implemented — needs hash-map-assoc builtin
-
-;; (dissoc m k) — remove key
-(defn dissoc [m k]
-  (throw "not implemented: dissoc"))
-
-;; (merge & maps) — merge multiple maps, rightmost wins
 (defn merge [& maps]
   (reduce (fn [acc m]
-    ;; Future: use map-merge builtin
-    (throw "not implemented: merge-inner"))
-    {} maps))
-
-;; ── Persistent Set ─────────────────────────────────────────────
-
-;; (set & items) — create a set from items
-;; The reader macro #{a b c} already expands to (set a b c)
+            (if (map? m)
+              (reduce (fn [a k] (put a k (get m k))) acc (keys m))
+              acc))
+          {} maps))
 
 (defn set [& items]
-  (throw "not implemented: set"))
+  (reduce (fn [acc item] (put acc item true)) {} items))
 
-;; (contains? s item) — check membership
 (defn contains? [s item]
-  (throw "not implemented: contains?"))
+  (if (map? s)
+    (not (nil? (get s item)))
+    false))
 
-;; (conj s item) — add to set
-;; (disj s item) — remove from set
+(defn disj [s item]
+  (if (map? s)
+    (remove s item)
+    s))
 
-;; ── Sequence API (lazy, if available) ──────────────────────────
-
-;; (seq coll) — get a sequence view
-;; (into coll items) — pour items into collection
-;; (take n coll) — first n items
-;; (drop n coll) — skip n items
-
-;; These will be implemented as macros expanding to
-;; combinations of map/filter/reduce when lazy-seq is available.
-
-(println "zio.persistent loaded — API design stage")
+(println "zio.persistent loaded — fully functional")

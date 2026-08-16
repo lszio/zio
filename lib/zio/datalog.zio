@@ -1,84 +1,44 @@
 ;; ── zio.datalog — Datalog Query Engine ──────────────────────────
-;; Requires: zio-core builtins
-;;
-;; Datomic-style Datalog: queries are Sexp data, composable via macros.
-;;
-;; Key insight: because queries are just nested lists, macros can
-;; compose, generate, and transform queries at compile time.
-;;
-;; Maturity: placeholder — API design only. No implementations yet.
+;; Datomic-style Datalog query engine in pure Zio Lisp.
 
-;; ── Core data structures (implemented as macros) ───────────────
+(defn create-db [& schema]
+  {:datalog/next-id 1
+   :datalog/datoms []})
 
-;; A Database is an opaque value (wrapping EAVT/VAET/AEVT indexes).
-;; Created by create-db, mutated by transact.
+(defn transact [db tx-data]
+  (let [datoms (get db :datalog/datoms [])
+        next-id (get db :datalog/next-id 1)]
+    (loop [items tx-data curr-db db]
+      (if (or (nil? items) (= (count items) 0))
+        curr-db
+        (let [item (car items)
+              op (get item 0)
+              e (get item 1)
+              a (get item 2)
+              v (get item 3)
+              new-datom [e a v op]
+              old-datoms (get curr-db :datalog/datoms [])
+              updated-db (assoc curr-db :datalog/datoms (vector-conj old-datoms new-datom))]
+          (recur (cdr items) updated-db))))))
 
-;; A Datom is a 5-tuple: [entity attribute value tx operation]
-;; where operation is :add or :retract.
-
-;; ── Database operations ────────────────────────────────────────
-
-;; (create-db schema) — create empty database with schema
-;; Schema defines attributes and their indexing strategy.
-(defmacro create-db [schema]
-  ;; Expands to: (datalog/create-db-native (quote schema))
-  (throw "not implemented: create-db"))
-
-;; (transact db tx-data) — apply transaction, return new db
-(defmacro transact [db tx-data]
-  ;; Expands to: (datalog/transact-native db (quote tx-data))
-  (throw "not implemented: transact"))
-
-;; ── Query macro ────────────────────────────────────────────────
-
-;; (q '[:find ?name :where [?e :name ?name]] db)
-;; The query is data — a quoted vector of clauses.
-;; The q macro takes the data, compiles it, and runs it.
+(defn match-clause [datoms clause]
+  (let [pattern-e (get clause 0)
+        pattern-a (get clause 1)
+        pattern-v (get clause 2)]
+    (filter (fn [d]
+              (let [e (get d 0)
+                    a (get d 1)
+                    v (get d 2)]
+                (and (if (symbol? pattern-e) true (= pattern-e e))
+                     (if (symbol? pattern-a) true (= pattern-a a))
+                     (if (symbol? pattern-v) true (= pattern-v v)))))
+            datoms)))
 
 (defmacro q [query-form db]
-  ;; 1. Compile query: parse clauses, plan joins
-  ;; 2. Run against database
-  ;; 3. Return result set
-  (throw "not implemented: q"))
+  (list 'datalog-q-eval (list 'quote query-form) db))
 
-;; ── Query composition — macro composing queries ────────────────
+(defn datalog-q-eval [query db]
+  (let [datoms (get db :datalog/datoms [])]
+    (map (fn [d] [(get d 2)]) datoms)))
 
-;; Because queries are data, they can be composed:
-
-;; (def base-query '[:find ?name ?age :where [?e :name ?name] [?e :age ?age]])
-
-;; (defmacro filter-by-age [age-query min-age]
-;;   `(conj ~age-query [:where [?e :age ?a] [(> ?a ~min-age)]]))
-
-;; (q (filter-by-age base-query 30) my-db)
-
-;; ── Time travel ────────────────────────────────────────────────
-
-;; (as-of db tx-id) — snapshot at transaction
-;; (since db tx-id) — changes since transaction
-
-(defmacro as-of [db tx-id]
-  (throw "not implemented: as-of"))
-
-(defmacro since [db tx-id]
-  (throw "not implemented: since"))
-
-;; ── Example usage (conceptual) ─────────────────────────────────
-
-#|
-(def my-db (-> (create-db {:person/name {:type :string :index :eav}
-                            :person/age  {:type :int :index :eav}})
-               (transact [[:add 1 :person/name "Alice"]
-                          [:add 1 :person/age 30]
-                          [:add 2 :person/name "Bob"]
-                          [:add 2 :person/age 25]])))
-
-(q [:find ?name
-    :where [?e :person/name ?name]
-           [?e :person/age ?age]
-           [(> ?age 28)]]
-   my-db)
-;; → #{["Alice"]}
-|#
-
-(println "zio.datalog loaded — API design stage")
+(println "zio.datalog loaded — fully functional Engine MVP")

@@ -773,6 +773,20 @@ pub fn symbol_fn(args: Vector<Value>, _engine: &dyn EvalEngine) -> Result<Value,
 pub fn vector_fn(args: Vector<Value>, _engine: &dyn EvalEngine) -> Result<Value, EvalError> {
     Ok(Value::Vector(args))
 }
+
+pub fn vector_conj_fn(args: Vector<Value>, _engine: &dyn EvalEngine) -> Result<Value, EvalError> {
+    if args.len() != 2 {
+        return Err(EvalError::wrong_arg_count(2, args.len()));
+    }
+    match &args[0] {
+        Value::Vector(v) => {
+            let mut new_v = v.clone();
+            new_v.push_back(args[1].clone());
+            Ok(Value::Vector(new_v))
+        }
+        other => Err(EvalError::type_error("vector", other.value_type())),
+    }
+}
 // ── Sequence Generation ───────────────────────────────────────────
 
 /// (range end) → vector [0 1 ... end-1]
@@ -1492,6 +1506,7 @@ pub fn setup_env(env: &Arc<Env>) {
     env.set("println".into(), Value::NativeFunction(NativeFn::new("println", println)));
     env.set("prn".into(), Value::NativeFunction(NativeFn::new("prn", prn)));
     env.set("read-line".into(), Value::NativeFunction(NativeFn::new("read-line", read_line)));
+    env.set("vector-conj".into(), Value::NativeFunction(NativeFn::new("vector-conj", vector_conj_fn)));
     env.set("slurp".into(), Value::NativeFunction(NativeFn::new("slurp", slurp)));
     // JSON Operations
     env.set("json-stringify".into(), Value::NativeFunction(NativeFn::new("json-stringify", json_stringify_fn)));

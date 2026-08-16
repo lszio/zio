@@ -18,8 +18,8 @@ Status meanings:
 | AST evaluator and closures | Stable | core evaluator tests |
 | Core macros and stdlib | Stable | [`examples/macros.zio` contract](../examples/macros.zio) |
 | ZOS classes and generic dispatch subset | Experimental | [`examples/zos-concept.zio` contract](../examples/zos-concept.zio) |
-| Persistent collection library | Planned | [`lib/zio/persistent.zio`](../lib/zio/persistent.zio) |
-| Datalog evaluator | Planned | [`examples/datalog-concept.zio`](../examples/datalog-concept.zio) |
+| Persistent collection library | Experimental | [`lib/zio/persistent.zio`](../lib/zio/persistent.zio) |
+| Datalog evaluator | Experimental | [`lib/zio/datalog.zio`](../lib/zio/datalog.zio) |
 | ZIR, bytecode VM, and JIT | Planned | [approved VM design](superpowers/specs/2026-08-10-zio-vm-applications-site-design.md) |
 | Process capability and pacman updater | Planned | [approved applications design](superpowers/specs/2026-08-10-zio-vm-applications-site-design.md) |
 | Numeric kernel and scientific API | Planned | [approved applications design](superpowers/specs/2026-08-10-zio-vm-applications-site-design.md) |
