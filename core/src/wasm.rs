@@ -21,11 +21,17 @@ pub fn eval_zio(code: &str) -> String {
     register_js_builtins(&env);
 
     let ctx = EvalContext::new(env.clone());
-    match crate::reader::reader::read(code) {
-        Ok(sexp) => match crate::eval::eval_in_context(&sexp, &ctx) {
-            Ok(val) => format!("{val}"),
-            Err(e) => format!("Error: {e}"),
-        },
+    match crate::reader::reader::read_program(code) {
+        Ok(forms) => {
+            let mut last = String::new();
+            for sexp in forms {
+                match crate::eval::eval_in_context(&sexp, &ctx) {
+                    Ok(val) => last = format!("{val}"),
+                    Err(e) => return format!("Error: {e}"),
+                }
+            }
+            last
+        }
         Err(e) => format!("Reader Error: {e}"),
     }
 }

@@ -6,6 +6,6 @@
 | --- | --- |
 | Workspace crates | 2 |
 | Rust tests | 137 |
-| Special forms | 23 |
+| Special forms | 24 |
 | Native bindings | 84 |
 | Runnable examples | 4 |

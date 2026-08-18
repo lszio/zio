@@ -23,6 +23,19 @@ impl Env {
         self.data.borrow_mut().insert(key, value);
     }
 
+    /// Walk the scope chain and update the binding for `key` to `value`.
+    /// Returns true if a binding was found and updated, false otherwise.
+    pub fn set_global(&self, key: &str, value: Value) -> bool {
+        if self.data.borrow().contains_key(key) {
+            self.data.borrow_mut().insert(key.to_string(), value);
+            return true;
+        }
+        if let Some(outer) = &self.outer {
+            return outer.set_global(key, value);
+        }
+        false
+    }
+
     pub fn get(&self, key: &str) -> Option<Value> {
         let data = self.data.borrow();
         if let Some(value) = data.get(key) {

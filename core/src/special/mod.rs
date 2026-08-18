@@ -47,6 +47,7 @@ pub fn eval_special_form(
     let result = match name {
         "quote" => Some(data::do_quote(args)?),
         "macroexpand" => Some(data::do_macroexpand(args, env, engine)?),
+        "set!" => Some(data::do_set(args, env, engine)?),
         "def" => Some(bindings::do_def(args, env, engine)?),
         "defn" => Some(bindings::do_defn(args, env, engine)?),
         "if" => Some(control::do_if(args, env, tail, engine)?),

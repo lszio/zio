@@ -134,11 +134,20 @@ pub fn expand_syntax_rules(rules: &Sexp, args: &[Sexp]) -> Result<Sexp, EvalErro
         _ => return Err(EvalError::macro_error("syntax-rules literals must be a list")),
     };
 
-    // Try each clause in order
+    // Try each clause in order. Each clause is either a 2-element list
+    // (pattern, template) OR a flat list of length 2 flattened to (pattern, template).
     for clause in list.iter().skip(2) {
         let clause_list = match clause {
-            Sexp::List(l, _) => l,
-            _ => return Err(EvalError::macro_error("syntax-rules clause must be a list")),
+            Sexp::List(l, _) if l.len() == 2 => l,
+            Sexp::List(l, _) if l.len() == 1 => {
+                // Allow (((pat tmpl))) — outer list with one inner list
+                if let Sexp::List(inner, _) = &l[0] {
+                    if inner.len() == 2 { inner } else { l }
+                } else {
+                    l
+                }
+            }
+            _ => return Err(EvalError::macro_error("syntax-rules clause must have (pattern template)")),
         };
         if clause_list.len() != 2 {
             return Err(EvalError::macro_error("syntax-rules clause must have (pattern template)"));
@@ -276,9 +285,6 @@ fn is_core_keyword(s: &str) -> bool {
     matches!(
         s,
         "let" | "if" | "do" | "set!" | "def" | "defn" | "fn" | "quote" | "try" | "catch"
-            | "defclass" | "defgeneric" | "defmethod" | "make-instance" | "slot-value"
-            | "when" | "unless" | "cond" | "and" | "or" | "+" | "-" | "*" | "/" | "="
-            | "list" | "vector" | "nil" | "true" | "false" | "_" | "..." | "handler"
     )
 }
 

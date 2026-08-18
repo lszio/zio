@@ -46,6 +46,18 @@ pub fn read_with_source(input: &str, source_id: SourceId) -> Result<Sexp, Reader
     Ok(sexp)
 }
 
+/// Read multiple top-level S-expressions from a multi-line source string.
+pub fn read_program(input: &str) -> Result<Vec<Sexp>, ReaderError> {
+    let tokens = tokenize(input);
+    let mut tokens = tokens.into_iter().peekable();
+    let mut results = Vec::new();
+    while tokens.peek().is_some() {
+        let (sexp, _) = read_from_tokens(&mut tokens, SourceId::NONE, input)?;
+        results.push(strip_spans(sexp));
+    }
+    Ok(results)
+}
+
 /// Read from tokens using an explicit stack.
 /// Stack entries: (open_delim, items, start_pos_of_delim).
 fn read_from_tokens(
