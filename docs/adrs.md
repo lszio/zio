@@ -705,7 +705,7 @@ ADR-012 将并发原语诚实化为同步占位，并把"真并发"推迟为独�
 
 ## ADR-016: 程序合成模块 —— 学习型提议、语言化记忆、eval 裁判
 
-**状态**: ✅ 已采纳(规划见 [synthesis-plan](synthesis-plan.md);实现均为 Planned)
+**状态**: ✅ 已采纳(规划见 [synthesis-plan](synthesis-plan.md);L1-L3 已实现为 Experimental,见[特性矩阵](feature-matrix.md);L4 经验闭环为 Planned)
 
 ### 背景
 

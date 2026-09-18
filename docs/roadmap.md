@@ -274,7 +274,7 @@ cargo clippy → warning-free target
 
 ---
 
-## Phase 6-C: 程序合成模块（Planned，4-6 周）
+## Phase 6-C: 程序合成模块（L1-L3 已实现，L4 Planned）
 
 **目标**：把同象性学习器 MVP 升级为自学习闭环——学习机器为提议器
 （LLM 主线，遗传算子/RL/神经网络各有明确扩展位）、eval 为裁判、
@@ -287,9 +287,9 @@ cargo clippy → warning-free target
 
 | 阶段 | 内容 | 交付物 | 前提 |
 |------|------|--------|------|
-| L1 | `LlmHost` / `EmbedHost` 宿主协议（外部 attach）+ Mock 录制/回放 | 新 crate `zio-ai` + 合同测试 | ADR-011/016 |
-| L2 | `lib/zio/proposer.zio`（纯 Zio）：提示模板/解析/重试 | Mock 下端到端提议器 | L1 |
-| L3 | 学习循环泛化：proposer 协议 + 代际/预算 + 闭世界白名单 + 错误隔离（遗传提议器可选） | 深度 3 求解 demo（枚举不可行有量化定义） | L2；`lib/zio/learn.zio` |
+| L1 ✅ | `LlmHost` / `EmbedHost` 宿主协议（外部 attach）+ Mock 录制/回放 | 新 crate `zio-ai` + 合同测试 | ADR-011/016 |
+| L2 ✅ | `lib/zio/proposer.zio`（纯 Zio）：提示模板/解析/重试 | Mock 下端到端提议器 | L1 |
+| L3 ✅ | 学习循环泛化：proposer 协议 + 代际/预算 + 闭世界白名单 + 错误隔离（遗传提议器可选） | 深度 3 求解 demo（枚举不可行 = 500 eval 预算内不可解，LLM 3 eval 解决） | L2；`lib/zio/learn.zio` |
 | L4 | `lib/zio/memory.zio` 三索引经验库 + 反统一蒸馏 + 环境吸收 + 自修复（vector.zio 语义桥、bandit、玩具 NN 可选） | 调用递减曲线 + 首个蒸馏宏 + DSL 收缩报表 | L3 |
 
 **论文/汇报**：工作坊论文（L3 后）→ 完整论文（L4 后）；内部里程碑

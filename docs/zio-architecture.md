@@ -47,7 +47,7 @@ Zio = Lisp 核心（同像性 + eval/apply + 宏）
 
 ### 2.1 可验证状态
 
-当前 workspace 由 `zio-core` 和 `zio-cli` 两个 crate 组成。测试、特殊形式、
+当前 workspace 由 `zio-core`、`zio-cli`、`zio-ai` 三个 crate 组成。测试、特殊形式、
 native binding 和 runnable example 数量由
 [`tools/project-status.sh`](../tools/project-status.sh) 生成，不在本页复制；
 快照见[项目状态](status.md)。
@@ -67,6 +67,8 @@ native binding 和 runnable example 数量由
 | 并发原语（future/chan） | Experimental — 同步占位 | 见 ADR-012：无线程，同步求值 |
 | 文件 I/O（经 IoHost） | Experimental | `load`/`slurp`/`spit`/`file-exists?`；BufferIoHost 提供内存 FS |
 | WASM 构建 + 落地页 REPL | Experimental | `core/src/wasm.rs` + `site/` |
+| AI 宿主协议（`LlmHost`/`EmbedHost`，外部 attach） | Experimental | [`ai/src/lib.rs`](../ai/src/lib.rs)（ADR-016）；无宿主 → `capability-denied:`；Mock 录制/回放 + `http` feature |
+| LLM 提议器库与代际学习循环 | Experimental | [`lib/zio/proposer.zio`](../lib/zio/proposer.zio) + [`lib/zio/learn.zio`](../lib/zio/learn.zio)；白名单/规范化去重/预算/错误隔离在循环内 |
 | ZIR、bytecode VM、JIT 与应用能力 | Planned | 只有批准设计，不是当前运行时 |
 
 完整证据和应用能力状态见[特性矩阵](feature-matrix.md)。
@@ -126,9 +128,11 @@ native binding 和 runnable example 数量由
 **当前（两个 workspace crate）**：
 
 ```
-zio-cli (CLI + REPL + 脚本执行)
-└── zio-core (reader + AST evaluator + experimental ZOS subset
-              + builtins/ 按域内建模块 + wasm 入口)
+zio-cli (CLI + REPL + 脚本执行 + --llm-replay 装配)
+├── zio-core (reader + AST evaluator + experimental ZOS subset
+│             + builtins/ 按域内建模块 + wasm 入口)
+└── zio-ai (宿主 AI 能力协议：LlmHost/EmbedHost + Mock record/replay
+            + http feature；依赖 zio-core，core 不依赖它)
 
 lib/zio/*.zio (扩展库，Zio 源码实现；不是 workspace crate)
 ```
