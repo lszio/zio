@@ -1,0 +1,62 @@
+;; lib/zio/learn.zio contract — homoiconic symbolic regression MVP.
+;; Pins the design-spec example: samples [1 3] [2 5] [3 7] must yield a
+;; function with zero loss, deterministic across runs.
+(load "lib/zio/learn.zio")
+
+(defn check [label actual expected]
+  (if (= actual expected)
+    (println "PASS" label)
+    (println "FAIL" label "got:" actual "want:" expected)))
+
+(def samples '[[1 3] [2 5] [3 7]])
+(def cfg {:ops '[+ - *] :constants '[0 1 2] :max-depth 2 :beam-width 24})
+
+(def expr (learn-function samples cfg))
+(def f (learn--wrap-function expr))
+
+;; zero training loss on the discovered program
+(check "zero-loss-at-1" (f 1) 3)
+(check "zero-loss-at-2" (f 2) 5)
+(check "zero-loss-at-3" (f 3) 7)
+;; extrapolation beyond the training set
+(check "extrapolates" (f 10) 21)
+
+;; determinism: same samples + config → identical function behavior
+(def f2 (learn--wrap-function (learn-function samples cfg)))
+(check "deterministic" (= (f 42) (f2 42)) true)
+
+;; second dataset: squares at depth 1
+(def sq (learn--wrap-function
+          (learn-function '[[1 1] [2 4] [3 9]] {:ops '[+ - *] :constants '[0 1 2] :max-depth 1 :beam-width 32})))
+(check "squares" (sq 6) 36)
+
+;; ── L3: gates, canon, budget — all in the loop, proposer-agnostic ──
+
+(def task (learn--make-task samples cfg))
+
+(check "allowed-accepts" (learn--allowed? '(+ (* 2 x) 1) task) true)
+(check "allowed-rejects-undeclared-constant" (learn--allowed? '(+ x 99) task) nil)
+(check "allowed-rejects-io" (learn--allowed? '(spit "x") task) nil)
+(check "allowed-rejects-nondeclared-op" (learn--allowed? '(/ x 1) task) nil)
+(check "allowed-rejects-depth" (learn--allowed? '(+ (+ (+ x x) x) x) task) nil)
+
+(check "canon-identity-plus" (str (learn--canon '(+ x 0) (get task :vocab))) "x")
+(check "canon-identity-times" (str (learn--canon '(* x 1) (get task :vocab))) "x")
+(check "canon-minus-zero" (str (learn--canon '(- x 0) (get task :vocab))) "x")
+(check "canon-comm" (str (learn--canon '(+ 1 x) (get task :vocab))) "(+ 1 x)")
+(check "canon-nested" (str (learn--canon '(* 2 (* x 3)) (get task :vocab))) "(* 2 (* 3 x))")
+(check "canon-dedup-in-batch"
+       (count (learn--check-batch '["(+ x 1)" "(+ 1 x)" "(* x 2)"] {} task)) 2)
+
+(check "budget-zero-generations-nil"
+       (learn-function samples {:ops '[+ - *] :constants '[0 1 2] :max-depth 2 :max-generations 0})
+       nil)
+(def f-budget (learn--wrap-function
+                (learn-function samples {:ops '[+ - *] :constants '[0 1 2] :beam-width 4 :max-evals 3})))
+(check "eval-budget-stops" (number? (f-budget 10)) true)
+
+;; NOTE: the hybrid-proposer marker lives in ai/tests/learn3_contract.rs.
+;; In this loaded-file context a hybrid run nondeterministically overflows
+;; the stack — same family as the core-eval defect noted in
+;; learn--allowed-walk above (or/and + recursive defns + env state).
+;; Revisit when the core defect is fixed.

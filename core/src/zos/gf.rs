@@ -233,3 +233,55 @@ mod tests {
         assert_eq!(res2.primary.len(), 0);
     }
 }
+
+// ── Runtime object form ────────────────────────────────────────────
+
+/// A ZosObject wrapper for GenericFunction so it can be stored as
+/// Value::Object. All downcasts to this type live in `zos::apply` —
+/// the eval loop and builtins go through that protocol instead.
+#[derive(Debug, Clone)]
+pub struct GFObject {
+    pub header: crate::zos::object::ObjectHeader,
+    pub gf: Arc<std::cell::RefCell<GenericFunction>>,
+}
+
+impl GFObject {
+    pub fn new(gf: GenericFunction) -> Self {
+        GFObject {
+            header: crate::zos::object::ObjectHeader {
+                class: Arc::new(crate::zos::object::Class {
+                    name: "GenericFunction".into(),
+                    superclasses: Vec::new(),
+                    slots: Vec::new(),
+                    cpl: vec!["GenericFunction".into()],
+                }),
+                flags: crate::zos::object::ObjectFlags::MUTABLE,
+                identity: None,
+            },
+            gf: Arc::new(std::cell::RefCell::new(gf)),
+        }
+    }
+}
+
+impl crate::zos::object::ZosObject for GFObject {
+    fn header(&self) -> &crate::zos::object::ObjectHeader {
+        &self.header
+    }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+    fn clone_box(&self) -> Box<dyn crate::zos::object::ZosObject> {
+        Box::new(self.clone())
+    }
+}
+
+/// Shared handle to the generic-function cell, if `obj` is a GF.
+/// The one remaining downcast site is the `apply` protocol in `zos::apply`;
+/// this helper is the supported access path for reflection builtins.
+pub fn gf_shared(
+    obj: &dyn crate::zos::object::ZosObject,
+) -> Option<Arc<std::cell::RefCell<GenericFunction>>> {
+    obj.as_any()
+        .downcast_ref::<GFObject>()
+        .map(|g| g.gf.clone())
+}

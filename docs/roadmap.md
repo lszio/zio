@@ -38,9 +38,9 @@ Experimental；可验证数量见[项目状态](status.md)。
 | 1.1 | Span 嵌入 Sexp | P0 | `sexp.rs`, `reader.rs`, `eval.rs`, `error.rs` | +80, -40 | 无 |
 | 1.2 | Reader 扩展 (`#()` `#{}` `#\c` `,@`) | P0 | `reader/src/reader.rs` | +100 | 1.1 |
 | 1.3 | 通用 TCO（所有尾位置） | P1 | `eval.rs`, `special/control.rs` | +30, -5 | 无 |
-| 1.4 | `macroexpand` 实现 | P1 | `builtins.rs`, `macros.rs` | +30 | 无 |
+| 1.4 | `macroexpand` 实现 | P1 | `builtins/`, `macros.rs` | +30 | 无 |
 | 1.5 | EvalEngine 拆分（ADR-005） | P1 | `context.rs`, `eval.rs`, `special/*.rs` | +60 | 无 |
-| 1.6 | IoHost trait（ADR-011） | P1 | [new] `io.rs`, `builtins.rs` | +80 | 1.5 |
+| 1.6 | IoHost trait（ADR-011） | P1 | [new] `io.rs`, `builtins/` | +80 | 1.5 |
 | 1.7 | 错误类型扩展 + 更多变体 | P1 | `error.rs` | +50 | 1.1 |
 | 1.8 | 测试覆盖提升（目标由当前生成基线提升至 200+） | P1 | 全模块 | +200 | 1.1-1.4 |
 
@@ -78,7 +78,7 @@ cargo clippy → warning-free target
 | 2.6 | 4-参数 Dispatch Cache（ADR-008） | P0 | `zos/gf.rs` | +60 | 2.5 |
 | 2.7 | `defgeneric` / `defmethod` 特殊形式 | P0 | `zos/gf.rs`, `zos/method.rs`, `special/zos.rs` | +120 | 2.6 |
 | 2.8 | Method Combination 基础（primary, :before, :after, :around, call-next-method） | P1 | `zos/method.rs` | +120 | 2.7 |
-| 2.9 | Package 系统 | P1 | `zos/package.rs`, `symbol.rs` | +200 | 2.2 |
+| 2.9 | Package 系统 | P1 | `zos/package.rs`, `module.rs` | +200 | 2.2 |
 | 2.10 | Condition System 简化版（ADR-007） | P1 | `zos/condition.rs`, `eval.rs` | +250 | 1.5 |
 
 ### 交付标准
@@ -165,14 +165,14 @@ cargo clippy → warning-free target
 |---|------|--------|------|----------|------|
 | 4.1 | FFI 原型（C ABI） | P0 | [new] `ffi.rs` | +200 | 1.5 |
 | 4.2 | `#[zio_export]` proc-macro | P0 | [new] `zio-macros/` crate | +150 | 4.1 |
-| 4.3 | Value::Buffer + 字节向量 | P1 | `value.rs`, `builtins.rs` | +80 | 无 |
-| 4.4 | File I/O builtins（通过 IoHost） | P1 | `builtins.rs` | +120 | 1.6 |
+| 4.3 | Value::Buffer + 字节向量 | P1 | `value.rs`, `builtins/` | +80 | 无 |
+| 4.4 | File I/O builtins（通过 IoHost） | P1 | `builtins/` | +120 | 1.6 |
 | 4.5 | `(defstruct ...)` 结构体 | P1 | [new] `special/struct.rs` | +150 | 无 |
 | 4.6 | 核心 .zio 标准库 | P1 | [new] `stdlib/` | +500 Zio | 无 |
 | 4.7 | 懒序列 | P1 | `eval.rs` + stdlib | +150 | 无 |
-| 4.8 | Future/Promise | P1 | `builtins.rs`, `value.rs` | +200 | 无 |
+| 4.8 | Future/Promise | P1 | `builtins/`, `value.rs` | +200 | 无 |
 | 4.9 | Channel CSP | P2 | [new] `builtins/chan.rs` | +250 | 4.8 |
-| 4.10 | JSON 序列化 | P2 | `builtins.rs` | +80 | 4.6 |
+| 4.10 | JSON 序列化 | P2 | `builtins/` | +80 | 4.6 |
 | 4.11 | 包管理器 `zio install` | P0 | `tools/src/pkg.rs` | +300 | 1.5 |
 
 ### 交付标准
@@ -249,7 +249,7 @@ cargo clippy → warning-free target
 | 6.2 | `zio-agent` 原型 | `lib/zio/agent/*.zio` | +300 | 4.1, 4.8 |
 | 6.3 | `zio-llm` API 封装 | `lib/zio/llm.zio` | +300 | 4.1 |
 | 6.4 | JIT 可行性验证（Cranelift） | `tools/` feature | +300 | 无 |
-| 6.5 | 向量原语 + 嵌入 | `builtins.rs` + dep | +200 | 4.1 |
+| 6.5 | 向量原语 + 嵌入 | `builtins/` + dep | +200 | 4.1 |
 
 ### 交付标准
 
@@ -271,6 +271,29 @@ cargo clippy → warning-free target
 (require :zio.llm)
 (llm/completion :model "gpt-4" :prompt "Translate to French: hello")
 ```
+
+---
+
+## Phase 6-C: 程序合成模块（Planned，4-6 周）
+
+**目标**：把同象性学习器 MVP 升级为自学习闭环——学习机器为提议器
+（LLM 主线，遗传算子/RL/神经网络各有明确扩展位）、eval 为裁判、
+语言化记忆做经验检索（结构/行为指纹/可选向量三索引）。独立模块演进，
+含论文与汇报交付。
+
+> 详细计划（模块边界、L1-L4 阶段、验收标准、论文与汇报规划）见
+> [程序合成模块计划](synthesis-plan.md)；本节细化并取代 Phase 6 的
+> 6.3 / 6.5 中与 LLM/embedding 相关的条目。
+
+| 阶段 | 内容 | 交付物 | 前提 |
+|------|------|--------|------|
+| L1 | `LlmHost` / `EmbedHost` 宿主协议（外部 attach）+ Mock 录制/回放 | 新 crate `zio-ai` + 合同测试 | ADR-011/016 |
+| L2 | `lib/zio/proposer.zio`（纯 Zio）：提示模板/解析/重试 | Mock 下端到端提议器 | L1 |
+| L3 | 学习循环泛化：proposer 协议 + 代际/预算 + 闭世界白名单 + 错误隔离（遗传提议器可选） | 深度 3 求解 demo（枚举不可行有量化定义） | L2；`lib/zio/learn.zio` |
+| L4 | `lib/zio/memory.zio` 三索引经验库 + 反统一蒸馏 + 环境吸收 + 自修复（vector.zio 语义桥、bandit、玩具 NN 可选） | 调用递减曲线 + 首个蒸馏宏 + DSL 收缩报表 | L3 |
+
+**论文/汇报**：工作坊论文（L3 后）→ 完整论文（L4 后）；内部里程碑
+汇报 ×4 + 外部技术分享。规划见 synthesis-plan 第 5/6/7 节。
 
 ---
 

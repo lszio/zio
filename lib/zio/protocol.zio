@@ -1,5 +1,9 @@
-;; ── zio-protocol ──────────────────────────────────────────────────
-;; Clojure-style protocol system built on ZOS Generic Functions & Methods.
+;; ── zio.protocol — Protocol system (on ZOS generic functions) ───
+;; Clojure-style protocols: (defprotocol Name (method [args])) and
+;; (extend-type Type Protocol (method [this & args] body)).
+;;
+;; Status: Experimental. Both macros are runnable; methods dispatch
+;; through the ZOS generic function machinery.
 
 (defmacro defprotocol [name & sigs]
   (let [gf-forms (map (fn [sig]
@@ -11,12 +15,15 @@
 
 (defmacro extend-type [type-name protocol-name & method-impls]
   (let [method-forms (map (fn [impl]
-                            (let [fname (car impl)
-                                  fnargs (car (cdr impl))
-                                  body (cdr (cdr impl))
-                                  first-arg (car fnargs)
-                                  rest-args (cdr fnargs)
-                                  spec-args (cons (list first-arg type-name) rest-args)]
+                            ;; let* : spec-args depends on first-arg/rest-args.
+                            ;; fnargs is normalized to a list first — car/cdr
+                            ;; and cons operate on lists, not vectors.
+                            (let* [fname (car impl)
+                                   fnargs (apply list (car (cdr impl)))
+                                   body (cdr (cdr impl))
+                                   first-arg (car fnargs)
+                                   rest-args (cdr fnargs)
+                                   spec-args (cons (list first-arg type-name) rest-args)]
                               (cons 'defmethod (cons fname (cons spec-args body)))))
                           method-impls)]
     (cons 'do method-forms)))

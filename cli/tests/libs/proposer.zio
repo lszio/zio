@@ -1,0 +1,45 @@
+;; Contract for lib/zio/proposer.zio — pure functions only, no llm host
+;; needed. Hosted end-to-end behaviour lives in ai/tests/proposer_contract.rs.
+(load "lib/zio/proposer.zio")
+
+(defn check [name ok]
+  (if ok (println "PASS" name) (println "FAIL" name)))
+
+;; template fill: keyword holes replaced, other data untouched
+(def filled (llm--fill '(request (k :k) (samples :samples))
+                       {:k "3" :samples "[[1 3]]"}))
+(check "fill-holes" (= (str filled) "(request (k \"3\") (samples \"[[1 3]]\"))"))
+(check "fill-leaves-unknown-data" (= (str (llm--fill '(a :missing b) {})) "(a :missing b)"))
+
+;; parse: drops empty / comment / fence lines, trims, keeps order
+(check "parse-drops-noise"
+       (= (llm--parse-answer "```lisp\n(+ x 1)\n;; note\n\n  (* x 2)  \n```")
+          ["(+ x 1)" "(* x 2)"]))
+(check "parse-nil-is-empty" (= (llm--parse-answer nil) []))
+
+;; extract: dedup first occurrence, cap at k, order preserved
+(check "extract-caps-and-dedups"
+       (= (llm--extract "(+ x 1)\n(+ x 1)\n(* x 2)\n(- x 1)\n(+ 0 x)" 3)
+          ["(+ x 1)" "(* x 2)" "(- x 1)"]))
+
+;; prompt rendering: task fields, history and structure land in the prompt
+(def task {:samples '[[1 3] [2 5]] :ops '[+ *] :constants '[0 1] :max-depth 2})
+(def prompt (llm--render-prompt task
+                                (list {:generation 0 :candidates '["(+ x 1)"] :scores '[1002]})
+                                2))
+(check "prompt-has-task" (str-contains? prompt "samples \"[[1 3] [2 5]]\""))
+(check "prompt-has-ops" (str-contains? prompt "allowed-ops"))
+(check "prompt-has-history" (str-contains? prompt "generation 0"))
+(check "prompt-empty-history-ok"
+       (str-contains? (llm--render-prompt task (list) 2) "previous-generations"))
+
+;; correction prompt: deterministic, mentions the format
+(check "correction-mentions-format"
+       (str-contains? (llm--correction "P" "junk") "one S-expression per line"))
+(check "correction-on-nil-answer"
+       (str-contains? (llm--correction "P" nil) "call failed"))
+
+;; constructor produces a callable proposer
+(check "constructor-is-fn" (fn? (make-llm-proposer {:k 2})))
+
+(println "proposer contract done")

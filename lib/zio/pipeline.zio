@@ -1,0 +1,32 @@
+;; ── zio.pipeline — Data pipeline DSL (MVP) ──────────────────────
+;; S-expression pipeline declarations that macro-expand into plain
+;; filter/map/count calls (design spec §10.3). The DSL owns no engine,
+;; no data types, and no side-effect permissions — capabilities belong
+;; to the functions it expands to.
+;;
+;;   (pipeline xs
+;;     (filter pred?)
+;;     (map transform)
+;;     (aggregate count)
+;;     (emit printer))
+;;
+;; MVP stages: filter, map, aggregate (count), emit. Unknown stages
+;; raise an error at expansion time.
+
+(defmacro pipeline [src & stages]
+  (reduce (fn [acc stage]
+            (let* [op (car stage)
+                   arg (car (cdr stage))]
+              (cond
+                ((= op 'filter) (list 'filter arg acc))
+                ((= op 'map) (list 'map arg acc))
+                ((= op 'aggregate)
+                 (if (= arg 'count)
+                   (list 'count acc)
+                   (list 'error (str "unsupported aggregate: " arg))))
+                ((= op 'emit) (list arg acc))
+                (else (list 'error (str "unknown pipeline stage: " op))))))
+          src
+          stages))
+
+(println "zio.pipeline loaded (filter/map/aggregate-count/emit stages; expansion-time errors)")

@@ -1,0 +1,20 @@
+;; ── Pipeline DSL demo ──────────────────────────────────────────
+;; S-expression pipeline declarations expanding into plain
+;; filter/map/count calls (design spec §10.3).
+(println "=== Pipeline DSL ===")
+(load "lib/zio/pipeline.zio")
+
+(def nums [1 2 3 4 5 6])
+(def doubled (pipeline nums
+  (filter (fn [x] (> x 2)))
+  (map (fn [x] (* x 10)))))
+(println "doubled:" doubled)
+
+(def n (pipeline nums
+  (filter (fn [x] (> x 2)))
+  (aggregate count)))
+(println "count:" n)
+
+;; the expansion is plain Zio — inspectable via macroexpand-1
+(println "expansion:" (macroexpand-1 (quote (pipeline nums (filter (fn [x] (> x 2))) (map (fn [x] (* x 10)))))))
+(println "pipeline done")

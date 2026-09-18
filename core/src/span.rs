@@ -133,6 +133,30 @@ fn compute_line_starts(source: &str) -> Vec<BytePos> {
     starts
 }
 
+/// Byte offsets of the first character of each line in `source`
+/// (line 1 starts at offset 0).
+pub fn line_starts_of(source: &str) -> Vec<BytePos> {
+    compute_line_starts(source)
+}
+
+/// Resolve a byte offset in `source` (with precomputed `line_starts`) to
+/// (line, col), both 1-indexed. Used by the reader to build spans without
+/// constructing a full SourceFile.
+pub fn line_col_of(source: &str, line_starts: &[BytePos], offset: usize) -> (usize, usize) {
+    let offset = offset.min(source.len());
+    match line_starts.binary_search(&BytePos(offset)) {
+        Ok(line_idx) => (line_idx + 1, 1),
+        Err(line_idx) => {
+            if line_idx == 0 {
+                (1, offset + 1)
+            } else {
+                let line_start = line_starts[line_idx - 1].0;
+                (line_idx, offset - line_start + 1)
+            }
+        }
+    }
+}
+
 /// Global registry of source files, allowing lazy line/col resolution.
 #[derive(Debug)]
 pub struct SourceMap {

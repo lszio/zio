@@ -1,0 +1,168 @@
+;; ── zio.proposer — LLM proposer library (ADR-016, plan L2) ─────────
+;; (make-llm-proposer config) → proposer: (fn [task history] candidates)
+;;
+;; Proposer protocol (consumed by learn.zio in L3):
+;;   task    = {:samples … :ops … :constants … :max-depth …}
+;;   history = ({:generation n :candidates (…) :scores (…)} …)
+;;   returns = list of candidate STRINGS — raw text only. Parsing,
+;;             whitelist, dedup, scoring, selection and budget live in
+;;             the loop; a proposer never parses, scores or executes.
+;;
+;; Response protocol: one candidate per line. Lines that are empty,
+;; start with ;; (comment), or are markdown fences are dropped. A
+;; zero-candidate answer triggers a deterministic correction retry
+;; (:retries rounds, the correction prompt is a pure function of the
+;; previous prompt and answer).
+;;
+;; The prompt skeleton is DATA (llm--prompt-template): keyword holes are
+;; filled by llm--fill and the whole structure is rendered with str.
+;; Deterministic contract: same prompt + same mock recording → same
+;; candidates. The Rust mirror of llm--parse-answer lives in
+;; zio_ai::mock::test_support::parse_answer_lines (对拍 in contract tests).
+
+(def llm--instruction
+  ["You are the proposer of a program-synthesis loop."
+   "Task: infer a zio expression that maps input x to the expected output."
+   "Rules:"
+   "- Use ONLY the allowed operators, the variable x, and the allowed constants."
+   "- One candidate per line: no numbering, no prose, no markdown fences."
+   "- Lines starting with ;; are ignored."])
+
+(def llm--format-spec
+  ["Answer format: exactly one S-expression per line, at most :k lines."
+   "An empty or off-format answer triggers one correction round."])
+
+(def llm--prompt-template
+  '(request
+     (k :k)
+     (task
+       (samples :samples)
+       (allowed-ops :ops)
+       (allowed-constants :constants)
+       (max-depth :max-depth))
+     (previous-generations
+       :history)))
+
+(defn llm--fill [node bindings]
+  ;; replace keyword holes with rendered bindings, recursively; list
+  ;; nodes stay lists and vector nodes stay vectors (map returns vectors)
+  (if (list? node)
+    (apply list (map (fn [child] (llm--fill child bindings)) node))
+    (if (vector? node)
+      (apply vector (map (fn [child] (llm--fill child bindings)) node))
+      (let* [hit (get bindings node nil)]
+        (if (nil? hit) node hit)))))
+
+(defn llm--join-lines [lines]
+  ;; str-join is variadic with the separator first: (str-join sep part…)
+  (apply str-join (cons "\n" (apply list lines))))
+
+(defn llm--render-generation [gen]
+  ;; {:generation n :candidates (…) :scores (…)} → readable data line
+  (str (list 'generation (get gen :generation nil)
+             'candidates (get gen :candidates nil)
+             'scores (get gen :scores nil))))
+
+(defn llm--render-history [history]
+  (llm--join-lines (map llm--render-generation history)))
+
+(defn llm--render-prompt [task history k]
+  (let* [bindings {:k (str k)
+                   :samples (str (get task :samples nil))
+                   :ops (str (get task :ops nil))
+                   :constants (str (get task :constants nil))
+                   :max-depth (str (get task :max-depth nil))
+                   :history (llm--render-history history)}
+         skeleton (str (llm--fill llm--prompt-template bindings))
+         parts (into (into llm--instruction (vector "" skeleton "")) llm--format-spec)]
+    (llm--join-lines parts)))
+
+(defn llm--correction [prompt answer]
+  ;; deterministic correction prompt: pure function of prompt + answer
+  (if (nil? answer)
+    (str prompt
+         "\n\n;; correction: the llm call failed."
+         "\n;; Re-answer: one S-expression per line.")
+    (str prompt
+         "\n\n;; correction: your previous answer produced no usable candidate lines."
+         "\n;; Re-answer exactly: one S-expression per line.")))
+
+(defn llm--clean-line [raw]
+  ;; trimmed candidate line, or nil when the line is protocol noise
+  ;; (empty, comment, markdown fence)
+  (let* [s (str-trim raw)]
+    (if (= s "")
+      nil
+      (if (str-starts-with? s ";")
+        nil
+        (if (or (str-starts-with? s "```") (str-ends-with? s "```"))
+          nil
+          s)))))
+
+(defn llm--present? [x]
+  (if (nil? x) nil true))
+
+(defn llm--parse-answer [answer]
+  ;; answer string → vector of clean candidate lines (order preserved).
+  ;; str-split takes the separator first: (str-split sep s). filter keeps
+  ;; the original element, so the pipeline is map(clean) → filter(present)
+  ;; → normalized to a vector.
+  (if (nil? answer)
+    []
+    (apply vector (filter llm--present? (map llm--clean-line (str-split "\n" answer))))))
+
+(defn llm--take-k-uniq [candidates k]
+  ;; first occurrence wins, order preserved, capped at k
+  (if (or (nil? candidates) (= (count candidates) 0))
+    []
+    (loop [items (apply list candidates) seen {} out []]
+      (if (or (nil? items) (>= (count out) k))
+        out
+        (let* [e (car items)
+               key (str e)]
+          (if (nil? (get seen key nil))
+            (recur (cdr items) (put seen key true) (vector-conj out e))
+            (recur (cdr items) seen out)))))))
+
+(defn llm--extract [answer k]
+  (llm--take-k-uniq (llm--parse-answer answer) k))
+
+(defn llm--ask [prompt temperature max-tokens]
+  ;; one completion call; proposal-level failures (garbage answers, host
+  ;; hiccups) → nil so the retry loop re-asks. Configuration errors
+  ;; (capability-denied: no host installed) are re-raised — a missing
+  ;; host must not silently masquerade as an unusable answer.
+  (let* [args (into (into (vector prompt)
+                          (if (nil? temperature) [] [:temperature temperature]))
+                    (if (nil? max-tokens) [] [:max-tokens max-tokens]))]
+    (try
+      (apply llm-complete args)
+      (catch any
+        (if (str-contains? (str *error*) "capability-denied")
+          (error (str *error*))
+          nil)))))
+
+(defn llm--propose [task history k retries temperature max-tokens]
+  (loop [attempt 0
+         prompt (llm--render-prompt task history k)
+         best []]
+    (if (= (count best) 0)
+      (if (> attempt retries)
+        best
+        (let* [answer (llm--ask prompt temperature max-tokens)
+               found (llm--extract answer k)]
+          (if (= (count found) 0)
+            (recur (+ attempt 1) (llm--correction prompt answer) best)
+            found)))
+      best)))
+
+(defn make-llm-proposer [config]
+  ;; config = {:k 4 :retries 1 :temperature nil :max-tokens nil}
+  (let* [k (get config :k 4)
+         retries (get config :retries 1)
+         temperature (get config :temperature nil)
+         max-tokens (get config :max-tokens nil)]
+    (fn [task history]
+      (llm--propose task history k retries temperature max-tokens))))
+
+(println "zio.proposer loaded (LLM proposer over llm-complete; line response protocol, deterministic correction retry)")

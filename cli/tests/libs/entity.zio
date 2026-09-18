@@ -1,0 +1,18 @@
+;; lib/zio/entity.zio contract — defentity + make-entity + entity-id.
+(load "lib/zio/entity.zio")
+
+(defn check [label actual expected]
+  (if (= actual expected)
+    (println "PASS" label)
+    (println "FAIL" label "got:" actual "want:" expected)))
+
+(defentity person [name age])
+
+(def p (make-entity 'person :name "li" :age 3))
+
+(check "entity-type" (get p :entity/type) 'person)
+(check "entity-slot" (slot-value (get p :entity/instance) :name) "li")
+(check "entity-slot-age" (slot-value (get p :entity/instance) :age) 3)
+(check "entity-id-lookup" (entity-id p) (get p :entity/id))
+(check "entity-id-non-nil" (not (nil? (entity-id p))) true)
+(check "entity-id-names-class" (str-contains? (entity-id p) "entity-person") true)

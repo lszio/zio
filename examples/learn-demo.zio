@@ -1,0 +1,23 @@
+;; ── Homoiconic symbolic learner demo ───────────────────────────
+;; Programs are data: the learner searches over S-expressions, scores
+;; candidates with eval, and the winner becomes a real function.
+(println "=== Homoiconic learner ===")
+
+(load "lib/zio/learn.zio")
+
+;; design-spec example: discover y = 2x + 1
+(def samples '[[1 3] [2 5] [3 7]])
+(def cfg {:ops '[+ - *] :constants '[0 1 2] :max-depth 2 :beam-width 24})
+(def f (learn--wrap-function (learn-function samples cfg)))
+(println "linear f(10):" (f 10))
+
+;; determinism: same samples + config → same behavior
+(def f2 (learn--wrap-function (learn-function samples cfg)))
+(println "deterministic:" (= (f 42) (f2 42)))
+
+;; second dataset: squares (depth-1 search)
+(def sq (learn--wrap-function
+          (learn-function '[[1 1] [2 4] [3 9]]
+                          {:ops '[+ - *] :constants '[0 1 2] :max-depth 1 :beam-width 32})))
+(println "squares f(6):" (sq 6))
+(println "learner done")

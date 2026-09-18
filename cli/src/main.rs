@@ -3,6 +3,8 @@ use std::sync::Arc;
 
 use zio_core::builtins;
 use zio_core::context::EvalContext;
+use zio_core::context::EvalRuntime;
+use zio_core::context::ModuleRegistry;
 use zio_core::env::Env;
 use zio_core::error::EvalError;
 use zio_core::eval;
@@ -23,18 +25,23 @@ fn make_require_loader(sm: &Arc<SourceMap>) -> Box<zio_core::context::ModuleLoad
             .map_err(|e| EvalError::custom(format!("cannot read {}: {e}", path.display())))?;
 
         let source_id = sm.register(name_str.clone(), source.clone());
-        let sexp = reader::read_with_source(&source, source_id)
+        let forms = reader::reader::read_program_with_source(&source, source_id)
             .map_err(|e| EvalError::custom(format!("parse error in {}: {e}", path.display())))?;
 
         let module_env = Arc::new(Env::new(Some(parent_env.clone())));
         let ctx = EvalContext::with_loader(module_env.clone(), make_require_loader(&sm));
-        eval::eval_in_context(&sexp, &ctx)
-            .map_err(|e| EvalError::custom(format!("error loading module {}: {e}", name_str)))?;
+        // Collect (export ...) declarations from the module body.
+        ctx.push_module_exports();
+        for sexp in forms {
+            eval::eval_in_context(&sexp, &ctx)
+                .map_err(|e| EvalError::custom(format!("error loading module {}: {e}", name_str)))?;
+        }
+        let exports = ctx.take_module_exports();
 
         Ok(module::Module {
             name: mod_name.to_vec(),
             env: module_env.clone(),
-            exports: Vec::new(),
+            exports,
             source: None,
         })
     })
@@ -42,10 +49,15 @@ fn make_require_loader(sm: &Arc<SourceMap>) -> Box<zio_core::context::ModuleLoad
 
 // ── Context setup ───────────────────────────────────────────────
 
-fn make_ctx(sm: &Arc<SourceMap>) -> EvalContext {
+/// Build the REPL/script evaluation context. The context owns the
+/// SourceMap: every parsed source (script, REPL input, required module,
+/// loaded file) registers there so spans resolve against one registry.
+fn make_ctx() -> EvalContext {
     let env = make_root_env();
-    let loader = make_require_loader(sm);
-    EvalContext::with_loader(env, loader)
+    let ctx = EvalContext::new(env);
+    let loader = make_require_loader(ctx.source_map());
+    *ctx.loader.borrow_mut() = Some(loader);
+    ctx
 }
 
 fn make_root_env() -> Arc<Env> {
@@ -56,29 +68,42 @@ fn make_root_env() -> Arc<Env> {
 
 // ── Script runner ───────────────────────────────────────────────
 
-fn run_script(path: &str, sm: &Arc<SourceMap>) -> Result<Value, EvalError> {
-    let ctx = make_ctx(sm);
-    load_stdlib(&ctx, sm);
+fn run_script(path: &str) -> Result<Value, EvalError> {
+    run_script_with_llm(path, None)
+}
+
+/// Run a script with an optional replay llm host (ADR-016): the host is
+/// attached from the outside, exactly as the zio-ai contract tests do.
+fn run_script_with_llm(path: &str, llm: Option<Arc<dyn zio_ai::LlmHost>>) -> Result<Value, EvalError> {
+    let ctx = make_ctx();
+    zio_ai::install(&ctx, llm, None);
+    load_stdlib(&ctx);
     let source = std::fs::read_to_string(path)
         .map_err(|e| EvalError::custom(format!("cannot read {}: {e}", path)))?;
-    // Wrap in (do ...) to evaluate all forms, like load_stdlib does
-    let wrapped = format!("(do\n{source}\n)");
-    let source_id = sm.register(path.to_string(), source.clone());
-    let sexp = reader::read_with_source(&wrapped, source_id)
+    // Evaluate every top-level form directly (no wrapper form), so error
+    // spans report exact script line/column positions.
+    let source_id = ctx.source_map().register(path.to_string(), source.clone());
+    let forms = reader::reader::read_program_with_source(&source, source_id)
         .map_err(|e| EvalError::custom(format!("parse error in {}: {e}", path)))?;
-    eval::eval_in_context(&sexp, &ctx)
+    let mut last = Value::Nil;
+    for sexp in forms {
+        last = eval::eval_in_context(&sexp, &ctx)?;
+    }
+    Ok(last)
 }
 
 // ── Stdlib loader ───────────────────────────────────────────────
 
-fn load_stdlib(ctx: &EvalContext, sm: &Arc<SourceMap>) {
+fn load_stdlib(ctx: &EvalContext) {
     let source = zio_core::stdlib_source();
-    let wrapped = format!("(do\n{source}\n)");
-    let source_id = sm.register("core.zio".into(), wrapped.clone());
-    match reader::read_with_source(&wrapped, source_id) {
-        Ok(sexp) => {
-            if let Err(e) = eval::eval_in_context(&sexp, ctx) {
-                eprintln!("Warning: stdlib eval error: {e}");
+    let source_id = ctx.source_map().register("core.zio".into(), source.to_string());
+    match reader::reader::read_program_with_source(source, source_id) {
+        Ok(forms) => {
+            for sexp in forms {
+                if let Err(e) = eval::eval_in_context(&sexp, ctx) {
+                    eprintln!("Warning: stdlib eval error: {e}");
+                    break;
+                }
             }
         }
         Err(e) => eprintln!("Warning: stdlib parse error: {e}"),
@@ -87,9 +112,10 @@ fn load_stdlib(ctx: &EvalContext, sm: &Arc<SourceMap>) {
 
 // ── REPL ────────────────────────────────────────────────────────
 
-fn run_repl(sm: &Arc<SourceMap>) {
-    let ctx = make_ctx(sm);
-    load_stdlib(&ctx, sm);
+fn run_repl() {
+    let ctx = make_ctx();
+    load_stdlib(&ctx);
+    let sm = Arc::clone(ctx.source_map());
 
     println!("Zio REPL");
     println!("Press Ctrl+D or type (exit) to quit");
@@ -143,13 +169,12 @@ fn run_repl(sm: &Arc<SourceMap>) {
 // ── Entry point ─────────────────────────────────────────────────
 
 fn main() {
-    let source_map = Arc::new(SourceMap::new());
     let args: Vec<String> = std::env::args().collect();
 
     match args.len() {
-        1 => run_repl(&source_map),
-        2 if args[1] == "repl" => run_repl(&source_map),
-        2 => match run_script(&args[1], &source_map) {
+        1 => run_repl(),
+        2 if args[1] == "repl" => run_repl(),
+        2 => match run_script(&args[1]) {
             Ok(val) => {
                 if val != Value::Nil {
                     println!("{val}");
@@ -160,8 +185,30 @@ fn main() {
                 std::process::exit(1);
             }
         },
+        4 if args[1] == "--llm-replay" => {
+            let host = zio_ai::mock::MockLlmHost::from_recording_file(&args[2])
+                .map_err(|e| EvalError::custom(format!("--llm-replay: {e}")));
+            let host = match host {
+                Ok(h) => h,
+                Err(e) => {
+                    eprintln!("Error: {e}");
+                    std::process::exit(1);
+                }
+            };
+            match run_script_with_llm(&args[3], Some(Arc::new(host))) {
+                Ok(val) => {
+                    if val != Value::Nil {
+                        println!("{val}");
+                    }
+                }
+                Err(e) => {
+                    eprintln!("Error: {e}");
+                    std::process::exit(1);
+                }
+            }
+        }
         _ => {
-            eprintln!("Usage: zio [script.zio]");
+            eprintln!("Usage: zio [--llm-replay recordings.zio] [script.zio]");
             std::process::exit(1);
         }
     }

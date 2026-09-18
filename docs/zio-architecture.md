@@ -1,6 +1,6 @@
 # Zio 系统架构
 
-> Version 0.4 — 分层架构、组件状态、性能目标
+> Version 0.5 — 分层架构、组件状态、性能目标
 >
 > 本文件同时描述当前架构与未来目标。实现状态以
 > [特性矩阵](feature-matrix.md)为唯一依据，生成的仓库数量见
@@ -58,8 +58,15 @@ native binding 和 runnable example 数量由
 |------|------|------|
 | Reader 与语法展开 | Stable | reader unit tests |
 | AST evaluator、闭包、核心宏与 stdlib | Stable | core tests 与 runnable examples |
-| ZOS class 与 generic dispatch 子集 | Experimental | 受 `zos-concept.zio` 合同覆盖，API 仍可能变化 |
-| Persistent library、Datalog evaluator | Planned | 现有文件仅是 placeholder 或 query-data demo |
+| ZOS class 与 generic dispatch 子集 | Experimental | 受 `zos-concept.zio` 合同覆盖，API 仍可能变化；GF 可调用性经 `zos::apply` 协议（ADR-013） |
+| Persistent library | Experimental | 全部函数可运行；map 迭代顺序未定义 |
+| Datalog 存储（create-db/transact） | Experimental | `lib/zio/datalog.zio`；查询求值器为 stub（Planned） |
+| Agent 框架 | Demo | 数据模型可运行；无 LLM 调用与工具执行 |
+| 协议系统（defprotocol/extend-type） | Experimental | 经 ZOS 泛型函数分派 |
+| Entity 模型 | Experimental | id 为 buffer 渲染；唯一身份待核心原语 |
+| 并发原语（future/chan） | Experimental — 同步占位 | 见 ADR-012：无线程，同步求值 |
+| 文件 I/O（经 IoHost） | Experimental | `load`/`slurp`/`spit`/`file-exists?`；BufferIoHost 提供内存 FS |
+| WASM 构建 + 落地页 REPL | Experimental | `core/src/wasm.rs` + `site/` |
 | ZIR、bytecode VM、JIT 与应用能力 | Planned | 只有批准设计，不是当前运行时 |
 
 完整证据和应用能力状态见[特性矩阵](feature-matrix.md)。
@@ -112,17 +119,18 @@ native binding 和 runnable example 数量由
 | **Runtime** | eval/apply、TCO、special forms、macroexpand | `zio-core` | Rust |
 | **ZOS** | Experimental Class/GF/Method subset; broader MOP is planned | `zio-core` | Rust |
 | **Stdlib** | 当前 core macros/stdlib；更广标准库为规划 | `core` | Rust + Zio |
-| **Extension Libs** | Planned: Datalog · Agent · persistent collections | `lib/zio/*.zio` placeholders | **Zio** |
+| **Extension Libs** | persistent（部分）、Datalog 存储、agent demo；查询求值与真实编排为 Planned | `lib/zio/*.zio` | **Zio** |
 
 ### 3.3 Crate 依赖图
 
 **当前（两个 workspace crate）**：
 
 ```
-zio-cli (cli/src/main.rs)
-└── zio-core (reader + AST evaluator + experimental ZOS subset)
+zio-cli (CLI + REPL + 脚本执行)
+└── zio-core (reader + AST evaluator + experimental ZOS subset
+              + builtins/ 按域内建模块 + wasm 入口)
 
-lib/zio/*.zio (planned extension-library placeholders; not workspace crates)
+lib/zio/*.zio (扩展库，Zio 源码实现；不是 workspace crate)
 ```
 
 **规划（ZIR/VM/JIT，尚未实现）**：
@@ -161,7 +169,7 @@ release build 与 machine metadata。
 | macOS ARM | `aarch64-apple-darwin` | ✅ CI |
 | macOS x86_64 | `x86_64-apple-darwin` | ⏳ 需 CI |
 | Windows | `x86_64-pc-windows-msvc` | ⏳ 待测试 |
-| WASM | `wasm32-unknown-unknown` | Phase 7 |
+| WASM | `wasm32-unknown-unknown` | ✅ Experimental（落地页 REPL） |
 | ARM Linux | `aarch64-unknown-linux-gnu` | Phase 7 |
 
 ---

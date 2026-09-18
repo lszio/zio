@@ -11,6 +11,7 @@ fn workspace_root() -> PathBuf {
 fn run_example(file: &str) -> Output {
     Command::new(env!("CARGO_BIN_EXE_zio-cli"))
         .arg(workspace_root().join("examples").join(file))
+        .current_dir(workspace_root())
         .output()
         .expect("run zio-cli example")
 }

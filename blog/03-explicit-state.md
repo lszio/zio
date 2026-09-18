@@ -195,7 +195,7 @@ ADR-002: EvalContext + EvalEngine trait 收容所有 mutable 状态
 
 - 打开 [`core/src/context.rs`](../core/src/context.rs) 看 `EvalEngine` trait 和 `EvalContext`
 - 打开 [`core/src/eval.rs`](../core/src/eval.rs) 看 `impl EvalEngine for EvalContext`
-- 打开 [`core/src/builtins.rs`](../core/src/builtins.rs) 搜索 `engine` 看高阶函数如何使用它
+- 打开 [`core/src/builtins/collections.rs`](../core/src/builtins/collections.rs) 搜索 `engine` 看高阶函数如何使用它
 
 ```bash
 # 确认 0 个 thread_local

@@ -156,19 +156,24 @@ zio-core/src/
 ├── env.rs            — 词法环境
 ├── eval.rs           — eval/apply 循环
 ├── context.rs        — EvalRuntime trait + EvalContext
-├── builtins.rs       — native bindings（数量见 status.md）
+├── builtins/         — native bindings，按域分模块（数量见 status.md）
+│   ├── mod.rs        — setup_env 聚合注册
+│   ├── numeric.rs    · predicates.rs · collections.rs · strings.rs
+│   ├── zos_access.rs · io.rs · buffer.rs · concurrency.rs
+│   └── json.rs       · macroexpand.rs
 ├── macros.rs         — 宏展开引擎
 ├── module.rs         — 模块系统
 ├── error.rs          — 错误类型
 ├── span.rs           — 源码位置
-├── symbol.rs         — Symbol 结构
+├── io.rs             — IoHost 抽象（ADR-011）
 └── special/          — 特殊形式分发
     ├── mod.rs
-    ├── bindings.rs   — def, defun, defmacro, fn
+    ├── bindings.rs   — def, defn, defmacro, fn
     ├── control.rs    — if, do, and, or, cond
     ├── letloop.rs    — let, let*, loop, recur
     ├── data.rs       — quote
-    └── module_forms.rs — module, require
+    ├── module_forms.rs — module, require, export
+    └── zos_forms.rs  — defclass, defgeneric, defmethod, defpackage, try
 ```
 
 当前 experimental ZOS subset：
@@ -179,7 +184,10 @@ zio-core/src/zos/
 ├── object.rs         — ObjectHeader + ZosObject trait
 ├── class.rs          — Class 定义 + 注册表 + defclass
 ├── package.rs        — Package 符号管理
-└── gf.rs             — GenericFunction 与 Method 子集
+├── gf.rs             — GenericFunction、Method 与 GFObject
+├── apply.rs          — ZOS 可调用协议（唯一的 GF downcast 点，ADR-013）
+├── mop.rs            — metaclass registry
+└── reflection.rs     — 反射引擎
 ```
 
 完整 MOP、Condition System 等更广的 ZOS 规范不是当前稳定实现；状态以

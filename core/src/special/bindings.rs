@@ -108,7 +108,14 @@ pub fn do_defmacro(args: &[Sexp], env: &Arc<Env>, _engine: &dyn EvalEngine) -> R
         let body = if args.len() == 3 {
             args[2].clone()
         } else {
-            Sexp::List(args[2..].iter().cloned().collect(), None)
+            // Multiple body forms: wrap in (do ...) so the body evaluates
+            // as a sequence instead of a call whose head is the first form.
+            let mut forms = im::Vector::new();
+            forms.push_back(Sexp::Symbol("do".into(), None));
+            for form in &args[2..] {
+                forms.push_back(form.clone());
+            }
+            Sexp::List(forms, None)
         };
         (params, rest_param, body)
     };

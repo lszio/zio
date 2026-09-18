@@ -16,6 +16,10 @@ pub trait EvalRuntime {
     /// Get the current (root/top-level) environment for this execution context.
     fn env(&self) -> &Arc<Env>;
 
+    /// The source map this context registers parsed sources into, so that
+    /// spans from every loaded file resolve against one registry.
+    fn source_map(&self) -> &Arc<crate::span::SourceMap>;
+
     /// Get the host I/O implementation for this evaluation runtime (ADR-011).
     fn io(&self) -> &dyn crate::io::IoHost {
         &DEFAULT_STD_IO
@@ -38,6 +42,13 @@ pub trait ModuleRegistry {
     ) -> Option<Result<Module, EvalError>>;
     fn begin_loading(&self, path: &Path) -> Result<(), EvalError>;
     fn end_loading(&self, path: &Path);
+
+    /// Export accumulator for the module being defined (see the `export`
+    /// form). Loaders and `module` push before evaluating a body and take
+    /// the collected names afterwards.
+    fn push_module_exports(&self);
+    fn add_module_export(&self, name: String);
+    fn take_module_exports(&self) -> Vec<String>;
 }
 
 /// The evaluation engine — abstract interface for the recursive eval loop.
@@ -58,34 +69,41 @@ pub struct EvalContext {
     pub modules: std::cell::RefCell<ModuleTable>,
     pub loader: std::cell::RefCell<Option<Box<ModuleLoader>>>,
     pub io: Arc<dyn crate::io::IoHost>,
+    /// Registry of parsed sources; spans from eval errors resolve here.
+    pub source_map: Arc<crate::span::SourceMap>,
+    /// Stack of export accumulators for modules being defined. The
+    /// `(export a b)` form appends to the top; `module` forms and module
+    /// loaders push before evaluating a body and take the result after.
+    pub module_exports: std::cell::RefCell<Vec<Vec<String>>>,
 }
 
 impl EvalContext {
-    pub fn new(env: Arc<Env>) -> Self {
-        EvalContext {
-            env,
-            modules: std::cell::RefCell::new(ModuleTable::new()),
-            loader: std::cell::RefCell::new(None),
-            io: Arc::new(crate::io::StdIoHost),
-        }
-    }
-
-    pub fn with_io(env: Arc<Env>, io: Arc<dyn crate::io::IoHost>) -> Self {
+    fn build(
+        env: Arc<Env>,
+        io: Arc<dyn crate::io::IoHost>,
+    ) -> Self {
         EvalContext {
             env,
             modules: std::cell::RefCell::new(ModuleTable::new()),
             loader: std::cell::RefCell::new(None),
             io,
+            source_map: Arc::new(crate::span::SourceMap::new()),
+            module_exports: std::cell::RefCell::new(Vec::new()),
         }
     }
 
+    pub fn new(env: Arc<Env>) -> Self {
+        Self::build(env, Arc::new(crate::io::StdIoHost))
+    }
+
+    pub fn with_io(env: Arc<Env>, io: Arc<dyn crate::io::IoHost>) -> Self {
+        Self::build(env, io)
+    }
+
     pub fn with_loader(env: Arc<Env>, loader: Box<ModuleLoader>) -> Self {
-        EvalContext {
-            env,
-            modules: std::cell::RefCell::new(ModuleTable::new()),
-            loader: std::cell::RefCell::new(Some(loader)),
-            io: Arc::new(crate::io::StdIoHost),
-        }
+        let ctx = Self::build(env, Arc::new(crate::io::StdIoHost));
+        *ctx.loader.borrow_mut() = Some(loader);
+        ctx
     }
 
     pub fn with_loader_and_io(
@@ -93,11 +111,8 @@ impl EvalContext {
         loader: Box<ModuleLoader>,
         io: Arc<dyn crate::io::IoHost>,
     ) -> Self {
-        EvalContext {
-            env,
-            modules: std::cell::RefCell::new(ModuleTable::new()),
-            loader: std::cell::RefCell::new(Some(loader)),
-            io,
-        }
+        let ctx = Self::build(env, io);
+        *ctx.loader.borrow_mut() = Some(loader);
+        ctx
     }
 }

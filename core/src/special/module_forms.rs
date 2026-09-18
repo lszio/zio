@@ -62,21 +62,68 @@ pub fn do_module(
     }
 
     let module_env = Arc::new(Env::new(Some(env.clone())));
+
+    // Body forms may call (export a b ...) — collect those names too.
+    engine.push_module_exports();
     let body = &args[body_start..];
     let result = if body.is_empty() {
         TailResult::Value(Value::Nil)
     } else {
         eval_last_body(body, &module_env, true, engine)?
     };
+    let mut all_exports = exports;
+    for name in engine.take_module_exports() {
+        if !all_exports.contains(&name) {
+            all_exports.push(name);
+        }
+    }
 
     let module = crate::module::Module {
         name: module_name,
         env: module_env,
-        exports,
+        exports: all_exports,
         source: None,
     };
     engine.register_module(module);
     Ok(result)
+}
+
+// ── export ────────────────────────────────────────────────────────
+
+/// (export a b c) — declare exported symbols inside a module body.
+/// Appends to the export list of the module currently being defined
+/// (an inline `module` form, or a file being loaded by a module loader).
+pub fn do_export(
+    args: &[Sexp],
+    _env: &Arc<Env>,
+    engine: &dyn EvalEngine,
+) -> Result<TailResult, EvalError> {
+    // (export [a b]) / (export (a b)) — list or vector of names as sugar
+    if args.len() == 1 {
+        if let Sexp::List(list, _) | Sexp::Vector(list, _) = &args[0] {
+            for sym in list {
+                match sym {
+                    Sexp::Symbol(s, _) => engine.add_module_export(s.clone()),
+                    Sexp::Keyword(k, _) => engine.add_module_export(k.clone()),
+                    other => return Err(EvalError::invalid_form(
+                        format!("export symbols must be symbols or keywords, got {}", other.kind()),
+                    )),
+                }
+            }
+            return Ok(TailResult::Value(Value::Nil));
+        }
+    }
+    // (export a b c) — names as direct arguments
+    for arg in args {
+        match arg {
+            Sexp::Symbol(s, _) => engine.add_module_export(s.clone()),
+            Sexp::Keyword(k, _) => engine.add_module_export(k.clone()),
+            other => return Err(EvalError::invalid_form(
+                format!("export symbols must be symbols or keywords, got {}", other.kind()),
+            )),
+        }
+    }
+    Ok(TailResult::Value(Value::Nil))
 }
 
 // ── require ───────────────────────────────────────────────────────
@@ -176,8 +223,23 @@ pub fn do_require(
         EvalError::custom(format!("module not found after load: {}", module_name.join(".")))
     })?;
 
-    // :refer — import specific symbols into current env
+    // :refer — import specific symbols into current env.
+    // When the module declares exports, refer is enforced against them.
+    let explicit_refer = refer.clone();
     let target_syms = refer.unwrap_or_else(|| module.exports.clone());
+    if let Some(refer_list) = explicit_refer {
+        if !module.exports.is_empty() {
+            for sym_name in &refer_list {
+                if !module.exports.contains(sym_name) {
+                    return Err(EvalError::custom(format!(
+                        "module {} does not export {}",
+                        module.display_name(),
+                        sym_name
+                    )));
+                }
+            }
+        }
+    }
     for sym_name in &target_syms {
         if let Some(val) = module.env.get(sym_name) {
             env.set(sym_name.clone(), val);
@@ -203,4 +265,20 @@ pub fn do_require(
     }
 
     Ok(TailResult::Value(Value::Nil))
+}
+
+/// Resolve a `ns/name` symbol against loaded modules, used as a fallback
+/// when plain environment lookup fails. Only exported symbols are visible
+/// unless the module declares no exports (legacy modules expose all).
+pub fn resolve_qualified(engine: &dyn EvalEngine, symbol: &str) -> Option<Value> {
+    let (ns, name) = symbol.rsplit_once('/')?;
+    if ns.is_empty() || name.is_empty() || ns.contains('/') {
+        return None;
+    }
+    let module_path: Vec<String> = ns.split('.').map(|p| p.to_string()).collect();
+    let module = engine.find_module(&module_path)?;
+    if !module.exports.is_empty() && !module.exports.iter().any(|e| e == name) {
+        return None;
+    }
+    module.env.get(name)
 }

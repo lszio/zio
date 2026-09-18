@@ -1,0 +1,14 @@
+[package]
+name = "zio-ai"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Host-side AI capability protocols for zio: LlmHost/EmbedHost traits, deterministic mock (record/replay), optional OpenAI-compatible HTTP (ADR-016)."
+
+[dependencies]
+zio-core = { path = "../core" }
+serde_json = { version = "1", optional = true }
+ureq = { version = "2", features = ["json"], optional = true }
+
+[features]
+http = ["dep:ureq", "dep:serde_json"]

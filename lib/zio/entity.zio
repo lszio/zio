@@ -1,5 +1,8 @@
-;; ── zio-entity ────────────────────────────────────────────────────
-;; Entity model with identity tracking, metadata, and entity-id lookups.
+;; ── zio.entity — Entity model (identity + metadata) ─────────────
+;;
+;; Status: Experimental. defentity / make-entity / entity-id runnable.
+;; Entity ids are buffers rendered as strings — real unique identity
+;; awaits an identity primitive in core.
 
 (defmacro defentity [name fields]
   (let [entity-class-name (symbol (str "entity-" name))]
@@ -7,8 +10,10 @@
           (map (fn [f] (list f :initarg (keyword f))) fields))))
 
 (defn make-entity [type-sym & kvs]
-  (let [inst (apply make-instance type-sym kvs)
-        id (str "entity-" (str type-sym) "-" (str (bytes 8)))]
+  ;; defentity names the class "entity-<type>"; use the same name here.
+  (let* [cls (symbol (str "entity-" (str type-sym)))
+         inst (apply make-instance (cons cls kvs))
+         id (str "entity-" (str type-sym) "-" (str (bytes 8)))]
     {:entity/type type-sym
      :entity/id id
      :entity/instance inst}))

@@ -1,0 +1,23 @@
+;; lib/zio/protocol.zio contract — defprotocol + extend-type + dispatch.
+(load "lib/zio/protocol.zio")
+
+(defn check [label actual expected]
+  (if (= actual expected)
+    (println "PASS" label)
+    (println "FAIL" label "got:" actual "want:" expected)))
+
+(defprotocol Speak (say [this]) (greet [this other]))
+(defclass dog nil ())
+(defclass cat nil ())
+
+(extend-type dog Speak
+  (say [this] "woof")
+  (greet [this other] (str "dog meets " other)))
+
+(extend-type cat Speak
+  (say [this] "meow"))
+
+(check "dispatch-dog" (say (make-instance dog)) "woof")
+(check "dispatch-cat" (say (make-instance cat)) "meow")
+(check "multi-arg" (greet (make-instance dog) "cat") "dog meets cat")
+(check "generic-function-name" (generic-function-name say) 'say)

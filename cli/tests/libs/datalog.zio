@@ -1,0 +1,20 @@
+;; lib/zio/datalog.zio contract — transact works, q is a documented stub.
+(load "lib/zio/datalog.zio")
+
+(defn check [label actual expected]
+  (if (= actual expected)
+    (println "PASS" label)
+    (println "FAIL" label "got:" actual "want:" expected)))
+
+(def db (transact (create-db)
+                  (list (list 1 :name "alice")
+                        (list 2 :name "bob"))))
+
+(check "transact-count" (count (get db :datalog/datoms)) 2)
+(check "transact-datom" (get (get db :datalog/datoms) 0) [1 :name "alice" :db/add])
+
+;; q is a stub: it accepts a query form and returns all datom values.
+;; The contract pins the stub behavior so a real evaluator shows up as a
+;; deliberate change, not an accident.
+(check "q-stub-values" (q [:find ?v :where [1 :name ?v]] db)
+       (list ["alice"] ["bob"]))

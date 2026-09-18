@@ -13,7 +13,6 @@ pub mod macros;
 pub mod module;
 pub mod span;
 pub mod special;
-pub mod symbol;
 pub mod reader;
 pub mod context;
 pub mod io;

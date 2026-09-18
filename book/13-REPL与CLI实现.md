@@ -100,7 +100,7 @@ fn make_ctx(sm: &Arc<SourceMap>) -> EvalContext {
 
 fn make_root_env() -> Arc<Env> {
     let env = Arc::new(Env::new(None));  // 根环境
-    builtins::setup_env(&env);            // 安装 30 个内置函数
+    builtins::setup_env(&env);            // 安装全部内置函数（数量见 status.md）
     setup_special_forms(&env);            // 也可以设置特殊形式引用
     env
 }
@@ -193,7 +193,7 @@ zio> (+ 1 2)     ← REPL 仍然活着
    ↓
 3. make_root_env()
    ├── 创建空环境 (outer: None)
-   ├── builtins::setup_env(&env)   → 安装 + - * / 等 30 个函数
+   ├── builtins::setup_env(&env)   → 安装 + - * / 等全部内置函数
    └── 创建 EvalContext
    ↓
 4. load_stdlib(&ctx)
@@ -241,7 +241,7 @@ nil
 
 - `cli/src/main.rs` —— REPL + 脚本运行器（~170 行）
 - `core/src/context.rs` —— EvalContext 定义
-- `core/src/builtins.rs:setup_env` —— 内置函数注册
+- `core/src/builtins/mod.rs:setup_env` —— 内置函数聚合注册
 - `core/src/lib.rs` —— stdlib_source() 嵌入标准库
 
 ## 核心记忆

@@ -1,5 +1,11 @@
-;; ── zio.agent — Agent Orchestration Framework ────────────────────
-;; Agent orchestration, tool execution, and memory loop in pure Zio Lisp.
+;; ── zio.agent — Agent Orchestration Demo ────────────────────────
+;; Agent data model (name, prompt, tools, history) in pure Zio Lisp.
+;;
+;; Status: demo only. make-agent / register-tool / step / run are
+;; runnable, but step returns a canned echo — there is no LLM call
+;; and no tool execution. Real orchestration awaits an LLM client
+;; library and async support (see the concurrency ADR and the
+;; feature matrix).
 
 (defn make-agent [name system-prompt tools]
   {:agent/name name
@@ -9,23 +15,23 @@
    :agent/status :idle})
 
 (defn register-tool [agent tool-name tool-fn]
-  (let [tools (get agent :agent/tools {})
-        updated-tools (put tools tool-name tool-fn)]
-    (assoc agent :agent/tools updated-tools)))
+  (assoc agent :agent/tools
+         (put (get agent :agent/tools {}) tool-name tool-fn)))
 
 (defn step [agent input-msg]
-  (let [history (get agent :agent/history [])
-        user-msg {:role "user" :content input-msg}
-        new-history (vector-conj history user-msg)
-        response {:role "assistant" :content (str "Agent [" (get agent :agent/name) "] executed: " input-msg)}]
+  (let* [history (get agent :agent/history [])
+         user-msg {:role "user" :content input-msg}
+         new-history (vector-conj history user-msg)
+         response {:role "assistant"
+                   :content (str "Agent [" (get agent :agent/name) "] executed: " input-msg)}]
     (assoc agent
            :agent/history (vector-conj new-history response)
            :agent/status :active)))
 
 (defn run [agent task-prompt]
-  (let [result-agent (step agent task-prompt)
-        history (get result-agent :agent/history [])
-        last-msg (peek history)]
+  (let* [result-agent (step agent task-prompt)
+         history (get result-agent :agent/history [])
+         last-msg (get history (dec (count history)))]
     (get last-msg :content)))
 
-(println "zio.agent loaded — fully functional Agent MVP")
+(println "zio.agent loaded (data-model demo; no LLM call or tool execution)")

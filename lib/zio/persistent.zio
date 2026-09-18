@@ -1,11 +1,15 @@
 ;; ── zio.persistent — Persistent (immutable) collections ─────────
 ;; Immutable operations built on Zio's persistent im::Vector and im::HashMap.
+;;
+;; Status: Experimental. All functions are runnable; map iteration
+;; order (and therefore merge/set ordering) is not defined.
 
 (defn conj [coll x]
   (if (vector? coll)
     (vector-conj coll x)
     (if (map? coll)
-      (put coll (car x) (car (cdr x)))
+      ;; entry may be a vector or a list — index instead of car/cdr
+      (put coll (get x 0) (get x 1))
       (cons x coll))))
 
 (defn pop [coll]
@@ -25,7 +29,7 @@
 (defn merge [& maps]
   (reduce (fn [acc m]
             (if (map? m)
-              (reduce (fn [a k] (put a k (get m k))) acc (keys m))
+              (reduce-kv (fn [a k v] (put a k v)) acc m)
               acc))
           {} maps))
 
@@ -34,12 +38,12 @@
 
 (defn contains? [s item]
   (if (map? s)
-    (not (nil? (get s item)))
+    (not (nil? (get s item nil)))
     false))
 
-(defn disj [s item]
+(defn disj [s & items]
   (if (map? s)
-    (remove s item)
+    (apply dissoc (cons s items))
     s))
 
-(println "zio.persistent loaded — fully functional")
+(println "zio.persistent loaded (all functions runnable)")

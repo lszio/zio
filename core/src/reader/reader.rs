@@ -58,6 +58,19 @@ pub fn read_program(input: &str) -> Result<Vec<Sexp>, ReaderError> {
     Ok(results)
 }
 
+/// Read multiple top-level S-expressions, keeping source spans attached
+/// so runtime errors inside the program carry line/column information.
+pub fn read_program_with_source(input: &str, source_id: SourceId) -> Result<Vec<Sexp>, ReaderError> {
+    let tokens = tokenize(input);
+    let mut tokens = tokens.into_iter().peekable();
+    let mut results = Vec::new();
+    while tokens.peek().is_some() {
+        let (sexp, _) = read_from_tokens(&mut tokens, source_id, input)?;
+        results.push(sexp);
+    }
+    Ok(results)
+}
+
 /// Read from tokens using an explicit stack.
 /// Stack entries: (open_delim, items, start_pos_of_delim).
 fn read_from_tokens(
@@ -66,6 +79,13 @@ fn read_from_tokens(
     input: &str,
 ) -> Result<(Sexp, bool), ReaderError> {
     let mut stack: Vec<(String, Vector<Sexp>, BytePos)> = Vec::new();
+
+    // Precompute line starts once so every span gets a real line/column.
+    let line_starts = crate::span::line_starts_of(input);
+    let span_of = |start: BytePos, end: BytePos| {
+        let (line, col) = crate::span::line_col_of(input, &line_starts, start.0);
+        Span { source_id, start, end, line, col }
+    };
 
     while let Some(token) = tokens.next() {
         let start = token.start;
@@ -76,22 +96,10 @@ fn read_from_tokens(
                 // Reader macro: 'x → (quote x)
                 let (inner, _) = read_from_tokens(tokens, source_id, input)?;
                 let inner_span = inner.span().unwrap_or(Span::DUMMY);
-                let sym = Sexp::Symbol("quote".into(), Some(Span {
-                    source_id,
-                    start,
-                    end: start,
-                    line: 1,
-                    col: start.0 + 1,
-                }));
+                let sym = Sexp::Symbol("quote".into(), Some(span_of(start, start)));
                 let quoted = Sexp::List(
                     vector![sym, inner],
-                    Some(Span {
-                        source_id,
-                        start,
-                        end: inner_span.end,
-                        line: 1,
-                        col: start.0 + 1,
-                    }),
+                    Some(span_of(start, inner_span.end)),
                 );
                 if let Some(parent) = stack.last_mut() {
                     parent.1.push_back(quoted);
@@ -121,13 +129,7 @@ fn read_from_tokens(
                                 }
                             }
                         }
-                        let vec = Sexp::Vector(items, Some(Span {
-                            source_id,
-                            start: list_start,
-                            end: last_end,
-                            line: 1,
-                            col: list_start.0 + 1,
-                        }));
+                        let vec = Sexp::Vector(items, Some(span_of(list_start, last_end)));
                         if let Some(parent) = stack.last_mut() {
                             parent.1.push_back(vec);
                         } else {
@@ -154,13 +156,7 @@ fn read_from_tokens(
                                 }
                             }
                         }
-                        let sexp = Sexp::List(items, Some(Span {
-                            source_id,
-                            start: set_start,
-                            end: last_end,
-                            line: 1,
-                            col: set_start.0 + 1,
-                        }));
+                        let sexp = Sexp::List(items, Some(span_of(set_start, last_end)));
                         if let Some(parent) = stack.last_mut() {
                             parent.1.push_back(sexp);
                         } else {
@@ -177,13 +173,7 @@ fn read_from_tokens(
                             _ if name.len() == 1 => name.chars().next().unwrap(),
                             _ => return Err(ReaderError::UnexpectedToken(name.to_string())),
                         };
-                        let ch_span = Some(Span {
-                            source_id,
-                            start,
-                            end: tok.end(),
-                            line: 1,
-                            col: start.0 + 1,
-                        });
+                        let ch_span = Some(span_of(start, tok.end()));
                         let val = Sexp::Char(ch, ch_span);
                         if let Some(parent) = stack.last_mut() {
                             parent.1.push_back(val);
@@ -212,17 +202,24 @@ fn read_from_tokens(
                 {
                     return Err(ReaderError::UnexpectedToken(token.text));
                 }
-                let span = Some(Span {
-                    source_id,
-                    start: open_start,
-                    end,
-                    line: 1,
-                    col: open_start.0 + 1,
-                });
+                let span = Some(span_of(open_start, end));
+                let items = if open == "[" {
+                    items.into_iter().filter(|s| !is_json_separator(s)).collect()
+                } else {
+                    items
+                };
                 let val = match open.as_str() {
                     "(" => Sexp::List(items, span),
                     "[" => Sexp::Vector(items, span),
                     "{" => {
+                        // Tolerate JSON-style `key: value` colons and
+                        // commas: bare ":" parses as an empty keyword and
+                        // bare "," as a "," symbol — drop both before
+                        // pairing, so json-parse can read real JSON.
+                        let items: im::Vector<Sexp> = items
+                            .into_iter()
+                            .filter(|s| !is_json_separator(s))
+                            .collect();
                         if items.len() % 2 != 0 {
                             return Err(ReaderError::OddMapElements);
                         }
@@ -244,13 +241,7 @@ fn read_from_tokens(
             }
             _ => {
                 // Atom token — parse with position info
-                let span = Some(Span {
-                    source_id,
-                    start,
-                    end,
-                    line: 1,
-                    col: start.0 + 1,
-                });
+                let span = Some(span_of(start, end));
                 let val = parse_atom(&token.text, span);
                 if let Some(parent) = stack.last_mut() {
                     parent.1.push_back(val);
@@ -266,6 +257,17 @@ fn read_from_tokens(
     } else {
         // Input was empty or all whitespace — return Nil
         Ok((Sexp::Nil, false))
+    }
+}
+
+/// JSON separators the reader tolerates inside `{}` and `[]`:
+/// a bare ":" (parsed as an empty keyword) and a bare "," (parsed as a
+/// "," symbol).
+fn is_json_separator(s: &Sexp) -> bool {
+    match s {
+        Sexp::Keyword(k, _) if k.is_empty() => true,
+        Sexp::Symbol(c, _) if c == "," => true,
+        _ => false,
     }
 }
 

@@ -51,12 +51,15 @@ pub fn do_and(
         return Ok(TailResult::Value(Value::Boolean(true)));
     }
     for (i, arg) in args.iter().enumerate() {
-        let result = engine.eval_expr(arg, env, tail && i == args.len() - 1)?;
+        let is_last = i == args.len() - 1;
+        // Only the last operand may run in tail position; its TailResult
+        // (possibly a TailCall) propagates untouched to the trampoline.
+        if is_last {
+            return engine.eval_expr(arg, env, tail);
+        }
+        let result = engine.eval_expr(arg, env, false)?;
         let val = result.into_value();
         if !is_truthy(&val) {
-            return Ok(TailResult::Value(val));
-        }
-        if i == args.len() - 1 {
             return Ok(TailResult::Value(val));
         }
     }
@@ -73,12 +76,13 @@ pub fn do_or(
         return Ok(TailResult::Value(Value::Nil));
     }
     for (i, arg) in args.iter().enumerate() {
-        let result = engine.eval_expr(arg, env, tail && i == args.len() - 1)?;
+        let is_last = i == args.len() - 1;
+        if is_last {
+            return engine.eval_expr(arg, env, tail);
+        }
+        let result = engine.eval_expr(arg, env, false)?;
         let val = result.into_value();
         if is_truthy(&val) {
-            return Ok(TailResult::Value(val));
-        }
-        if i == args.len() - 1 {
             return Ok(TailResult::Value(val));
         }
     }

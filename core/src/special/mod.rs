@@ -12,7 +12,7 @@ mod bindings;
 mod control;
 mod letloop;
 mod data;
-mod module_forms;
+pub(crate) mod module_forms;
 pub(crate) mod zos_forms;
 /// Result of evaluating an expression, possibly a recur or tail call.
 #[derive(Debug, Clone)]
@@ -63,6 +63,7 @@ pub fn eval_special_form(
         "cond" => Some(control::do_cond(args, env, tail, engine)?),
         "module" => Some(module_forms::do_module(args, env, engine)?),
         "require" => Some(module_forms::do_require(args, env, engine)?),
+        "export" => Some(module_forms::do_export(args, env, engine)?),
         "defclass" => Some(zos_forms::do_defclass(args, env, engine)?),
         "defgeneric" => Some(zos_forms::do_defgeneric(args, env, engine)?),
         "defmethod" => Some(zos_forms::do_defmethod(args, env, engine)?),

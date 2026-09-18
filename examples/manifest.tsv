@@ -3,3 +3,6 @@ basics.zio|runnable|=== Higher-order ===
 macros.zio|runnable|[ERROR] disk full
 zos-concept.zio|runnable|ZOS capability probe completed.
 datalog-concept.zio|runnable|zio-datalog library: planned capability.
+scripting.zio|runnable|=== Scripting scenario ===
+learn-demo.zio|runnable|=== Homoiconic learner ===
+pipeline-demo.zio|runnable|=== Pipeline DSL ===

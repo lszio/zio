@@ -8,27 +8,8 @@ use crate::sexp::Sexp;
 use crate::special::{eval_last_body, TailResult};
 use crate::value::Value;
 use crate::zos::object::{Class, ClassRef, ObjectFlags, SlotDefinition};
-use crate::zos::gf::{GenericFunction, Method, MethodQualifier, Specializer};
+use crate::zos::gf::{GenericFunction, GFObject, Method, MethodQualifier, Specializer};
 use crate::value::Function;
-
-/// A ZosObject wrapper for GenericFunction so it can be stored as Value::Object.
-#[derive(Debug, Clone)]
-pub struct GFObject {
-    pub header: crate::zos::object::ObjectHeader,
-    pub gf: Arc<std::cell::RefCell<GenericFunction>>,
-}
-
-impl crate::zos::object::ZosObject for GFObject {
-    fn header(&self) -> &crate::zos::object::ObjectHeader {
-        &self.header
-    }
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
-    fn clone_box(&self) -> Box<dyn crate::zos::object::ZosObject> {
-        Box::new(self.clone())
-    }
-}
 
 /// (defclass name superclass slots)
 /// superclass: a symbol or nil (for root classes)
@@ -221,23 +202,7 @@ pub fn do_defgeneric(
     };
 
     let gf = GenericFunction::new(name.clone(), lambda_list);
-    let header = crate::zos::object::ObjectHeader {
-        class: Arc::new(crate::zos::object::Class {
-            name: "GenericFunction".into(),
-            superclasses: Vec::new(),
-            slots: Vec::new(),
-            cpl: vec!["GenericFunction".into()],
-        }),
-        flags: ObjectFlags::MUTABLE,
-        identity: None,
-    };
-
-    let gf_obj = GFObject {
-        header,
-        gf: Arc::new(std::cell::RefCell::new(gf)),
-    };
-
-    env.set(name, Value::Object(Box::new(gf_obj)));
+    env.set(name, Value::Object(Box::new(GFObject::new(gf))));
     Ok(TailResult::Value(Value::Nil))
 }
 
@@ -337,8 +302,8 @@ pub fn do_defmethod(
 
     match &gf_val {
         Value::Object(o) => {
-            if let Some(gf_obj) = o.as_any().downcast_ref::<GFObject>() {
-                gf_obj.gf.borrow_mut().add_method(method);
+            if let Some(gf) = crate::zos::gf::gf_shared(o.as_ref()) {
+                gf.borrow_mut().add_method(method);
                 Ok(TailResult::Value(Value::Nil))
             } else {
                 Err(EvalError::type_error("GenericFunction", "non-GF object"))

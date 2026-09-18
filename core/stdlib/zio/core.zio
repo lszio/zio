@@ -34,11 +34,18 @@
           flds)]
     ;; (cons 'do (cons defn-form accessor-forms)) → (do defn-form acc1 acc2 ...)
     (cons 'do (cons defn-form accessor-forms))))
-(defn assoc [m k v]
-  (put m k v))
+(defn assoc [m & kvs]
+  (if (not (= 0 (mod (count kvs) 2)))
+    (error "assoc requires an even number of key-value arguments")
+    (loop [i 0 acc m]
+      (if (< i (count kvs))
+        (recur (+ i 2) (put acc (nth kvs i) (nth kvs (+ i 1))))
+        acc))))
 
-(defn dissoc [m k]
-  (remove m k))
+(defn reduce-kv [f init m]
+  ;; (reduce-kv f init map) — f takes (acc key val). Iteration order
+  ;; follows (keys m) and is not defined.
+  (reduce (fn [acc k] (f acc k (get m k))) init (keys m)))
 
 (defn get-in [m ks]
   (if (or (nil? ks) (= (count ks) 0))
@@ -79,12 +86,14 @@
   (first (rest coll)))
 
 (defn rest [coll]
-  (if (list? coll) (cdr coll) (get coll 1)))
+  (if (list? coll) (cdr coll) (slice coll 1 (count coll))))
 
 (defn last [coll]
-  (if (nil? (cdr coll))
-    (car coll)
-    (last (cdr coll))))
+  (if (vector? coll)
+    (get coll (dec (count coll)))
+    (if (nil? (cdr coll))
+      (car coll)
+      (last (cdr coll)))))
 
 (defn nth [coll n]
   (if (nil? coll)
@@ -107,7 +116,7 @@
 
 (defn empty? [coll]
   (or (nil? coll)
-      (and (vector? coll) (= (count coll) 0))))
+      (= (count coll) 0)))
 
 (defn some? [x] (not (nil? x)))
 
@@ -135,8 +144,8 @@
         (if (nil? result)
           (list (first from))
           (cons (first from) result)))
-      ;; For vectors, apply vector after converting both to lists
-      (apply vector (apply list to (apply list from))))))
+      ;; For vectors, append each element of from
+      (reduce vector-conj to from))))
 
 
 ;; ── Module export marker ─────────────────────────────────────

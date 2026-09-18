@@ -1,0 +1,308 @@
+;; ── zio.learn — Homoiconic symbolic learner (generation loop, L3) ───
+;; (learn-function samples config) → expr: a program synthesized from
+;; examples. Programs are DATA end to end: proposers emit candidate
+;; strings, the loop parses → whitelists → canonicalizes → scores with
+;; eval → feeds (program, score) history back to the next generation.
+;; The winner is turned back into a callable function.
+;;
+;; Proposer protocol (ADR-016 / synthesis-plan §3):
+;;   (proposer task history) → list of candidate STRINGS
+;;   task    = {:samples :ops :constants :max-depth :beam-width
+;;              :max-nodes :vocab}
+;;   history = ({:generation n :candidates (…) :scores (…)} …)
+;;             candidates are best-first; scores are normalized relative
+;;             error (0 = perfect; small = close).
+;; The proposer is untrusted and format-only: parsing, the closed-world
+;; whitelist, canonical dedup, scoring, selection and budget live here,
+;; in the loop, and apply to every proposer alike.
+;;
+;; Config keys:
+;;   :ops :constants :beam-width :max-depth — as before; :max-depth also
+;;     defaults the generation count for the enumerator (legacy parity)
+;;   :proposer — (fn [task history] candidates); default = enumerator
+;;   :max-generations — generation budget (default: :max-depth for the
+;;     enumerator, 8 for external proposers)
+;;   :max-evals — eval budget; one candidate costs one eval per sample
+;;     (default 0 = unlimited)
+;;   :max-nodes — AST node cap (default 32)
+;;
+;; Deterministic: same samples + config (+ same mock recording for LLM
+;; proposers) always produce the same function.
+
+(def learn--worst-loss 1000000)
+(def learn--worst-score 1000000000)
+(def learn--base-ops '(+ - * / mod))
+
+;; ── scoring ─────────────────────────────────────────────────────
+
+(defn learn--abs [x]
+  (if (< x 0) (- 0 x) x))
+
+(defn learn--loss [samples expr]
+  ;; total absolute error of expr evaluated with x bound per sample
+  (reduce (fn [acc s]
+            (+ acc (learn--abs
+                    (- (eval (list 'let (list 'x (get s 0)) expr))
+                       (get s 1)))))
+          0 samples))
+
+(defn learn--safe-loss [samples expr]
+  ;; candidate-level error isolation: a candidate that crashes eval
+  ;; (division by zero, arity, non-numeric) scores worst and the run
+  ;; survives
+  (try
+    (learn--loss samples expr)
+    (catch any learn--worst-loss)))
+
+(defn learn--scale [samples]
+  ;; normalizer for display scores: 1 + Σ|y|
+  (+ 1 (reduce (fn [acc s] (+ acc (learn--abs (get s 1)))) 0 samples)))
+
+(defn learn--size [expr]
+  ;; node count — the complexity penalty signal
+  (if (list? expr)
+    (+ 1 (reduce (fn [acc sub] (+ acc (learn--size sub))) 0 expr))
+    1))
+
+(defn learn--score-pairs [samples exprs]
+  ;; decorate with [score expr]; score = loss*1000 + size (int math)
+  (map (fn [e] (list (+ (* 1000 (learn--safe-loss samples e)) (learn--size e)) e))
+       exprs))
+
+(defn learn--sorted-pairs [pairs]
+  (sort (fn [a b] (< (get a 0) (get b 0))) pairs))
+
+(defn learn--rank [samples exprs]
+  (learn--sorted-pairs (learn--score-pairs samples exprs)))
+
+(defn learn--display-score [score scale]
+  ;; normalized relative error for the history feed: loss / scale
+  (/ (/ (- score (mod score 1000)) 1000) scale))
+
+;; ── closed-world whitelist (gate two; gate one is the reader) ──────
+
+(defn learn--mem? [x items]
+  (loop [items (apply list items)]
+    (if (nil? items)
+      nil
+      (if (= (car items) x) true (recur (cdr items))))))
+
+(defn learn--allowed-walk [e ops constants depth nodes]
+  ;; → remaining node budget, or nil when the form is out of bounds.
+  ;; Every symbol must be the variable x or a declared op; every number
+  ;; must be a declared constant; nesting is capped by depth. Nothing
+  ;; else exists in this world.
+  ;; NOTE: guards are nested ifs, not `(or …)` — see the 2026-09-13
+  ;; core-eval defect note (or+not inside a recursive loaded defn can
+  ;; fabricate a WrongArgCount error); this shape is verified to work.
+  (if (< depth 0)
+    nil
+    (if (<= nodes 0)
+      nil
+      (if (list? e)
+        (if (not (= (count e) 3))
+          nil
+          (if (learn--mem? (get e 0 nil) ops)
+            (let* [a (learn--allowed-walk (get e 1 nil) ops constants (- depth 1) (- nodes 1))]
+              (if (nil? a)
+                nil
+                (learn--allowed-walk (get e 2 nil) ops constants (- depth 1) a)))
+            nil))
+        (if (number? e)
+          (if (learn--mem? e constants) (- nodes 1) nil)
+          (if (= e 'x)
+            (- nodes 1)
+            nil))))))
+
+(defn learn--allowed? [form task]
+  (if (nil? (learn--allowed-walk form
+                                 (get task :ops nil)
+                                 (get task :constants nil)
+                                 (get task :max-depth 2)
+                                 (get task :max-nodes 32)))
+    nil
+    true))
+
+;; ── canonical form: identity elimination + commutative ordering ────
+
+(defn learn--vocab-index [sym vocab]
+  (loop [i 0 items (apply list vocab)]
+    (if (nil? items)
+      0
+      (if (= (car items) sym)
+        i
+        (recur (+ i 1) (cdr items))))))
+
+(defn learn--fp [e vocab]
+  ;; deterministic structural fingerprint over the closed vocabulary.
+  ;; Collisions can only lose a dedup; they can never merge distinct
+  ;; forms — the dedup key is the full canonical string.
+  (if (list? e)
+    (+ 31
+       (+ (* 3 (learn--fp (get e 0 nil) vocab))
+          (+ (* 17 (learn--fp (get e 1 nil) vocab))
+             (* 53 (learn--fp (get e 2 nil) vocab)))))
+    (if (number? e)
+      (+ 7 e)
+      (* 1009 (+ 1 (learn--vocab-index e vocab))))))
+
+(defn learn--canon-comm [op a b id vocab]
+  ;; commutative op: drop the identity, order args by fingerprint
+  (if (= a id)
+    b
+    (if (= b id)
+      a
+      (if (<= (learn--fp a vocab) (learn--fp b vocab))
+        (list op a b)
+        (list op b a)))))
+
+(defn learn--canon [e vocab]
+  (if (not (list? e))
+    e
+    (let* [op (get e 0 nil)
+           a (learn--canon (get e 1 nil) vocab)
+           b (learn--canon (get e 2 nil) vocab)]
+      (if (= op '+)
+        (learn--canon-comm '+ a b 0 vocab)
+        (if (= op '*)
+          (learn--canon-comm '* a b 1 vocab)
+          (if (= op '-)
+            (if (= b 0) a (list '- a b))
+            (list op a b)))))))
+
+;; ── parse + batch check (the loop's gates, for every proposer) ─────
+
+(defn learn--parse-candidate [s]
+  ;; gate one is the reader: malformed text dies here, quietly
+  (try (read-string s) (catch any nil)))
+
+(defn learn--check-batch [raw seen task]
+  ;; parse → whitelist → canonical dedup (within batch and vs history)
+  ;; → vector of fresh valid forms. Guard the empty batch: `(apply list
+  ;; [])` yields an empty List, which is not nil, and car-ing it dies.
+  (if (= (count raw) 0)
+    []
+    (loop [items (apply list raw) out [] seen seen]
+      (if (nil? items)
+        out
+        (let* [form (learn--parse-candidate (car items))]
+          (if (nil? form)
+            (recur (cdr items) out seen)
+            (if (learn--allowed? form task)
+              (let* [key (str (learn--canon form (get task :vocab nil)))]
+                (if (nil? (get seen key nil))
+                  (recur (cdr items) (vector-conj out form) (put seen key true))
+                  (recur (cdr items) out seen)))
+              (recur (cdr items) out seen))))))))
+
+(defn learn--mark-seen [seen fresh task]
+  (reduce (fn [acc form]
+            (put acc (str (learn--canon form (get task :vocab nil))) true))
+          seen
+          fresh))
+
+;; ── recording (the history feed) ────────────────────────────────
+
+(defn learn--record [gen scored scale beam-width]
+  ;; best-first candidates + normalized scores for the next prompt
+  (let* [n (if (< beam-width (count scored)) beam-width (count scored))
+         top (slice scored 0 n)]
+    {:generation gen
+     :candidates (map (fn [p] (str (get p 1))) top)
+     :scores (map (fn [p] (learn--display-score (get p 0) scale)) top)}))
+
+;; ── proposers ───────────────────────────────────────────────────
+
+(defn learn--pairs [ops pool]
+  ;; all (op a b) ordered combinations over the pool of forms
+  (reduce (fn [acc-a a]
+            (reduce (fn [acc-b b]
+                      (reduce (fn [acc-c op]
+                                (cons (list op a b) acc-c))
+                              acc-b ops))
+                    acc-a pool))
+          '()
+          pool))
+
+(defn make-enum-proposer [config]
+  ;; the original beam enumerator, demoted to a proposer: each
+  ;; generation pairs everything over (last beam ∪ atoms); the pool is
+  ;; reconstructed statelessly from the history feed
+  (fn [task history]
+    (let* [ops (get task :ops nil)
+           constants (get task :constants nil)
+           beam (get task :beam-width 16)
+           atoms (cons 'x (apply list constants))
+           pool (if (= (count history) 0)
+                  atoms
+                  (let* [last-gen (get history (- (count history) 1) nil)
+                         forms (map learn--parse-candidate (get last-gen :candidates []))]
+                    (into forms atoms)))]
+      (map (fn [p] (str p)) (learn--pairs (apply list ops) (apply list pool))))))
+
+(defn make-hybrid-proposer [a b]
+  ;; every generation asks both proposers and merges the batches
+  (fn [task history]
+    (into (a task history) (b task history))))
+
+;; ── the loop ────────────────────────────────────────────────────
+
+(defn learn--make-task [samples config]
+  {:samples samples
+   :ops (get config :ops nil)
+   :constants (get config :constants nil)
+   :max-depth (get config :max-depth 2)
+   :beam-width (get config :beam-width 16)
+   :max-nodes (get config :max-nodes 32)
+   :vocab (into (into (apply list learn--base-ops)
+                      (apply list (get config :ops nil)))
+                '(x))})
+
+(defn learn--zero-in? [scored]
+  (if (nil? scored)
+    nil
+    (let* [top (get scored 0 nil)]
+      (if (nil? top)
+        nil
+        (< (get top 0) 1000)))))
+
+(defn learn--run [samples task proposer max-generations max-evals beam-width]
+  (let* [scale (learn--scale samples)]
+    (loop [gen 0 history [] seen {} evals 0 best-pair nil]
+      (if (>= gen max-generations)
+        (if (nil? best-pair) nil (get best-pair 1))
+        (let* [raw (proposer task history)
+               fresh (learn--check-batch raw seen task)
+               seen2 (learn--mark-seen seen fresh task)
+               scored (learn--rank samples fresh)
+               evals2 (+ evals (* (count fresh) (count samples)))
+               top (get scored 0 nil)
+               best-pair2 (if (nil? top)
+                            best-pair
+                            (if (nil? best-pair)
+                              top
+                              (if (< (get top 0) (get best-pair 0))
+                                top
+                                best-pair)))
+               history2 (into history (vector (learn--record gen scored scale beam-width)))]
+          (if (learn--zero-in? scored)
+            (if (nil? best-pair2) nil (get best-pair2 1))
+            (if (and (> max-evals 0) (>= evals2 max-evals))
+              (if (nil? best-pair2) nil (get best-pair2 1))
+              (recur (+ gen 1) history2 seen2 evals2 best-pair2))))))))
+
+(defn learn-function [samples config]
+  (let* [task (learn--make-task samples config)
+         proposer (get config :proposer nil)
+         prop (if (nil? proposer) (make-enum-proposer config) proposer)
+         max-generations (get config :max-generations
+                              (if (nil? proposer) (get config :max-depth 2) 8))
+         max-evals (get config :max-evals 0)]
+    (learn--run samples task prop max-generations max-evals
+                (get task :beam-width 16))))
+
+(defn learn--wrap-function [expr]
+  ;; the homoiconic payoff: synthesized DATA becomes a real function
+  (eval (list 'fn '[x] expr)))
+
+(println "zio.learn loaded (generation loop: untrusted proposers feed it; reader+whitelist gates, canonical dedup, eval budget and error isolation live in the loop)")

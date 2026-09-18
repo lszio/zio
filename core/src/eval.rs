@@ -21,6 +21,10 @@ impl EvalRuntime for EvalContext {
         &self.env
     }
 
+    fn source_map(&self) -> &Arc<crate::span::SourceMap> {
+        &self.source_map
+    }
+
     fn io(&self) -> &dyn crate::io::IoHost {
         &*self.io
     }
@@ -57,6 +61,20 @@ impl ModuleRegistry for EvalContext {
 
     fn end_loading(&self, path: &std::path::Path) {
         self.modules.borrow_mut().end_loading(path);
+    }
+
+    fn push_module_exports(&self) {
+        self.module_exports.borrow_mut().push(Vec::new());
+    }
+
+    fn add_module_export(&self, name: String) {
+        if let Some(top) = self.module_exports.borrow_mut().last_mut() {
+            top.push(name);
+        }
+    }
+
+    fn take_module_exports(&self) -> Vec<String> {
+        self.module_exports.borrow_mut().pop().unwrap_or_default()
     }
 }
 
@@ -101,11 +119,17 @@ fn eval_inner(expr: &Sexp, env: &Arc<Env>, tail: bool, engine: &dyn EvalEngine) 
         Sexp::Keyword(k, _) => Ok(TailResult::Value(Value::Keyword(k.clone()))),
         Sexp::Char(c, _) => Ok(TailResult::Value(Value::Char(*c))),
 
-        // Symbol lookup
-        Sexp::Symbol(s, span) => env
-            .get(s)
-            .map(TailResult::Value)
-            .ok_or_else(|| EvalError::symbol_not_found(s.clone()).with_opt_span(*span)),
+        // Symbol lookup — with module-qualified fallback for `ns/name`
+        // symbols that are not plain bindings.
+        Sexp::Symbol(s, span) => {
+            if let Some(v) = env.get(s) {
+                return Ok(TailResult::Value(v));
+            }
+            if let Some(v) = crate::special::module_forms::resolve_qualified(engine, s) {
+                return Ok(TailResult::Value(v));
+            }
+            Err(EvalError::symbol_not_found(s.clone()).with_opt_span(*span))
+        }
 
         // Empty list evaluates to nil
         Sexp::List(list, _) if list.is_empty() => Ok(TailResult::Value(Value::Nil)),
@@ -203,157 +227,15 @@ pub fn apply(func: Value, args: Vector<Value>, engine: &dyn EvalEngine) -> Resul
             let result = nf.call(args, engine)?;
             Ok(TailResult::Value(result))
         }
-        // ZOS Generic Function dispatch with full method combination
-        Value::Object(o) => {
-            if let Some(gf_obj) = o.as_any().downcast_ref::<crate::special::zos_forms::GFObject>() {
-                let mut gf = gf_obj.gf.borrow_mut();
-                let arg_classes: Vec<crate::zos::object::ClassRef> = args.iter().map(value_class_ref).collect();
-                let dispatch = gf.dispatch(&arg_classes);
-
-                // No applicable methods?
-                if dispatch.primary.is_empty() && dispatch.around.is_empty() {
-                    return Err(EvalError::custom(format!(
-                        "no applicable method for {} with args {:?}",
-                        gf.name,
-                        arg_classes.iter().map(|c| &c.name).collect::<Vec<_>>()
-                    )));
-                }
-
-                // Build the method combination chain from innermost to outermost.
-                // The innermost step: execute :before → :primary → :after
-                let primary_step = build_primary_combination(&dispatch, &args, engine.env())?;
-
-                // Wrap in :around methods (outermost → innermost)
-                let chain = if dispatch.around.is_empty() {
-                    primary_step
-                } else {
-                    build_around_wrappers(&dispatch.around, &args, primary_step, engine.env())?
-                };
-
-                // chain is a NativeFn. Call it with empty args (args captured in closures)
-                let result = chain.call(im::vector![], engine)?;
-                Ok(TailResult::Value(result))
-            } else {
-                Err(EvalError::not_a_function(format!("#<{}>", o.header().class.name)))
-            }
+        // ZOS heap objects delegate callability to the ZOS layer's apply
+        // protocol — the eval loop stays ignorant of GF dispatch semantics.
+        Value::Object(ref o) => {
+            return match crate::zos::apply::try_apply(o.as_ref(), args, engine) {
+                Some(result) => result,
+                None => Err(EvalError::not_a_function(other_display(&func))),
+            };
         }
         _ => Err(EvalError::not_a_function(other_display(&func))),
-    }
-}
-
-/// Build the primary combination: :before → :primary → :after
-fn build_primary_combination(
-    dispatch: &crate::zos::gf::DispatchResult,
-    args: &im::Vector<Value>,
-    _parent_env: &Arc<Env>,
-) -> Result<crate::value::NativeFn, EvalError> {
-    let args = args.clone();
-    let before = dispatch.before.clone();
-    let primary = dispatch.primary.clone();
-    let after = dispatch.after.clone();
-    Ok(crate::value::NativeFn::new("__primary_combination__", move |_: im::Vector<Value>, engine: &dyn EvalEngine| -> Result<Value, EvalError> {
-        // Execute :before methods (most specific first)
-        for m in &before {
-            let env = if m.body.rest_param.is_some() {
-                Env::bind_variadic(&m.body.env, &m.body.params, &m.body.rest_param, &args)?
-            } else {
-                Env::bind(&m.body.env, &m.body.params, &args)?
-            };
-            engine.eval_expr(&m.body.body, &env, false)?;
-        }
-
-        // Execute :primary methods (most specific first — take the first)
-        if let Some(m) = primary.first() {
-            let env = if m.body.rest_param.is_some() {
-                Env::bind_variadic(&m.body.env, &m.body.params, &m.body.rest_param, &args)?
-            } else {
-                Env::bind(&m.body.env, &m.body.params, &args)?
-            };
-            let result = engine.eval_expr(&m.body.body, &env, false)?.into_value();
-
-            // Execute :after methods (least specific first → reverse order)
-            for m in after.iter().rev() {
-                let env = if m.body.rest_param.is_some() {
-                    Env::bind_variadic(&m.body.env, &m.body.params, &m.body.rest_param, &args)?
-                } else {
-                    Env::bind(&m.body.env, &m.body.params, &args)?
-                };
-                engine.eval_expr(&m.body.body, &env, false)?;
-            }
-
-            Ok(result)
-        } else {
-            Ok(Value::Nil)
-        }
-    }))
-}
-
-/// Wrap the primary combination in :around methods (outermost first).
-/// Each :around method can call (call-next-method) to invoke the next in chain.
-fn build_around_wrappers(
-    around_methods: &[Arc<crate::zos::gf::Method>],
-    args: &im::Vector<Value>,
-    inner: crate::value::NativeFn,
-    _parent_env: &Arc<Env>,
-) -> Result<crate::value::NativeFn, EvalError> {
-    let mut chain: crate::value::NativeFn = inner;
-    let args = args.clone();
-    // Build from innermost to outermost
-    for m in around_methods.iter().rev() {
-        let prev_chain = chain.clone();
-        let args = args.clone();
-        let method = Arc::clone(m);
-
-        chain = crate::value::NativeFn::new("__around_method__", move |_: im::Vector<Value>, engine: &dyn EvalEngine| -> Result<Value, EvalError> {
-            let env: Arc<Env>;
-            if method.body.rest_param.is_some() {
-                let e = Env::bind_variadic(&method.body.env, &method.body.params, &method.body.rest_param, &args)?;
-                e.set("*next-method*".into(), Value::NativeFunction(prev_chain.clone()));
-                env = e;
-            } else {
-                let e = Env::bind(&method.body.env, &method.body.params, &args)?;
-                e.set("*next-method*".into(), Value::NativeFunction(prev_chain.clone()));
-                env = e;
-            }
-            engine.eval_expr(&method.body.body, &env, false).map(|r| r.into_value())
-        });
-    }
-
-    Ok(chain)
-}
-
-/// Get the class ref for a Value (used by GF dispatch).
-fn value_class_ref(v: &Value) -> crate::zos::object::ClassRef {
-    let name = value_class_name(v);
-    Arc::new(crate::zos::object::Class {
-        name: name.clone(),
-        superclasses: Vec::new(),
-        slots: Vec::new(),
-        cpl: vec![name],
-    })
-}
-
-/// Get the class name string for any Value.
-fn value_class_name(v: &Value) -> String {
-    match v {
-        Value::Nil => "Nil".into(),
-        Value::Boolean(_) => "Boolean".into(),
-        Value::Integer(_) => "Integer".into(),
-        Value::Float(_) => "Float".into(),
-        Value::String(_) => "String".into(),
-        Value::Symbol(_) => "Symbol".into(),
-        Value::Keyword(_) => "Keyword".into(),
-        Value::List(_) => "List".into(),
-        Value::Vector(_) => "Vector".into(),
-        Value::Map(_) => "Map".into(),
-        Value::Function(_) => "Function".into(),
-        Value::NativeFunction(_) => "NativeFunction".into(),
-        Value::Macro(_) => "Macro".into(),
-        Value::Char(_) => "Character".into(),
-        Value::Object(o) => o.header().class.name.clone(),
-        Value::Buffer(_) => "Buffer".into(),
-        Value::Future(_) => "Future".into(),
-        Value::Channel(_) => "Channel".into(),
     }
 }
 
@@ -1197,6 +1079,277 @@ mod tests {
         let s = test_read("(buffer-get buf 0)").unwrap();
         let val = eval_in_context(&s, &ctx).unwrap();
         assert_eq!(val, Value::Integer(74));
+    }
+
+    #[test]
+    fn test_load_evaluates_all_top_level_forms() {
+        let ctx = make_ctx();
+        let mut path = std::env::temp_dir();
+        path.push("zio_load_multi_form_test.zio");
+        std::fs::write(&path, "(def loaded-a 1)\n(def loaded-b 2)\n(def loaded-c (+ loaded-a loaded-b))\n")
+            .expect("write load test file");
+        let s = test_read(&format!("(load {:?})", path.to_string_lossy())).unwrap();
+        eval_in_context(&s, &ctx).unwrap();
+        assert_eq!(ctx.env.get("loaded-c"), Some(Value::Integer(3)),
+            "load must evaluate every top-level form in the file");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_map_iteration_and_updates() {
+        // keys / vals — order is not defined, so assert membership and count
+        let result = run("(count (keys {:a 1 :b 2}))").unwrap();
+        assert_eq!(result, Value::Integer(2));
+        let result = run("(count (vals {:a 1 :b 2}))").unwrap();
+        assert_eq!(result, Value::Integer(2));
+        // single-key map: index 0 is deterministic
+        assert_eq!(
+            run("(get (keys {:a 1}) 0)").unwrap(),
+            Value::Keyword("a".into())
+        );
+        assert_eq!(
+            run("(get (vals {:a 1}) 0)").unwrap(),
+            Value::Integer(1)
+        );
+
+        // dissoc — single and multiple keys
+        assert_eq!(
+            run("(get (dissoc {:a 1 :b 2} :a) :a :gone)").unwrap(),
+            Value::Keyword("gone".into())
+        );
+        assert_eq!(
+            run("(get (dissoc {:a 1 :b 2} :a) :b)").unwrap(),
+            Value::Integer(2)
+        );
+        assert_eq!(
+            run("(get (dissoc {:a 1 :b 2 :c 3} :a :b) :c)").unwrap(),
+            Value::Integer(3)
+        );
+    }
+
+    #[test]
+    fn test_slice() {
+        assert_eq!(
+            run("(slice [0 1 2 3 4] 1 3)").unwrap(),
+            Value::Vector(vector![Value::Integer(1), Value::Integer(2)])
+        );
+        assert_eq!(
+            run("(slice '(0 1 2 3 4) 0 2)").unwrap(),
+            Value::List(vector![Value::Integer(0), Value::Integer(1)])
+        );
+        // clamped out-of-range bounds
+        assert_eq!(run("(slice [1 2 3] 5 9)").unwrap(), Value::Vector(vector![]));
+    }
+
+    /// Like `run`, but with the stdlib loaded — needed for tests that
+    /// exercise stdlib-level functions (assoc, reduce-kv, last, empty?).
+    fn run_std(program: &str) -> Result<Value, EvalError> {
+        let ctx = make_ctx();
+        let stdlib = include_str!("../stdlib/zio/core.zio");
+        let s = test_read(&format!("(do\n{stdlib}\n{program}\n)")).unwrap();
+        eval_in_context(&s, &ctx)
+    }
+
+    #[test]
+    fn test_variadic_assoc_and_reduce_kv() {
+        // multi-pair assoc (Clojure-style), stdlib-level
+        assert_eq!(
+            run_std("(get (assoc {} :a 1 :b 2) :b)").unwrap(),
+            Value::Integer(2)
+        );
+        // odd argument count is an error
+        assert!(run_std("(assoc {} :a)").is_err());
+        // single pair still works
+        assert_eq!(
+            run_std("(get (assoc {} :a 1) :a)").unwrap(),
+            Value::Integer(1)
+        );
+
+        // reduce-kv
+        assert_eq!(
+            run_std("(reduce-kv (fn [acc k v] (+ acc v)) 0 {:a 1 :b 2})").unwrap(),
+            Value::Integer(3)
+        );
+    }
+
+    #[test]
+    fn test_stdlib_last_and_empty_for_lists_and_vectors() {
+        assert_eq!(run_std("(last [1 2 3])").unwrap(), Value::Integer(3));
+        assert_eq!(run_std("(last '(1 2 3))").unwrap(), Value::Integer(3));
+        assert_eq!(run_std("(empty? '())").unwrap(), Value::Boolean(true));
+        assert_eq!(run_std("(empty? '(1))").unwrap(), Value::Boolean(false));
+        assert_eq!(run_std("(empty? [])").unwrap(), Value::Boolean(true));
+    }
+
+    #[test]
+    fn test_load_errors_carry_real_line_numbers() {
+        let ctx = make_ctx();
+        let mut path = std::env::temp_dir();
+        path.push("zio_load_span_test.zio");
+        std::fs::write(&path, "(def ok 1)\n(missing-symbol-here)\n")
+            .expect("write span test file");
+        let s = test_read(&format!("(load {:?})", path.to_string_lossy())).unwrap();
+        let err = eval_in_context(&s, &ctx).expect_err("load should propagate the error");
+        assert!(
+            err.to_string().contains("line 2"),
+            "error from loaded file should report its real line, got: {err}"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_cons_accepts_nil_as_empty_list() {
+        // (cons x nil) → (x): nil is the empty list. This is the
+        // fundamental list-building idiom, since (cdr '(x)) is nil.
+        assert_eq!(
+            run("(cons 1 nil)").unwrap(),
+            Value::List(vector![Value::Integer(1)])
+        );
+        assert_eq!(
+            run("(cons 1 (cdr (list 9)))").unwrap(),
+            Value::List(vector![Value::Integer(1)])
+        );
+    }
+
+    #[test]
+    fn test_and_or_tail_calls_in_tail_position() {
+        // Regression: and/or used to into_value() the tail-position last
+        // operand, panicking on TailCall.
+        let ctx = make_ctx();
+        for def in [
+            "(defn f-or [] (or nil (= 1 1)))",
+            "(defn f-and [] (and true (= 1 1)))",
+        ] {
+            let s = test_read(def).unwrap();
+            eval_in_context(&s, &ctx).unwrap();
+        }
+        let s = test_read("(f-or)").unwrap();
+        assert_eq!(eval_in_context(&s, &ctx).unwrap(), Value::Boolean(true));
+        let s = test_read("(f-and)").unwrap();
+        assert_eq!(eval_in_context(&s, &ctx).unwrap(), Value::Boolean(true));
+        // short-circuit still returns the deciding value
+        assert_eq!(run("(or 7 (crash))").unwrap(), Value::Integer(7));
+        assert_eq!(run("(and false (crash))").unwrap(), Value::Boolean(false));
+    }
+
+    #[test]
+    fn test_defmacro_multi_expression_body() {
+        // Regression: multi-form defmacro bodies used to be evaluated as a
+        // call whose head was the first form, panicking with
+        // "not a function: nil".
+        let ctx = make_ctx();
+        let s = test_read("(defmacro twice-inc [x] (println \"side\") (+ x 2))").unwrap();
+        eval_in_context(&s, &ctx).unwrap();
+        let s = test_read("(twice-inc 40)").unwrap();
+        assert_eq!(eval_in_context(&s, &ctx).unwrap(), Value::Integer(42));
+    }
+
+    #[test]
+    fn test_module_export_and_require() {
+        let ctx = make_ctx();
+        let program = r#"
+            (do
+              (module :demo
+                (defn greet [x] (+ 1 x))
+                (defn hidden [x] x)
+                (def private-val 99)
+                (export greet))
+              (require :demo))"#;
+        let s = test_read(program).unwrap();
+        eval_in_context(&s, &ctx).unwrap();
+
+        // exported (via clause and via (export ...)) names are imported
+        let s = test_read("(greet 41)").unwrap();
+        assert_eq!(eval_in_context(&s, &ctx).unwrap(), Value::Integer(42));
+
+        // non-exported names stay confined
+        let s = test_read("(hidden 1)").unwrap();
+        assert!(eval_in_context(&s, &ctx).is_err(), "hidden should not be imported");
+    }
+
+    #[test]
+    fn test_require_refer_enforces_exports() {
+        let ctx = make_ctx();
+        let program = r#"
+            (do
+              (module :strict (export [public-fn])
+                (defn public-fn [] 1)
+                (defn secret [] 2))
+              (require :strict :refer [secret]))"#;
+        let s = test_read(program).unwrap();
+        let err = eval_in_context(&s, &ctx).expect_err("refer of non-exported symbol must fail");
+        assert!(
+            err.to_string().contains("does not export"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn test_require_alias_and_qualified_access() {
+        let ctx = make_ctx();
+        let program = r#"
+            (do
+              (module :math-utils (export [double])
+                (defn double [x] (* 2 x))
+                (defn triple [x] (* 3 x)))
+              (require :math-utils)
+              (require :math-utils :as mu))"#;
+        let s = test_read(program).unwrap();
+        eval_in_context(&s, &ctx).unwrap();
+
+        // qualified access: exported symbol via ns/name
+        let s = test_read("(math-utils/double 21)").unwrap();
+        assert_eq!(eval_in_context(&s, &ctx).unwrap(), Value::Integer(42));
+
+        // non-exported symbol is invisible even qualified
+        let s = test_read("(math-utils/triple 1)").unwrap();
+        assert!(eval_in_context(&s, &ctx).is_err());
+
+        // alias map exposes exports by keyword
+        let s = test_read("(get mu :double)").unwrap();
+        let v = eval_in_context(&s, &ctx).unwrap();
+        assert!(matches!(v, Value::Function(_)), "alias map should hold the function, got {v}");
+    }
+
+    #[test]
+    fn arc_cycle_in_self_referential_closure_is_leaked() {
+        // Memory-model audit (ADR-015): closures capture Arc<Env>; a def
+        // that references itself creates the cycle env -> f -> Function -> env.
+        // Arc refcounts cannot collect it — the env stays alive after the
+        // context is dropped. Confirmed here via a weak handle. If the
+        // runtime ever gains GC or weak env references, flip this
+        // assertion.
+        let ctx = make_ctx();
+        let weak = Arc::downgrade(&ctx.env);
+        let s = test_read("(def f (fn [] f))").unwrap();
+        eval_in_context(&s, &ctx).unwrap();
+        drop(ctx);
+        assert!(
+            weak.upgrade().is_some(),
+            "expected the Arc<Env> cycle to keep the environment alive"
+        );
+    }
+
+    #[test]
+    fn test_eval_code_as_data() {
+        // The homoiconicity primitive: data becomes running code.
+        assert_eq!(run("(eval (list '+ 1 2))").unwrap(), Value::Integer(3));
+        assert_eq!(
+            run("(eval (list 'let (list 'x 5) (list '* 'x 'x)))").unwrap(),
+            Value::Integer(25)
+        );
+        // round trip: code -> data -> code
+        assert_eq!(
+            run("(eval (car (list '(+ 40 2))))").unwrap(),
+            Value::Integer(42)
+        );
+        // runtime-constructed function is callable
+        assert_eq!(
+            run("((eval (list 'fn '[x] (list '* 2 'x))) 21)").unwrap(),
+            Value::Integer(42)
+        );
+        // eval runs in the global env: caller locals are not visible
+        assert!(run("(let [x 5] (eval 'x))").is_err());
     }
 
     #[test]

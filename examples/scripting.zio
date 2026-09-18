@@ -1,0 +1,39 @@
+;; ── Scripting scenario ─────────────────────────────────────────
+;; Read → parse → transform → aggregate → write JSON → read back.
+;; Exercises: file I/O through IoHost, string ops, collections,
+;; maps, JSON, error handling.
+(println "=== Scripting scenario ===")
+
+(def data-path "examples/data/readings.csv")
+
+(if (not (file-exists? data-path))
+  (error (str "missing data file: " data-path)))
+
+(def raw (slurp data-path))
+(def lines (filter (fn [l] (not (= "" (str-trim l)))) (str-split "\n" raw)))
+
+(def readings
+  (map (fn [line]
+         (let* [parts (str-split "," line)]
+           {:name (get parts 0) :value (read-string (get parts 1))}))
+       (rest lines)))
+
+(def values (map (fn [r] (get r :value)) readings))
+(def total (reduce + 0 values))
+(def max-v (reduce (fn [a b] (if (> b a) b a)) 0 values))
+
+(def report {:source data-path :count (count readings) :total total :max max-v})
+(spit "examples/data/readings.json" (json-stringify report))
+
+(def back (json-parse (slurp "examples/data/readings.json")))
+
+(defn check [label actual expected]
+  (if (= actual expected)
+    (println "PASS" label)
+    (println "FAIL" label "got:" actual "want:" expected)))
+
+(check "row-count" (get back "count") 4)
+(check "total" (get back "total") 40)
+(check "max" (get back "max") 20)
+(check "roundtrip-source" (get back "source") data-path)
+(println "report:" (json-stringify back))

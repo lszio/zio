@@ -22,9 +22,12 @@ Zio = Lisp 核心（同像性 + eval/apply + 宏）
     + 规划中的扩展库生态（Datalog · Agent · 自学习）
 ```
 
-核心原则：**核心最小，其余是库**。Datalog、Agent、自学习模型框架的
-扩展库边界已经设计，但这些能力仍是
-[Planned](docs/feature-matrix.md)，不属于当前已实现核心。
+核心原则：**核心最小，其余是库**。扩展库位于 `lib/zio/`，能力成熟度
+各异并以[特性矩阵](docs/feature-matrix.md)为准：persistent 集合与
+Datalog 存储为 Experimental（部分函数待核心支持），Datalog 查询求值、
+Agent 真实编排（LLM 调用 / 工具执行）与自学习模型框架仍为 Planned。
+core 内置的并发原语（`future-call` / `chan`）当前是同步占位语义，
+见 [ADR-012](docs/adrs.md)。
 
 详细哲学：[docs/zio-philosophy.md](docs/zio-philosophy.md)
 
@@ -71,7 +74,8 @@ CLI 运行，并受可执行示例合同测试保护。`datalog-concept.zio` 只
 | [docs/zio-architecture.md](docs/zio-architecture.md) | 系统架构总览、分层、组件状态 |
 | [docs/eval-pipeline.md](docs/eval-pipeline.md) | Eval 循环、TCO、宏、编译器管线 |
 | [docs/roadmap.md](docs/roadmap.md) | 分 Phase 路线图、交付标准、依赖分析、应用蓝图 |
-| [docs/adrs.md](docs/adrs.md) | 架构决策记录（ADR-001 ~ ADR-011） |
+| [docs/synthesis-plan.md](docs/synthesis-plan.md) | 程序合成模块计划：学习型提议（LLM 主线，遗传/RL/NN 扩展位）× eval 裁判 × 语言化记忆（含论文与汇报规划） |
+| [docs/adrs.md](docs/adrs.md) | 架构决策记录（ADR-001 ~ ADR-016） |
 | [docs/glossary.md](docs/glossary.md) | 术语参考 |
 | [blog/INDEX.md](blog/INDEX.md) | 系列博文 |
 

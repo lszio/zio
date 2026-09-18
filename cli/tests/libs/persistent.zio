@@ -1,0 +1,22 @@
+;; lib/zio/persistent.zio contract — every function must behave.
+(load "lib/zio/persistent.zio")
+
+(defn check [label actual expected]
+  (if (= actual expected)
+    (println "PASS" label)
+    (println "FAIL" label "got:" actual "want:" expected)))
+
+(check "conj-vector" (conj [1 2] 3) [1 2 3])
+(check "conj-list" (conj (list 2 3) 1) (list 1 2 3))
+(check "conj-map" (get (conj {:a 1} [:b 2]) :b) 2)
+(check "pop-vector" (pop [1 2 3]) [1 2])
+(check "pop-list" (pop (list 1 2 3)) (list 2 3))
+(check "peek-vector" (peek [1 2 3]) 3)
+(check "peek-list" (peek (list 1 2)) 1)
+(check "merge" (merge {:a 1} {:b 2}) {:a 1 :b 2})
+(check "merge-override" (get (merge {:a 1} {:a 5 :b 2}) :a) 5)
+(check "set-count" (count (set 1 2 3)) 3)
+(check "contains-yes" (contains? (set 1 2) 1) true)
+(check "contains-no" (contains? (set 1 2) 9) false)
+(check "disj-removes" (contains? (disj (set 1 2 3) 2) 2) false)
+(check "disj-keeps" (contains? (disj (set 1 2 3) 2) 1) true)

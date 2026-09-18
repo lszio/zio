@@ -20,7 +20,7 @@ zio/
 │       ├── context.rs      # 04: 显式状态
 │       ├── special/        # 05: 特殊形式
 │       ├── macros.rs       # 06: 宏系统
-│       ├── builtins.rs     # 07: 内置函数
+│       ├── builtins/      # 07: 内置函数（按域分模块）
 │       ├── env.rs          # 08: 词法环境
 │       ├── zos/            # 11: ZOS 对象系统
 │       │   ├── class.rs
@@ -50,7 +50,7 @@ zio/
 | 04 | 持久化数据结构 | `env.rs`, `value.rs` | ADR-003: im crate, 结构共享, 不可变性 |
 | 05 | 特殊形式 | `special/` | 12 种特殊形式, TCO, loop/recur |
 | 06 | 宏：代码写代码 | `macros.rs` | defmacro, 同像性, syntax-rules |
-| 07 | 内置函数 | `builtins.rs` | NativeFn, engine 参数, IoHost |
+| 07 | 内置函数 | `builtins/` | NativeFn, engine 参数, IoHost |
 | 08 | 词法环境与闭包 | `env.rs` | 词法作用域链, 闭包捕获 |
 | 09 | 解析器 | `lexer.rs`, `reader.rs` | tokenize → parse, Span 位置, Reader macro |
 | 10 | 模块系统与 REPL | `main.rs`, `module.rs` | 模块加载, 命名空间, 包管理器 |

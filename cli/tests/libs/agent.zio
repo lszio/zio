@@ -1,0 +1,23 @@
+;; lib/zio/agent.zio contract — data-model demo behavior.
+(load "lib/zio/agent.zio")
+
+(defn check [label actual expected]
+  (if (= actual expected)
+    (println "PASS" label)
+    (println "FAIL" label "got:" actual "want:" expected)))
+
+(def a (make-agent "bot" "sys" {}))
+
+(check "make-agent-name" (get a :agent/name) "bot")
+(check "make-agent-status" (get a :agent/status) :idle)
+(check "make-agent-empty-history" (count (get a :agent/history)) 0)
+
+(def a2 (register-tool a "echo" (fn [x] x)))
+(check "register-tool-count" (count (keys (get a2 :agent/tools))) 1)
+
+(def stepped (step a "hi"))
+(check "step-status" (get stepped :agent/status) :active)
+(check "step-history-count" (count (get stepped :agent/history)) 2)
+(check "step-history-role" (get (get (get stepped :agent/history) 0) :role) "user")
+
+(check "run" (run a "task") "Agent [bot] executed: task")
