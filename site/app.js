@@ -95,19 +95,16 @@ function initReplSimulator() {
 
     outputEl.innerHTML = '';
 
-    // Line 1: Definition
-    const res1 = evaluateExpr(data.expr);
-    appendLine(data.expr, res1);
-
-    // Subsequent evaluations
-    if (data.evals) {
-      data.evals.forEach(ev => {
-        setTimeout(() => {
-          const res = evaluateExpr(ev.expr);
-          appendLine(ev.expr, res);
-        }, 150);
-      });
-    }
+    // eval_zio creates a fresh Env per call: state does not survive across
+    // calls. Evaluate the cumulative program per line so every displayed
+    // line sees the definitions before it.
+    const lines = [data.expr, ...(data.evals || []).map(ev => ev.expr)];
+    lines.forEach((expr, i) => {
+      setTimeout(() => {
+        const prog = lines.slice(0, i + 1).join('\n');
+        appendLine(expr, evaluateExpr(prog));
+      }, 150 * (i + 1));
+    });
   }
 
   function appendLine(expr, result) {
