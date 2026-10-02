@@ -28,7 +28,7 @@ pub fn bytes_fn(args: Vector<Value>, _engine: &dyn EvalEngine) -> Result<Value, 
         }
         other => return Err(EvalError::type_error("size, list, or string", other.value_type())),
     };
-    Ok(Value::Buffer(Arc::new(std::sync::Mutex::new(data))))
+    Ok(Value::Buffer(Arc::new(parking_lot::Mutex::new(data))))
 }
 
 pub fn buffer_length_fn(args: Vector<Value>, _engine: &dyn EvalEngine) -> Result<Value, EvalError> {
@@ -36,7 +36,7 @@ pub fn buffer_length_fn(args: Vector<Value>, _engine: &dyn EvalEngine) -> Result
         return Err(EvalError::wrong_arg_count(1, args.len()));
     }
     match &args[0] {
-        Value::Buffer(b) => Ok(Value::Integer(b.lock().unwrap().len() as i64)),
+        Value::Buffer(b) => Ok(Value::Integer(b.lock().len() as i64)),
         other => Err(EvalError::type_error("buffer", other.value_type())),
     }
 }
@@ -53,7 +53,7 @@ pub fn buffer_get_fn(args: Vector<Value>, _engine: &dyn EvalEngine) -> Result<Va
         Value::Integer(i) => *i as usize,
         other => return Err(EvalError::type_error("integer index", other.value_type())),
     };
-    let lock = buf.lock().unwrap();
+    let lock = buf.lock();
     if idx < lock.len() {
         Ok(Value::Integer(lock[idx] as i64))
     } else {
@@ -77,7 +77,7 @@ pub fn buffer_set_fn(args: Vector<Value>, _engine: &dyn EvalEngine) -> Result<Va
         Value::Integer(b) => *b as u8,
         other => return Err(EvalError::type_error("byte integer", other.value_type())),
     };
-    let mut lock = buf.lock().unwrap();
+    let mut lock = buf.lock();
     if idx < lock.len() {
         lock[idx] = val;
         Ok(Value::Nil)

@@ -29,16 +29,14 @@ pub fn future_call_fn(args: Vector<Value>, engine: &dyn EvalEngine) -> Result<Va
         other => return Err(EvalError::type_error("function", other.value_type())),
     };
 
-    let pair = Arc::new((std::sync::Mutex::new(None), std::sync::Condvar::new()));
+    let pair = Arc::new((parking_lot::Mutex::new(None), parking_lot::Condvar::new()));
     let env = Env::bind(&func.env, &func.params, &im::vector![])?;
-    let res = engine.eval_expr(&func.body, &env, false);
-    let val = match res {
-        Ok(tr) => tr.into_value(),
-        Err(_) => Value::Nil,
-    };
+    // Synchronous placeholder (ADR-012): f runs on this thread right now, so
+    // an eval error IS this call's error — swallow-to-nil would hide it.
+    let val = engine.eval_expr(&func.body, &env, false)?.into_value();
     {
         let (lock, cvar) = &*pair;
-        let mut guard = lock.lock().unwrap();
+        let mut guard = lock.lock();
         *guard = Some(val);
         cvar.notify_all();
     }
@@ -46,7 +44,7 @@ pub fn future_call_fn(args: Vector<Value>, engine: &dyn EvalEngine) -> Result<Va
 }
 
 pub fn promise_fn(_args: Vector<Value>, _engine: &dyn EvalEngine) -> Result<Value, EvalError> {
-    let pair = Arc::new((std::sync::Mutex::new(None), std::sync::Condvar::new()));
+    let pair = Arc::new((parking_lot::Mutex::new(None), parking_lot::Condvar::new()));
     Ok(Value::Future(pair))
 }
 
@@ -61,7 +59,7 @@ pub fn deliver_fn(args: Vector<Value>, _engine: &dyn EvalEngine) -> Result<Value
     let val = args[1].clone();
     let (lock, cvar) = &*pair;
     {
-        let mut guard = lock.lock().unwrap();
+        let mut guard = lock.lock();
         if guard.is_none() {
             *guard = Some(val);
             cvar.notify_all();
@@ -76,12 +74,18 @@ pub fn deref_fn(args: Vector<Value>, _engine: &dyn EvalEngine) -> Result<Value, 
     }
     match &args[0] {
         Value::Future(pair) => {
-            let (lock, cvar) = &**pair;
-            let mut guard = lock.lock().unwrap();
-            while guard.is_none() {
-                guard = cvar.wait(guard).unwrap();
+            let (lock, _cvar) = &**pair;
+            let guard = lock.lock();
+            // The runtime is single-threaded (ADR-012): nothing can deliver
+            // this promise while we wait, so blocking would deadlock forever.
+            // Fail fast instead; delivered futures (future-call results)
+            // return immediately as before.
+            match guard.as_ref() {
+                Some(v) => Ok(v.clone()),
+                None => Err(EvalError::custom(
+                    "deref: promise not delivered (sync runtime cannot block)",
+                )),
             }
-            Ok(guard.as_ref().unwrap().clone())
         }
         other => Err(EvalError::type_error("future or promise", other.value_type())),
     }
@@ -100,8 +104,8 @@ pub fn chan_fn(args: Vector<Value>, _engine: &dyn EvalEngine) -> Result<Value, E
         (crate::value::ChannelTx::Async(tx), rx)
     };
     let pair = crate::value::ChannelPair {
-        tx: std::sync::Mutex::new(tx),
-        rx: std::sync::Mutex::new(rx),
+        tx: parking_lot::Mutex::new(tx),
+        rx: parking_lot::Mutex::new(rx),
     };
     Ok(Value::Channel(Arc::new(pair)))
 }
@@ -115,7 +119,7 @@ pub fn send_fn(args: Vector<Value>, _engine: &dyn EvalEngine) -> Result<Value, E
         other => return Err(EvalError::type_error("channel", other.value_type())),
     };
     let val = args[1].clone();
-    let tx = chan.tx.lock().unwrap();
+    let tx = chan.tx.lock();
     tx.send(val).map_err(|e| EvalError::custom(format!("send! error: {e}")))?;
     Ok(Value::Nil)
 }
@@ -128,7 +132,7 @@ pub fn recv_fn(args: Vector<Value>, _engine: &dyn EvalEngine) -> Result<Value, E
         Value::Channel(c) => c,
         other => return Err(EvalError::type_error("channel", other.value_type())),
     };
-    let rx = chan.rx.lock().unwrap();
+    let rx = chan.rx.lock();
     match rx.recv() {
         Ok(v) => Ok(v),
         Err(_) => Ok(Value::Nil),

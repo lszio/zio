@@ -132,7 +132,14 @@ fn bind_method_args(func: &std::sync::Arc<crate::value::Function>, args: &Vector
 }
 
 /// Get the class ref for a Value (used by GF dispatch).
+///
+/// Instances keep their full class (resolved superclasses + C3 cpl) in the
+/// object header — reuse it so inherited methods and specificity ordering
+/// see the real hierarchy instead of a name-only placeholder.
 pub fn value_class_ref(v: &Value) -> ClassRef {
+    if let Value::Object(o) = v {
+        return Arc::clone(&o.header().class);
+    }
     let name = value_class_name(v);
     Arc::new(Class {
         name: name.clone(),

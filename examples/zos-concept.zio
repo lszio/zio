@@ -13,4 +13,13 @@
   (str "Point(" (slot-value shape :x) ", " (slot-value shape :y) ")"))
 
 (println (describe p))
+
+;; Inherited method: the only `describe` method is on `point`, called here
+;; on a `circle` instance. Regression: dispatch used to see a name-only
+;; class ref, so superclass methods were reported as "no applicable method".
+(defclass circle (point)
+  ((radius :initarg :radius)))
+
+(def c (make-instance circle :x 1 :y 2 :radius 5))
+(println "circle-via-point:" (describe c))
 (println "ZOS capability probe completed.")

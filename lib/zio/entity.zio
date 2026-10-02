@@ -9,11 +9,17 @@
     (list 'defclass entity-class-name nil
           (map (fn [f] (list f :initarg (keyword f))) fields))))
 
+;; Process-unique id counter: (bytes 8) rendered as a constant string used
+;; to collide every id of a type; global-unique identity still awaits a
+;; core primitive (e.g. uuid).
+(def entity--counter 0)
+
 (defn make-entity [type-sym & kvs]
   ;; defentity names the class "entity-<type>"; use the same name here.
   (let* [cls (symbol (str "entity-" (str type-sym)))
          inst (apply make-instance (cons cls kvs))
-         id (str "entity-" (str type-sym) "-" (str (bytes 8)))]
+         id (do (set! entity--counter (+ entity--counter 1))
+                (str "entity-" (str type-sym) "-" entity--counter))]
     {:entity/type type-sym
      :entity/id id
      :entity/instance inst}))

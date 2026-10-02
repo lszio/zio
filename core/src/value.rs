@@ -149,9 +149,9 @@ pub enum Value {
     /// ZOS heap object — entry point for the runtime object system.
     Object(Box<dyn crate::zos::object::ZosObject>),
     /// Mutable byte vector (Buffer).
-    Buffer(Arc<std::sync::Mutex<Vec<u8>>>),
+    Buffer(Arc<parking_lot::Mutex<Vec<u8>>>),
     /// Asynchronous Future / Promise.
-    Future(Arc<(std::sync::Mutex<Option<Value>>, std::sync::Condvar)>),
+    Future(Arc<(parking_lot::Mutex<Option<Value>>, parking_lot::Condvar)>),
     /// CSP Channel for concurrent message passing.
     Channel(Arc<ChannelPair>),
 }
@@ -173,8 +173,8 @@ impl ChannelTx {
 
 #[derive(Debug)]
 pub struct ChannelPair {
-    pub tx: std::sync::Mutex<ChannelTx>,
-    pub rx: std::sync::Mutex<std::sync::mpsc::Receiver<Value>>,
+    pub tx: parking_lot::Mutex<ChannelTx>,
+    pub rx: parking_lot::Mutex<std::sync::mpsc::Receiver<Value>>,
 }
 impl PartialEq for Value {
     fn eq(&self, other: &Self) -> bool {
@@ -336,7 +336,7 @@ impl std::fmt::Display for Value {
             Value::Char(c) => write!(f, "#\\{c}"),
             Value::Object(o) => write!(f, "#<{}>", o.header().class.name),
             Value::Buffer(b) => {
-                let len = b.lock().unwrap().len();
+                let len = b.lock().len();
                 write!(f, "#<buffer len={len}>")
             }
             Value::Future(_) => write!(f, "#<future>"),

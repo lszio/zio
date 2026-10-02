@@ -1,7 +1,6 @@
 use crate::context::EvalEngine;
 use crate::env::Env;
 use crate::error::EvalError;
-use crate::macros;
 use crate::sexp::Sexp;
 use crate::special::TailResult;
 use crate::value::Value;
@@ -39,27 +38,10 @@ pub fn do_set(args: &[Sexp], env: &Arc<Env>, engine: &dyn EvalEngine) -> Result<
     Ok(TailResult::Value(val))
 }
 
-// ── macroexpand (special form — does NOT evaluate args) ────────────
-
-pub fn do_macroexpand(args: &[Sexp], env: &Arc<Env>, engine: &dyn EvalEngine) -> Result<TailResult, EvalError> {
-    if args.len() != 1 {
-        return Err(EvalError::wrong_arg_count(1, args.len()));
-    }
-
-    let form = &args[0];
-    match form {
-        Sexp::List(list, _) if !list.is_empty() => {
-            if let Sexp::Symbol(name, _) = &list[0] {
-                let expanded_args: Vec<Sexp> = list.iter().skip(1).cloned().collect();
-                if let Some(expanded) = macros::try_expand_by_name(name, &expanded_args, env, engine)? {
-                    return Ok(TailResult::Value(Value::from(expanded)));
-                }
-            }
-            Ok(TailResult::Value(Value::from(form.clone())))
-        }
-        _ => Ok(TailResult::Value(Value::from(form.clone()))),
-    }
-}
+// ── macroexpand lives in builtins/macroexpand.rs as a native function:
+// the quoted form's quote is stripped by evaluation before it runs.
+// A special-form variant here used to shadow it and returned the
+// (quote ...) wrapper unexpanded — see book/09 documented semantics.
 
 #[cfg(test)]
 mod tests {

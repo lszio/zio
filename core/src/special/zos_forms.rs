@@ -459,12 +459,7 @@ pub fn do_try(
 
     // Evaluate body
     let body_slice = &body_exprs[..body_end];
-    let result = if body_slice.is_empty() {
-        eval_last_body(body_slice, env, false, engine)
-    } else {
-        // Wrap in error handling: catch any error and try catch clauses
-        eval_last_body(body_slice, env, false, engine)
-    };
+    let result = eval_last_body(body_slice, env, false, engine);
     match result {
         Ok(r) => Ok(r),
         Err(e) => {

@@ -1,5 +1,7 @@
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+
+use parking_lot::Mutex;
 
 use crate::error::EvalError;
 
@@ -102,33 +104,33 @@ impl BufferIoHost {
     }
 
     pub fn get_output(&self) -> String {
-        self.output.lock().unwrap().clone()
+        self.output.lock().clone()
     }
 
     pub fn clear_output(&self) {
-        self.output.lock().unwrap().clear();
+        self.output.lock().clear();
     }
 
     pub fn push_input(&self, line: impl Into<String>) {
-        self.input.lock().unwrap().push(line.into());
+        self.input.lock().push(line.into());
     }
 }
 
 impl IoHost for BufferIoHost {
     fn print(&self, msg: &str) -> Result<(), EvalError> {
-        self.output.lock().unwrap().push_str(msg);
+        self.output.lock().push_str(msg);
         Ok(())
     }
 
     fn println(&self, msg: &str) -> Result<(), EvalError> {
-        let mut out = self.output.lock().unwrap();
+        let mut out = self.output.lock();
         out.push_str(msg);
         out.push('\n');
         Ok(())
     }
 
     fn read_line(&self) -> Result<String, EvalError> {
-        let mut in_queue = self.input.lock().unwrap();
+        let mut in_queue = self.input.lock();
         if in_queue.is_empty() {
             Err(EvalError::custom("BufferIoHost: end of input stream"))
         } else {
@@ -143,7 +145,6 @@ impl IoHost for BufferIoHost {
     fn read_file(&self, path: &str) -> Result<String, EvalError> {
         self.files
             .lock()
-            .unwrap()
             .get(path)
             .cloned()
             .ok_or_else(|| EvalError::custom(format!("cannot read {path}: no such file")))
@@ -152,13 +153,12 @@ impl IoHost for BufferIoHost {
     fn write_file(&self, path: &str, data: &str) -> Result<(), EvalError> {
         self.files
             .lock()
-            .unwrap()
             .insert(path.to_string(), data.to_string());
         Ok(())
     }
 
     fn file_exists(&self, path: &str) -> Result<bool, EvalError> {
-        Ok(self.files.lock().unwrap().contains_key(path))
+        Ok(self.files.lock().contains_key(path))
     }
 }
 

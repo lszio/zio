@@ -1,5 +1,5 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Mutex;
+use parking_lot::Mutex;
 
 /// A byte position in source text.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -179,7 +179,7 @@ impl SourceMap {
     pub fn register(&self, name: String, source: String) -> SourceId {
         let id = SourceId(self.next_id.fetch_add(1, Ordering::Relaxed));
         let file = SourceFile::new(id, name, source);
-        let mut files = self.files.lock().unwrap();
+        let mut files = self.files.lock();
         while files.len() <= id.0 {
             files.push(None);
         }
@@ -189,13 +189,13 @@ impl SourceMap {
 
     /// Look up a source file by ID, returning a guard.
     pub fn get(&self, id: SourceId) -> Option<SourceFile> {
-        let files = self.files.lock().unwrap();
+        let files = self.files.lock();
         files.get(id.0)?.clone()
     }
 
     /// Get the source name for display.
     pub fn source_name(&self, id: SourceId) -> String {
-        let files = self.files.lock().unwrap();
+        let files = self.files.lock();
         files
             .get(id.0)
             .and_then(|f| f.as_ref())
@@ -214,7 +214,7 @@ impl SourceMap {
 
     /// Return the source line context for an error message.
     pub fn span_context(&self, span: Span) -> Option<String> {
-        let files = self.files.lock().unwrap();
+        let files = self.files.lock();
         let file = files.get(span.source_id.0)?.as_ref()?;
         let line = file.get_line(span.line)?;
         let indicator = format!("{:>width$}^-- here", "", width = span.col);
