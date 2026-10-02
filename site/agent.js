@@ -69,7 +69,7 @@ const SCENARIO_SRC = { toolAgent: 'src-tool', cspAgents: 'src-csp', llmPipeline:
 
 function initWasm() {
   return import('./wasm/zio_core.js')
-    .then(async (m) => { await m.default(); engine = m; return true; })
+    .then(async (m) => { await m.default(); engine = new m.ZioSession(); return true; })
     .catch((err) => { console.warn('WASM load failed:', err); return false; });
 }
 
@@ -148,12 +148,12 @@ function trainBatch() {
   document.getElementById('train-source').textContent = prog;
   let raw;
   try {
-    raw = engine.eval_zio(prog);
+    raw = engine.eval(prog);
   } catch (e) {
     return { error: String(e) };
   }
   try {
-    // eval_zio returns the value's repr; json-stringify reprs as a JSON string literal
+    // session.eval returns the value's repr; json-stringify reprs as a JSON string literal
     const out = JSON.parse(JSON.parse(raw));
     train.seed = (train.seed * 1103515245 + 12345) % 2147483647;
     return out;
@@ -298,7 +298,7 @@ function runScenario(key) {
   outEl.textContent = '求值中…';
   setTimeout(() => {
     try {
-      const raw = engine.eval_zio(scenarios[key]);
+      const raw = engine.eval(scenarios[key]);
       outEl.textContent = unquote(raw);
     } catch (e) {
       outEl.classList.add('err');

@@ -23,9 +23,12 @@
 (def max-v (reduce (fn [a b] (if (> b a) b a)) 0 values))
 
 (def report {:source data-path :count (count readings) :total total :max max-v})
-(spit "examples/data/readings.json" (json-stringify report))
+;; Scratch output lives outside the repo so test runs never dirty
+;; tracked fixtures.
+(def out-path "/tmp/zio-scripting-report.json")
+(spit out-path (json-stringify report))
 
-(def back (json-parse (slurp "examples/data/readings.json")))
+(def back (json-parse (slurp out-path)))
 
 (defn check [label actual expected]
   (if (= actual expected)

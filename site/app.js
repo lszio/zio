@@ -15,7 +15,8 @@ async function initWasmModule() {
   try {
     const zioWasm = await import('./wasm/zio_core.js');
     await zioWasm.default();
-    wasmEngine = zioWasm;
+    // Persistent session: definitions typed in the REPL survive across lines.
+    wasmEngine = new zioWasm.ZioSession();
     console.log("Zio WASM Module initialized successfully!");
     if (badgeEl) {
       badgeEl.innerHTML = `⚡ Real WASM Engine Active (Rust + JS Interop)`;
@@ -48,9 +49,12 @@ function initReplSimulator() {
     },
     syntax: {
       title: "syntax-rules 卫生宏",
-      expr: '(defmacro swap! (syntax-rules () (((swap! a b) (let [tmp a] (set! a b) (set! b tmp))))))',
+      expr: '(def x 1)',
       evals: [
-        { expr: '(swap! x y)', type: 'sexp' }
+        { expr: '(def y 2)', type: 'nil' },
+        { expr: '(defmacro swap! (syntax-rules () (((swap! a b) (let [tmp a] (set! a b) (set! b tmp))))))', type: 'nil' },
+        { expr: '(swap! x y)', type: 'nil' },
+        { expr: '(list x y)', type: 'sexp' }
       ]
     },
     zos: {
@@ -79,9 +83,9 @@ function initReplSimulator() {
   };
 
   function evaluateExpr(expr) {
-    if (wasmEngine && typeof wasmEngine.eval_zio === 'function') {
+    if (wasmEngine && typeof wasmEngine.eval === 'function') {
       try {
-        return wasmEngine.eval_zio(expr);
+        return wasmEngine.eval(expr);
       } catch (e) {
         return `Error: ${e}`;
       }
@@ -95,14 +99,12 @@ function initReplSimulator() {
 
     outputEl.innerHTML = '';
 
-    // eval_zio creates a fresh Env per call: state does not survive across
-    // calls. Evaluate the cumulative program per line so every displayed
-    // line sees the definitions before it.
+    // wasmEngine is a persistent ZioSession: each line evaluates in order
+    // and definitions from earlier lines stay visible.
     const lines = [data.expr, ...(data.evals || []).map(ev => ev.expr)];
     lines.forEach((expr, i) => {
       setTimeout(() => {
-        const prog = lines.slice(0, i + 1).join('\n');
-        appendLine(expr, evaluateExpr(prog));
+        appendLine(expr, evaluateExpr(expr));
       }, 150 * (i + 1));
     });
   }
@@ -186,7 +188,7 @@ function initCodeTabs() {
 
 ;; Hygienic expansion avoids variable capture:
 (swap! x y)
-;; → (let [tmp__hyg_1 x] (do (set! x y) (set! y tmp__hyg_1)))`,
+;; → (let [tmp__hyg_1 x] (set! x y) (set! y tmp__hyg_1))`,
 
     zos: `;; ZOS Minimal Object System (CLOS / AMOP Subtype)
 (defclass shape ()
@@ -214,7 +216,7 @@ function initCodeTabs() {
 ;; Promise & Deliver
 (def p (promise))
 (deliver p 42)
-@p ;; → 42 (deref blocking)`
+(deref p) ;; → 42 (blocking)`
   };
 
   tabBtns.forEach(btn => {

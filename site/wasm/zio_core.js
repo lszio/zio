@@ -1,3 +1,50 @@
+/* @ts-self-types="./zio_core.d.ts" */
+
+/**
+ * Persistent REPL session: one Env + EvalContext across calls, so top-level
+ * definitions survive between evaluations. `eval_zio` creates a fresh
+ * environment per call and cannot do this.
+ */
+export class ZioSession {
+    __destroy_into_raw() {
+        const ptr = this.__wbg_ptr;
+        this.__wbg_ptr = 0;
+        ZioSessionFinalization.unregister(this);
+        return ptr;
+    }
+    free() {
+        const ptr = this.__destroy_into_raw();
+        wasm.__wbg_ziosession_free(ptr, 0);
+    }
+    /**
+     * Evaluate a Zio source string; returns the last value's repr, or an
+     * `Error: ...` string on failure. State persists across calls.
+     * @param {string} code
+     * @returns {string}
+     */
+    eval(code) {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ptr0 = passStringToWasm0(code, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ret = wasm.ziosession_eval(this.__wbg_ptr, ptr0, len0);
+            deferred2_0 = ret[0];
+            deferred2_1 = ret[1];
+            return getStringFromWasm0(ret[0], ret[1]);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
+    }
+    constructor() {
+        const ret = wasm.ziosession_new();
+        this.__wbg_ptr = ret;
+        ZioSessionFinalization.register(this, this.__wbg_ptr, this);
+        return this;
+    }
+}
+if (Symbol.dispose) ZioSession.prototype[Symbol.dispose] = ZioSession.prototype.free;
+
 /**
  * Public WASM Entrypoint: Evaluate a Zio source string and return its string representation.
  * @param {string} code
@@ -98,6 +145,10 @@ function __wbg_get_imports() {
         "./zio_core_bg.js": import0,
     };
 }
+
+const ZioSessionFinalization = (typeof FinalizationRegistry === 'undefined')
+    ? { register: () => {}, unregister: () => {} }
+    : new FinalizationRegistry(ptr => wasm.__wbg_ziosession_free(ptr, 1));
 
 function addToExternrefTable0(obj) {
     const idx = wasm.__externref_table_alloc();

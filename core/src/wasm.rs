@@ -97,3 +97,44 @@ fn register_js_builtins(env: &std::sync::Arc<Env>) {
         })),
     );
 }
+
+/// Persistent REPL session: one Env + EvalContext across calls, so top-level
+/// definitions survive between evaluations. `eval_zio` creates a fresh
+/// environment per call and cannot do this.
+#[cfg(feature = "wasm")]
+#[wasm_bindgen]
+pub struct ZioSession {
+    ctx: EvalContext,
+}
+
+#[cfg(feature = "wasm")]
+#[wasm_bindgen]
+impl ZioSession {
+    #[wasm_bindgen(constructor)]
+    pub fn new() -> ZioSession {
+        let env = std::sync::Arc::new(Env::new(None));
+        crate::builtins::setup_env(&env);
+        register_js_builtins(&env);
+        ZioSession {
+            ctx: EvalContext::new(env),
+        }
+    }
+
+    /// Evaluate a Zio source string; returns the last value's repr, or an
+    /// `Error: ...` string on failure. State persists across calls.
+    pub fn eval(&self, code: &str) -> String {
+        match crate::reader::reader::read_program(code) {
+            Ok(forms) => {
+                let mut last = String::new();
+                for sexp in forms {
+                    match crate::eval::eval_in_context(&sexp, &self.ctx) {
+                        Ok(val) => last = format!("{val}"),
+                        Err(e) => return format!("Error: {e}"),
+                    }
+                }
+                last
+            }
+            Err(e) => format!("Reader Error: {e}"),
+        }
+    }
+}

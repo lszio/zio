@@ -188,5 +188,5 @@ release build 与 machine metadata。
 | [eval-pipeline.md](eval-pipeline.md) | Eval 循环、TCO、宏系统、编译器管线 |
 | [zos-spec.md](zos-spec.md) | ZOS 完整规范（Class/GF/Method/MOP/Condition） |
 | [roadmap.md](roadmap.md) | Phase 路线图、交付标准、依赖分析、应用蓝图 |
-| [adrs.md](adrs.md) | 架构决策记录（ADR-001 ~ ADR-011） |
+| [adrs.md](adrs.md) | 架构决策记录（ADR-001 ~ ADR-016） |
 | [glossary.md](glossary.md) | 术语参考 |

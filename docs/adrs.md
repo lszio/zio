@@ -452,7 +452,7 @@ Clojure 风格集合等特性。如果全部进入 core，核心将膨胀到不�
 
 ## ADR-010: 卫生宏分阶段实现
 
-**状态**: 📋 待实现（Phase 2）
+**状态**: ✅ 已实现（Phase 1：`syntax-rules` 模式匹配 + 自动重命名，见 `core/src/macros.rs`；Explicit Renaming 等高级机制仍为规划）
 
 ### 背景
 
@@ -474,7 +474,8 @@ Zio 当前的 `defmacro` 是不卫生的——宏可以意外捕获调用者环�
 ```
 
 - 基于模式匹配（类似 Scheme R5RS）
-- 自动重命名展开后的变量
+- 卫生语义：只有模板**引入的绑定**（`let`/`loop` 绑定对、`fn` 参数、`def`/`defn` 名）及其引用被重命名；自由引用（内建函数、定义处辅助函数）原样保留，在调用方环境解析
+- 支持 `...` 变参模式、零参宏与重复模式变量的相等约束
 - 功能有限——无法在宏展开时执行任意计算
 
 **Phase 3+**：Explicit Renaming / Syntactic Closures
@@ -566,9 +567,11 @@ core 的 `Value` 含 `Future` 与 `Channel` 变体，`future-call` / `chan` /
 
 1. 如实标注：并发原语的当前语义是**同步占位**（同步求值 + 值包装），
    在 [特性矩阵](feature-matrix.md) 与代码文档中显式声明。
-2. **不再向 core 添加新的并发原语**；`Value::Future` / `Value::Channel`
+2. `deref` 对未 `deliver` 的 promise 直接报错（同步运行时无人能唤醒
+   阻塞等待，阻塞即死锁）；对 `future-call` 结果（已交付）行为不变。
+3. **不再向 core 添加新的并发原语**；`Value::Future` / `Value::Channel`
    保留为数据形状（宿主嵌入方可用其驱动另一端）。
-3. 真实并发的引入是独立决策，必须先回答 Env 的线程模型
+4. 真实并发的引入是独立决策，必须先回答 Env 的线程模型
    （Mutex 化 / 无共享 Actor / 绿色线程），形成新 ADR 后才动工；
    倾向将并发编排放在 `zio-actor` 库层而非 core。
 
