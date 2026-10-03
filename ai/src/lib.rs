@@ -22,6 +22,8 @@ use zio_core::value::{NativeFn, Value};
 
 pub mod mock;
 
+pub mod teacher;
+
 #[cfg(feature = "http")]
 pub mod http;
 

@@ -1,0 +1,50 @@
+{
+  "schema": 1,
+  "id": "geometry-sensor-xor-eval@1.0.0",
+  "status": "frozen",
+  "frozen_at": "2026-10-03",
+  "task": "geometry-sensor-xor@1.0.0",
+  "data": {
+    "manifest": "examples/self-learning/manifest.json",
+    "splits": {
+      "search": "train",
+      "validation": "val",
+      "acceptance": "holdout"
+    },
+    "acceptance_labels": "examples/self-learning/eval/holdout_labels.json",
+    "policy": "the acceptance oracle is read only by the acceptance step; search and validation code must not open it, and access counts are budgeted per run"
+  },
+  "preprocessing": {
+    "image": "divide by 255.0, flatten 16x16 to 256",
+    "numeric": "sign-preserving normalisation: value / (|value| + 1.0)",
+    "modality_mask": "a 2-element presence vector accompanies the features"
+  },
+  "metrics": {
+    "complete_input_accuracy": "correct / (holdout rows with both modalities present)",
+    "coverage": "answered / (holdout rows with a missing modality)",
+    "answered_accuracy": "correct / answered",
+    "report_rule": "complete-input accuracy and missing-input coverage/answered-accuracy are reported side by side and never averaged into a single number"
+  },
+  "errors": {
+    "abstain_is_not_error": "an abstain on a decidable row is counted as wrong",
+    "abstain_required": "an answer on a missing-modality row is counted as coverage, and the gate expects zero coverage",
+    "timeout": "counts as failure, never silently dropped from the denominator",
+    "non_finite": "a NaN or infinite output counts as failure"
+  },
+  "seed_plan": {
+    "independent_runs": 3,
+    "seeds": [20261003, 20261004, 20261005],
+    "rule": "each seed trains from scratch and re-evaluates; the report states per-seed numbers and their mean, never a single best run"
+  },
+  "measurement": {
+    "device": "cpu",
+    "torch_threads": 1,
+    "determinism": "deterministic algorithms and fixed seeds are required on CPU; bitwise equality is not promised on GPU",
+    "report_cost_separately": ["search_and_train_cost", "inference_cost"]
+  },
+  "selection": {
+    "publish_requires": "holdout gates in task.json must pass",
+    "best_of_runs": "mean over the 3 seed runs; a single lucky run cannot promote a model",
+    "budget_shared": "the acceptance set may be evaluated a limited number of times per run; forks share the parent's remaining budget"
+  }
+}

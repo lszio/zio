@@ -129,7 +129,7 @@ impl HttpAiHost {
     }
 }
 
-fn limited_read(
+pub(crate) fn limited_read(
     reader: impl std::io::Read,
     cap: usize,
     path: &str,
@@ -148,7 +148,7 @@ fn limited_read(
     Ok(bytes)
 }
 
-fn map_ureq_error(path: &str, error: ureq::Error) -> HostError {
+pub(crate) fn map_ureq_error(path: &str, error: ureq::Error) -> HostError {
     match error {
         ureq::Error::Status(code, response) => {
             // Bound the error body too — a hostile endpoint gets no

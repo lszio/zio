@@ -1,0 +1,33 @@
+[package]
+name = "grove-app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "The grove product shell: a `grove` binary that maps its commands onto the learning library's contracts — the CLI owns no training or selection logic of its own."
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "grove"
+path = "src/main.rs"
+
+[features]
+default = []
+# The HTTP product surface (W10) is optional: the library, CLI and demo
+# never need a network stack, and a build without it still passes.
+http = ["dep:axum", "dep:tokio"]
+
+[dependencies]
+grove = { path = "../learning" }
+zio-core = { path = "../core" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio"], optional = true }
+tokio = { version = "1", features = ["rt-multi-thread", "net", "signal"], optional = true }
+
+[dev-dependencies]
+zio-ai = { path = "../ai", features = ["http"] }
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio"] }
+tokio = { version = "1", features = ["rt-multi-thread", "net", "time", "macros"] }
+ureq = { version = "2", features = ["json"] }

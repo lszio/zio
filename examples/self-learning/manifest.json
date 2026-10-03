@@ -1,0 +1,44 @@
+{
+  "environment": {
+    "implementation": "CPython",
+    "numpy_used": false,
+    "python": "3.14.7"
+  },
+  "generator": "generate.py/1.0.0",
+  "labels": {
+    "file": "eval/holdout_labels.json",
+    "sha256": "732fb6c920486f39fcba8225d95153e55abfac032b93d0484f2d8a014e6952d9"
+  },
+  "schema": 1,
+  "seed": 20261003,
+  "splits": {
+    "holdout": {
+      "bytes": 209193,
+      "decidable": 512,
+      "file": "data/holdout.bin",
+      "labels_in_file": false,
+      "samples": 768,
+      "scenes": 256,
+      "sha256": "570d5208639eb2cce990467247e258e42465f8384f82a770a39948e54ec59fd5"
+    },
+    "train": {
+      "bytes": 418086,
+      "decidable": 1024,
+      "file": "data/train.bin",
+      "labels_in_file": true,
+      "samples": 1536,
+      "scenes": 512,
+      "sha256": "7e06cb2f8bbdee5c1d907a95eb880835d82120c2affcb77555ceec6301359ea7"
+    },
+    "val": {
+      "bytes": 104740,
+      "decidable": 256,
+      "file": "data/val.bin",
+      "labels_in_file": true,
+      "samples": 384,
+      "scenes": 128,
+      "sha256": "c2cc953bcd6b4c47d29cba8210663d7a4fcdb9f43d0d8dbdd956121bf78cbf34"
+    }
+  },
+  "task": "geometry-sensor-xor@1.0.0"
+}
