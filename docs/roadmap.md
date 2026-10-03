@@ -295,6 +295,32 @@ cargo clippy → warning-free target
 **论文/汇报**：工作坊论文（L3 后）→ 完整论文（L4 后）；内部里程碑
 汇报 ×4 + 外部技术分享。规划见 synthesis-plan 第 5/6/7 节。
 
+### grove 自学习库与产品（P1 已交付，P2–P4 Planned）
+
+按 [grove 整体设计](self-learning-architecture.md) 与
+[grove P1–P4 交付计划](superpowers/plans/2026-10-02-self-learning.md) 扩展。
+P1–P4 是 grove 自己的交付编号，不是 L1–L4 的重新编号。
+
+| 阶段 | 状态 | 已验证能力 | 验证命令 |
+|---|---|---|---|
+| P1 W00 验收合同 | ✅ | 几何图像 + 传感器 XOR 任务，按 scene 分组切分（泄漏 0），缺失模态必须 abstain，holdout 容器不存标签字节 | `python examples/self-learning/generate.py --self-check` |
+| P1 W01 宿主存储 | ✅ | `grove` crate：版本化记录 + 稳定错误类、内容寻址制品（摘要校验、临时文件后提交）、SQLite 事务（角色门控、信号幂等回执、head/发布乐观版本）；SIGKILL 写进程后无可见半成品 | `cargo test -p grove --test store_contract`（22） |
+| P1 W02 反馈生命周期 | ✅ | 纯 Zio 反馈政策（字段作用域、人工优先于教师、冲突隔离、abstain 一等、冻结数据视图）+ 宿主侧信号生命周期 | `cargo test -p grove --test feedback_contract`（12） |
+| P1 W03 教师接口 | ✅ | 教师能力声明（模态/软输出词表对齐/许可/数据保留）、提议程序仅作候选、HTTP 适配器与传输限制 | `cargo test -p zio-ai --test teacher_contract --features http`（16） |
+| 本地教师（torch CPU） | ✅ | 真实反向传播（loss 0.696 → 0.0003，val 准确率 1.000），HTTP 服务并经 Rust 教师宿主查询 | `GROVE_TEACHER_WEIGHTS=… cargo test -p grove --test teacher_local` |
+| P2 W04 worker 与隔离 | ✅ | 许可算子图（执行前结构校验）+ NDJSON 控制协议 + `unshare -Urn` 命名空间隔离（网络探测：外部可达/内部阻断）、rlimits、进程组回收、不支持隔离时 fail closed | `cargo test -p grove --test worker_contract`（10）；`python -m unittest discover -s workers/torch/tests -p test_worker.py`（13） |
+| P2 W05 联合学习 driver | ✅ | 模型描述即 Zio 数据、结构候选即改写（线性→非线性融合）；W00 任务实测：线性基线 val 准确率 0.531（XOR 卡死），联合候选 1.000，提升 +46.9pp（冻结门槛 +15pp） | `cargo test -p grove --test dual_learning_contract`（9） |
+| P2 W06 检查点/暂停/恢复/分裂 | ✅ | worker 状态制品为非执行 JSON（参数+Adam 矩+CPU RNG，原子写）；宿主校验 schema 与 run 谱系（跨 run 状态拼接拒绝），resume 落新 run 且账本继承，ControlledReplay 需声明确定性宿主，Paused 仅在保存成功后标记，fork 不触父；决定性契约：第 300 步杀进程、新进程续训至 600 步，参数与不中断运行逐字节一致 | `cargo test -p grove --test checkpoint_contract`（10） |
+| P2 W07 历史重评与发布资格 | ✅ | 版本化评价协议；重评只追加不改写，跨协议混排拒绝（宽松协议通过不能发布到严格协议）；超时/崩溃以 0 分留在分母；硬门槛先于发布（均值再高也买不回崩溃的 repeat）；发布是带 expected-version 的指针切换；质量/成本非支配选择；独立验收预算共享、fork 不可翻倍 | `cargo test -p grove --test evaluation_contract`（11） |
+| P2 W08 grove CLI 端到端 | ✅ | `grove` 二进制（新 grove-app crate）：demo/inspect/checkpoint/fork/resume/compare/select/publish 全部映射库合同；协议为持久化记录，CLI 加载而非重建（flag 丢门槛无法发布——e2e 抓住的真漏洞）；`demo --case dual` 实测：基线 0.539 → 经真实暂停/续接的非线性候选 0.996（+45.7pp）→ 发布 v1；欠拟合模型发布被点名拒绝 | `cargo test -p grove-app`（6） |
+| P3 W09 多 worker 群体协调 | ✅ | attempt 租约（过期/取消的 attempt 无法覆盖新进度）、提交携带 attempt id + head 期望版本、账单按消息 id 幂等、外部未知结果保持 unknown；分配政策为纯 Zio（基线+领先+多样性配额、共享账本、安全点暂停）；**并行是实测的**：两条 worker 进程窗口重叠 >500ms，A 在检查点被杀后 B 继续且 A 可续接，fork 共用一条账本 | `cargo test -p grove --test population_contract`（8）；`grove demo --case population --workers 2`（重叠 940ms，两支各 0.996） |
+| P3 W10 产品 API 与授权发布 | ✅ | 可选 `http` feature（库与 CLI 不依赖网络栈）：同源 JSON API 覆盖 observe/signal/train/fork/publish/compare/events；**一个令牌一个角色**，写操作逐一校验（reader 不能标注、annotator 不能训练、operator 不能发布），localhost 不免鉴权；修改操作按 operation id 幂等（重放返回首次响应含状态码），发布带 expected-version；无令牌的非 loopback 绑定被拒绝 | `cargo test -p grove-app --features http --test api_contract`（6）；`grove serve` 真实进程验证 |
+| P3–P4 W11–W17 | Planned | 产品 Web UI、失效与保留、模块协同、经验索引、扩展 recipe、专家集成 | 见交付计划 |
+
+P1 证明的是工程闭环（真实存储、真实信号生命周期、真实教师调用），
+不含任何业务收益声明。P2 起需要真实张量训练、检查点恢复与多进程证据，
+门槛见交付计划第 11 节。
+
 ---
 
 ## Phase 7: 生产化（持续）

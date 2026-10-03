@@ -5,16 +5,24 @@ root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$root"
 
 emit_status() {
-  local tests special_forms native_bindings runnable_examples
-  tests="$(cargo test --workspace -- --list | awk '/: test$/ { count += 1 } END { print count + 0 }')"
+  local tests special_forms native_bindings runnable_examples crates
+  tests="$(cargo test --workspace -- --list 2>/dev/null | awk '/: test$/ { count += 1 } END { print count + 0 }')"
   special_forms="$(rg -n '=> Some\(' core/src/special/mod.rs | wc -l | tr -d ' ')"
   native_bindings="$(rg -n 'Value::NativeFunction\(NativeFn::new' core/src/builtins/ | wc -l | tr -d ' ')"
   runnable_examples="$(awk -F '|' '$1 !~ /^#/ && $2 == "runnable" { count += 1 } END { print count + 0 }' examples/manifest.tsv)"
+  # member count follows the workspace manifest, so adding a crate cannot
+  # silently leave a stale count behind
+  crates="$(python3 -c "
+import re, pathlib
+text = pathlib.Path('Cargo.toml').read_text()
+members = re.search(r'members\s*=\s*\[(.*?)\]', text, re.S).group(1)
+print(len([m for m in members.split(',') if m.strip().strip('\"')]))
+")"
 
   printf '# Zio Project Status\n\n'
   printf '> Generated with `tools/project-status.sh`. Verify with `tools/project-status.sh --check`.\n\n'
   printf '| Fact | Value |\n| --- | --- |\n'
-  printf '| Workspace crates | 3 |\n'
+  printf '| Workspace crates | %s |\n' "$crates"
   printf '| Rust tests | %s |\n' "$tests"
   printf '| Special forms | %s |\n' "$special_forms"
   printf '| Native bindings | %s |\n' "$native_bindings"

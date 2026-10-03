@@ -779,3 +779,63 @@ ADR-012 将并发原语诚实化为同步占位，并把"真并发"推迟为独�
 
 分 L1-L4 四阶段,含论文(工作坊 → 完整)与汇报(内部里程碑 → 外部
 分享)节点,详见 [synthesis-plan](synthesis-plan.md) 第 3/5/6/7 节。
+
+---
+
+## ADR-017: grove 宿主边界与反馈政策 —— Zio 持策略，Rust 持合同
+
+**状态**: 🟡 已实现 P1（W00–W03），P2–P4 的边界仍是本决策的约束
+
+### 背景
+
+ADR-016 把学习能力放在 Zio（策略/表示）与 `zio-ai`（宿主协议）里，且
+core 不引入任何领域字段。grove 要在此之上加入持久化、权限、预算与
+真实张量训练，直接扩 ADR-016 会让它同时承担"库策略"和"产品宿主"
+两种职责，违反它自己的"核心最小"代价条目。
+
+### 决策
+
+1. **新增 `grove` crate（`learning/`）作为可信宿主**，依赖方向单向：
+   `core` ← `zio-ai` ← `grove` ← （未来的 `grove-app`）。core 仍不认识
+   学习概念；`grove::install` 以外部 attach 注册 native binding，未装配
+   能力返回 `capability-denied:`（沿用 ADR-016 的前缀约定）。
+2. **不可变内容先于引用提交**。制品按内容摘要寻址，写入顺序是
+   临时文件 → fsync → 硬链接到摘要名 → 数据库事务提交清单。被杀进程
+   只会留下无引用对象，不会产生指向不存在字节的已提交记录。
+3. **反馈是纯 Zio 政策，宿主只做授权与事务**。字段作用域、人工优先于
+   教师、冲突隔离（后写不获胜）、abstain 一等、冻结数据视图不变更，
+   全部是 `lib/zio/learn/feedback.zio` 的纯函数；`grove` 不复制这套
+   判断，只做角色门控、幂等回执和生命周期状态。
+4. **教师是独立角色，不是 completion 的别名**。教师必须声明模态、
+   输出类型、软输出词表和数据许可；未声明的能力按缺失报告，不以
+   one-hot 伪造 logits。教师返回的程序是 `ProposedProgram`（提议），
+   仍需过 reader 与白名单。
+5. **记录 schema 版本并在不匹配时拒绝执行**，不静默迁移；错误分类
+   固定为 invalid-input / capability-denied / conflict /
+   incompatible-state / budget-exhausted / artifact-unavailable /
+   timeout / cancelled / backend-failed。
+
+### 理由
+
+- 策略与合同分离后，P2 的双学习、检查点与群体调度都能复用 P1 的存储
+  与政策，而不必把 SQL 或权限判断塞进 Zio；
+- 内容寻址让"同一模型"成为可验证的身份，跨协议重评与模块组合才有
+  稳定基线；
+- 冲突隔离与 abstain 契约在第一片就落地，避免 P2 训练循环建在
+  "最后写入者获胜"的地基上。
+
+### 代价
+
+- workspace 从 3 个 crate 增至 4 个，并引入 `rusqlite`（bundled
+  SQLite）；status 脚本的 crate 计数改为从 manifest 推导；
+- 策略逻辑分裂在 Zio 与 Rust 两侧，边界靠合同测试而非类型强制；
+- 存储层当前只做提交与授权，不提供训练恢复；恢复能力属于 W06，
+  在此之前 Checkpoint 的 `resume_level` 只是声明，不作恢复承诺。
+
+### 交付与衡量
+
+P1 证据：`cargo test -p grove`（store 22 + feedback 12）、
+`cargo test -p zio-ai --test teacher_contract --features http`（16）、
+`workers/torch/tests/test_training.py`（8）、本地教师真实训练并经
+Rust 宿主查询。详见 [grove 交付计划](superpowers/plans/2026-10-02-self-learning.md)
+与 [特性矩阵](feature-matrix.md)。

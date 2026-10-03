@@ -4,3 +4,6 @@ superpowers
 /.superpowers/
 
 .DS_Store
+.venv/
+__pycache__/
+*.pt

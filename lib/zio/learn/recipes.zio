@@ -1,0 +1,44 @@
+;; ── zio.learn.recipes — what may consume which signals, at what cost ──
+;; A recipe is a declaration: the signal kinds it consumes, the parts of
+;; the model it may train, its step budget and its initialization rule.
+;; The loop checks a candidate against the recipe; the worker executes
+;; what the recipe declares. Recipes are data, so a new method (W15's
+;; distillation/preference/…) is a new value, not a new loop.
+
+(def recipes--registry {})
+
+(defn recipes--register [registry recipe]
+  ;; recipes are versioned by id; re-registering an id replaces it
+  (put registry (get recipe :id nil) recipe))
+
+(defn recipes--lookup [registry id]
+  (get registry id nil))
+
+;; The supervised hard-label recipe (W05): consumes teacher labels and
+;; human corrections, trains every declared layer, fixed step budget,
+;; deterministic seeded init.
+(def recipes--supervised
+  {:id "supervised@1"
+   :consumes [:teacher-label :human-correction]
+   :trainable :all            ; every declared layer may move
+   :budget-steps 512
+   :init :seeded              ; structural candidates start from the seed
+   :loss "cross-entropy"})
+
+(defn recipes--check-signal [recipe signal-kind]
+  ;; a recipe silently ignoring a signal kind would be an invisible
+  ;; policy change; refusing is the honest behavior
+  (let* [consumes (get recipe :consumes [])]
+    (reduce (fn [found k] (if found true (= k signal-kind)))
+            false consumes)))
+
+(defn recipes--budget-for [recipe requested]
+  ;; a recipe caps what a candidate may spend, whatever it asks for
+  (let* [cap (get recipe :budget-steps 0)]
+    (if (> requested cap) cap requested)))
+
+(defn recipes--trainable? [recipe layer-name]
+  (let* [policy (get recipe :trainable nil)]
+    (or (= :all policy)
+        (reduce (fn [found n] (if found true (= n layer-name)))
+                false policy))))

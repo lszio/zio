@@ -75,7 +75,9 @@ CLI 运行，并受可执行示例合同测试保护。`datalog-concept.zio` 只
 | [docs/eval-pipeline.md](docs/eval-pipeline.md) | Eval 循环、TCO、宏、编译器管线 |
 | [docs/roadmap.md](docs/roadmap.md) | 分 Phase 路线图、交付标准、依赖分析、应用蓝图 |
 | [docs/synthesis-plan.md](docs/synthesis-plan.md) | 程序合成模块计划：学习型提议（LLM 主线，遗传/RL/NN 扩展位）× eval 裁判 × 语言化记忆（含论文与汇报规划） |
-| [docs/adrs.md](docs/adrs.md) | 架构决策记录（ADR-001 ~ ADR-016） |
+| [grove 整体设计](docs/self-learning-architecture.md) | 基于 Zio 的自学习库与产品：多源反馈、代码/权重联合学习、检查点、群体与模块演化（设计基线） |
+| [grove 交付计划](docs/superpowers/plans/2026-10-02-self-learning.md) | P1–P4、W00–W17 工作包、文件落点、依赖、真实验收与风险（W00–W10 已执行并验证，W11–W17 Planned；状态见第 12 节） |
+| [docs/adrs.md](docs/adrs.md) | 架构决策记录（ADR-001 ~ ADR-017） |
 | [docs/glossary.md](docs/glossary.md) | 术语参考 |
 | [blog/INDEX.md](blog/INDEX.md) | 系列博文 |
 

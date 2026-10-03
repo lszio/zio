@@ -1,0 +1,23 @@
+[package]
+name = "grove"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Trusted learning host for zio: versioned contracts, SQLite transactions, content-addressed artifacts, budget and permission context (grove W01)."
+
+[dependencies]
+zio-core = { path = "../core" }
+zio-ai = { path = "../ai", optional = true }
+rusqlite = { version = "0.37", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+libc = "0.2"
+
+[dev-dependencies]
+zio-ai = { path = "../ai", features = ["http"] }
+serde_json = "1"
+
+[features]
+default = []
+teacher-http = ["dep:zio-ai"]
