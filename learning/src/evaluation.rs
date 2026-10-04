@@ -236,6 +236,10 @@ pub fn publish_candidate(
     expected_version: Option<u32>,
 ) -> Result<u32> {
     actor.require(ActorRole::Publisher, "publishing a model")?;
+    // A snapshot whose training data was retracted is not a weaker
+    // candidate, it is not a candidate: the gate check below would happily
+    // pass it, and deployment is the last chance to notice.
+    store.require_deployable(snapshot)?;
     let comparison = compare(store, protocol, std::slice::from_ref(snapshot))?;
     let row = comparison.first().ok_or_else(|| {
         Error::new(

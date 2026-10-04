@@ -161,7 +161,11 @@ pub fn resume_plan(
 ) -> Result<ResumePlan> {
     actor.require(ActorRole::Operator, "resuming from a checkpoint")?;
     let checkpoint = store.get_checkpoint(checkpoint_id)?;
+    // Losing the state object is not a reinitialization: a resume that
+    // cannot restore the trained state must say so, not silently start over.
     let state_bytes = store.artifacts().get(&checkpoint.state_artifact)?;
+    // A lineage whose data was retracted cannot be continued either.
+    store.require_resumable(&checkpoint.snapshot)?;
     let manifest: StateManifest = serde_json::from_slice(&state_bytes).map_err(|e| {
         Error::new(
             ErrorKind::IncompatibleState,

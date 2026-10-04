@@ -43,9 +43,50 @@ impl ArtifactStore {
         &self.root
     }
 
-    fn object_path(&self, digest: &ArtifactRef) -> PathBuf {
+    /// The on-disk location of one object. Public so retention and failure
+    /// paths act on the real bytes a user would delete, not on a copy.
+    pub fn object_path(&self, digest: &ArtifactRef) -> PathBuf {
         let hex = digest.to_hex();
         self.root.join("objects").join(&hex[..2]).join(&hex)
+    }
+
+    /// Every stored object with the modification time retention reads.
+    /// Walks the real directory: an object a crashed writer left behind
+    /// shows up here, which is exactly what cleanup is for.
+    pub fn objects_with_age(&self) -> Result<Vec<(ArtifactRef, std::time::SystemTime)>> {
+        let mut out = Vec::new();
+        let shard_root = self.root.join("objects");
+        let shards = match fs::read_dir(&shard_root) {
+            Ok(shards) => shards,
+            Err(_) => return Ok(out),
+        };
+        for shard in shards.flatten() {
+            if !shard.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                continue;
+            }
+            let objects = match fs::read_dir(shard.path()) {
+                Ok(objects) => objects,
+                Err(_) => continue,
+            };
+            for object in objects.flatten() {
+                let name = object.file_name();
+                let Some(hex) = name.to_str() else { continue };
+                let Ok(digest) = ArtifactRef::parse_hex(hex) else {
+                    continue; // a temp or foreign file is not a live object
+                };
+                let mtime = object
+                    .metadata()
+                    .and_then(|m| m.modified())
+                    .map_err(|e| {
+                        Error::new(
+                            ErrorKind::BackendFailed,
+                            format!("stat object {hex}: {e}"),
+                        )
+                    })?;
+                out.push((digest, mtime));
+            }
+        }
+        Ok(out)
     }
 
     fn tmp_path(&self) -> PathBuf {
@@ -134,6 +175,20 @@ impl ArtifactStore {
 
     pub fn exists(&self, artifact: &ArtifactRef) -> bool {
         self.object_path(artifact).exists()
+    }
+
+    /// Delete an object. Only the retention path calls this, and only after
+    /// the store has proved no root reaches it; a missing object is already
+    /// gone, so it is not an error.
+    pub fn remove(&self, artifact: &ArtifactRef) -> Result<bool> {
+        match fs::remove_file(self.object_path(artifact)) {
+            Ok(()) => Ok(true),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(e) => Err(Error::new(
+                ErrorKind::BackendFailed,
+                format!("remove artifact {artifact}: {e}"),
+            )),
+        }
     }
 
     /// Drop stray temporary files from interrupted writes. Objects with a

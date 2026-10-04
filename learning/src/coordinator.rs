@@ -65,17 +65,105 @@ pub enum Outcome {
     Unknown(String),
 }
 
+/// Who owns scheduling right now. Ownership is a database fact, not a
+/// property of a live process: after a crash the old owner is gone, and the
+/// next opener must be able to prove the receipts it inherited are stale.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Ownership {
+    /// Monotonic; every claim is one more than the last.
+    pub epoch: u64,
+    pub pid: i64,
+}
+
+/// The ownership row as it is persisted. Kept separate from the public
+/// [`Ownership`] so the stored shape can change without changing callers.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+struct OwnershipRecord {
+    epoch: u64,
+    pid: i64,
+}
+
 pub struct Coordinator {
     store: Arc<Store>,
 }
 
 impl Coordinator {
     pub fn new(store: Arc<Store>) -> Self {
-        Self { store }
+        let coordinator = Self { store };
+        // Taking ownership is the first thing a process does with a store:
+        // leaving the previous owner's epoch in place would let a zombie
+        // worker's receipt land after a restart.
+        let _ = coordinator.claim_ownership();
+        coordinator
     }
 
     pub fn store(&self) -> &Store {
         &self.store
+    }
+
+    /// Take coordinator ownership, invalidating every receipt stamped with
+    /// an earlier epoch. A claim is always a new epoch — including from the
+    /// same pid, because a restart is a new coordinator even when the
+    /// operating system reused the process id. Everything the previous
+    /// owner held is reclaimed with it.
+    pub fn claim_ownership(&self) -> Result<Ownership> {
+        let previous = self
+            .store
+            .meta("coordinator.owner")?
+            .and_then(|raw| serde_json::from_str::<OwnershipRecord>(&raw).ok());
+        let pid = std::process::id() as i64;
+        let next = Ownership {
+            epoch: previous.map_or(1, |p| p.epoch + 1),
+            pid,
+        };
+        // A receipt from before this claim cannot be honoured, so every
+        // lease the previous owner held is released here.
+        self.store.reclaim_leases()?;
+        let record = OwnershipRecord { epoch: next.epoch, pid };
+        self.store
+            .set_meta("coordinator.owner", &serde_json::to_string(&record).map_err(|e| {
+                Error::new(
+                    ErrorKind::BackendFailed,
+                    format!("serialize ownership record: {e}"),
+                )
+            })?)
+            .map_err(|e| {
+                Error::new(
+                    ErrorKind::BackendFailed,
+                    format!("record coordinator ownership: {}", e.context),
+                )
+            })?;
+        Ok(next)
+    }
+
+    /// The current owner, or `None` when no process has claimed the store.
+    pub fn ownership(&self) -> Result<Option<Ownership>> {
+        Ok(self
+            .store
+            .meta("coordinator.owner")?
+            .and_then(|raw| serde_json::from_str::<OwnershipRecord>(&raw).ok())
+            .map(|r| Ownership {
+                epoch: r.epoch,
+                pid: r.pid,
+            }))
+    }
+
+    /// Attempts that still hold a live lease at `now_ms`. A reclaimed or
+    /// expired lease is not a slot anybody may finish.
+    pub fn active_attempts(&self, now_ms: i64) -> Result<Vec<String>> {
+        let mut stmt = self
+            .store
+            .conn
+            .prepare("SELECT id FROM attempts WHERE active = 1 AND lease_ms > ?1 ORDER BY id")
+            .map_err(crate::store::db_err)?;
+        let rows = stmt
+            .query_map(rusqlite::params![now_ms], |row| row.get::<_, String>(0))
+            .map_err(crate::store::db_err)?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row.map_err(crate::store::db_err)?);
+        }
+        Ok(out)
     }
 
     /// Open an execution slot: the attempt takes a lease on the branch and
@@ -175,7 +263,36 @@ impl Coordinator {
         expected_head_version: u32,
         now_ms: i64,
     ) -> Result<u32> {
+        let epoch = self.ownership()?.map(|o| o.epoch).unwrap_or(0);
+        self.commit_attempt_stamped(actor, attempt_id, new_head, expected_head_version, now_ms, epoch)
+    }
+
+    /// Commit an attempt's result, refusing one stamped with a coordinator
+    /// epoch that has since been superseded. A worker that was mid-flight
+    /// when the process restarted must not land its result: the branch may
+    /// have moved on under a new owner, and the old owner's accounting is
+    /// no longer the ledger of record.
+    pub fn commit_attempt_stamped(
+        &self,
+        actor: &Actor,
+        attempt_id: &str,
+        new_head: &str,
+        expected_head_version: u32,
+        now_ms: i64,
+        epoch: u64,
+    ) -> Result<u32> {
         actor.require(ActorRole::Operator, "committing an attempt")?;
+        let current = self.ownership()?.map(|o| o.epoch).unwrap_or(0);
+        if epoch != current {
+            return Err(Error::new(
+                ErrorKind::Conflict,
+                format!(
+                    "attempt {attempt_id} was stamped with ownership epoch {epoch}, \
+                     the store is now at epoch {current}; a superseded coordinator's \
+                     receipt is not a result"
+                ),
+            ));
+        }
         let attempt = self.get_attempt(attempt_id)?;
         if !attempt.active {
             return Err(Error::new(

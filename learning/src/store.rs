@@ -7,8 +7,10 @@
 //! steps leaves an unreferenced object, which is garbage-collectable; it
 //! never leaves a committed record that cannot be loaded.
 
+use std::collections::BTreeSet;
 use std::path::Path;
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 
 use rusqlite::{params, Connection, OptionalExtension};
@@ -159,6 +161,17 @@ CREATE TABLE IF NOT EXISTS publications (
     actor    TEXT NOT NULL,
     state    TEXT NOT NULL      -- staged | active | retired
 );
+
+-- Retraction propagation (W12): a frozen view keeps its members, but every
+-- snapshot whose lineage consumed a revoked signal stops being deployable.
+CREATE TABLE IF NOT EXISTS invalidations (
+    snapshot   TEXT NOT NULL,   -- the invalidated ModelSnapshot digest
+    signal     TEXT NOT NULL,   -- the retracted signal
+    dataset    TEXT NOT NULL,   -- the frozen revision that carried it
+    PRIMARY KEY (snapshot, signal)
+);
+
+CREATE INDEX IF NOT EXISTS invalidations_by_signal ON invalidations (signal);
 "#;
 
 /// The receipt returned when a signal is submitted. `duplicate` means the
@@ -186,6 +199,46 @@ pub struct Conflict {
     pub target_field: Option<String>,
     pub existing: String,
     pub incoming: String,
+}
+
+/// What a retraction actually invalidated. The frozen revisions keep their
+/// members — this is the other half of the fact, and the half that governs
+/// what may still be deployed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RetractionPropagation {
+    pub signal_id: String,
+    /// Frozen dataset revisions that carried the signal.
+    pub dataset_revisions: Vec<String>,
+    /// Runs trained on those revisions.
+    pub invalidated_runs: Vec<String>,
+    /// Checkpoints of those runs.
+    pub invalidated_checkpoints: Vec<String>,
+    /// Snapshots those checkpoints and runs deployed to.
+    pub invalidated_snapshots: Vec<ArtifactRef>,
+}
+
+/// Why a snapshot may no longer be deployed. `recoverable` is always false
+/// here: retracting data does not un-train weights, so the only way back is
+/// retraining, not redeploying.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Invalidation {
+    pub snapshot: ArtifactRef,
+    pub revoked_signals: Vec<String>,
+    pub dataset_revisions: Vec<String>,
+    pub recoverable: bool,
+}
+
+/// The outcome of one cleanup pass: exactly what went, and exactly what was
+/// left alone. A cleanup that cannot say which is which is not auditable.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct CleanupReport {
+    pub horizon_ms: u64,
+    pub deleted: Vec<ArtifactRef>,
+    /// Reachable objects older than the horizon. These are kept, every
+    /// time, and naming them is how a reader can tell the difference.
+    pub refused: Vec<ArtifactRef>,
+    /// Unreachable objects still inside the retention window.
+    pub retained_young: Vec<ArtifactRef>,
 }
 
 /// The trusted host handle.
@@ -238,7 +291,22 @@ impl Store {
                 }
             }
         }
-        Ok(Self { conn, artifacts })
+        let store = Self { conn, artifacts };
+        // Restart recovery: a lease whose worker died with its process must
+        // not keep a slot open, and no receipt from before the restart may
+        // land. Every lease is released here; ownership is claimed by the
+        // coordinator, which knows the epoch a receipt was stamped with.
+        store.reclaim_leases()?;
+        Ok(store)
+    }
+
+    /// Release every lease. Their workers are gone, so keeping a slot busy
+    /// would only idle the budget and let a zombie receipt through.
+    pub(crate) fn reclaim_leases(&self) -> Result<()> {
+        self.conn
+            .execute("UPDATE attempts SET active = 0 WHERE active = 1", [])
+            .map_err(db_err)
+            .map(|_| ())
     }
 
     pub fn artifacts(&self) -> &ArtifactStore {
@@ -335,6 +403,17 @@ impl Store {
         self.commit_manifest("ModelSnapshot", &actor.id, snapshot)
     }
 
+    /// Load a committed snapshot manifest, verifying the digest.
+    pub fn load_snapshot(&self, digest: &ArtifactRef) -> Result<ModelSnapshot> {
+        let body = self.load_manifest(digest)?;
+        serde_json::from_str(&body).map_err(|e| {
+            Error::new(
+                ErrorKind::IncompatibleState,
+                format!("snapshot {digest} is unreadable: {e}"),
+            )
+        })
+    }
+
     // ── observations and predictions ───────────────────────────────
 
     pub fn put_observation(&self, actor: &Actor, observation: &Observation) -> Result<()> {
@@ -387,10 +466,21 @@ impl Store {
     /// Record a prediction against the exact snapshot that produced it. A
     /// late human correction therefore reaches *that* version, not whatever
     /// the current head happens to be.
+    ///
+    /// Ownership is *not* required here, and that is deliberate: the
+    /// ownership rule protects a **citation** of someone's artifact (a
+    /// run must not build on, or a module compose from, weights it did
+    /// not produce). A prediction is not a citation — it is the record
+    /// that a reader ran the model the deployment already serves. If the
+    /// active publication required ownership, no product could ever
+    /// record what its own users saw, which is the one thing a
+    /// correction must be able to point at.
+    ///
+    /// The binding is still exact: the snapshot must be committed, so a
+    /// prediction can never name a model that does not exist.
     pub fn put_prediction(&self, actor: &Actor, prediction: &Prediction) -> Result<()> {
         actor.require(ActorRole::Reader, "recording a prediction")?;
-        let snapshot = ArtifactRef::parse_hex(&prediction.snapshot_digest.to_hex())?;
-        self.require_owner(&snapshot, actor)?;
+        self.load_manifest(&prediction.snapshot_digest)?;
         self.conn
             .execute(
                 "INSERT OR IGNORE INTO predictions (id, owner, observation, snapshot, schema, body)
@@ -534,8 +624,10 @@ impl Store {
     }
 
     /// Mark a signal retracted. Frozen dataset revisions keep their members;
-    /// only later views see the change.
-    pub fn retract_signal(&self, actor: &Actor, signal_id: &str) -> Result<()> {
+    /// only later views see the change. The propagation of what this
+    /// invalidates is [`Store::retract_signal`], which calls this and then
+    /// walks the lineage.
+    pub fn withdraw_signal(&self, actor: &Actor, signal_id: &str) -> Result<()> {
         actor.require(ActorRole::Annotator, "retracting a signal")?;
         let changed = self
             .conn
@@ -1188,6 +1280,9 @@ impl Store {
         expected_version: Option<u32>,
     ) -> Result<u32> {
         actor.require(ActorRole::Publisher, "publishing a model")?;
+        // the atomic pointer flip is the last boundary a retracted snapshot
+        // could slip through; it is checked here, not only upstream
+        self.require_deployable(snapshot)?;
         let current: Option<(String, u32)> = self
             .conn
             .query_row(
@@ -1237,12 +1332,404 @@ impl Store {
             Some((version, hex)) => Ok(Some((version, ArtifactRef::parse_hex(&hex)?))),
         }
     }
-}
 
-// ── helpers ────────────────────────────────────────────────────────
+    // ── W12: retraction propagation ───────────────────────────────
+
+    /// Retract a signal and propagate the consequence through the whole
+    /// lineage it poisoned. The frozen revisions keep their members — the
+    /// historical fact is unchanged — but every snapshot whose training
+    /// consumed the signal is marked non-deployable, and that marking is
+    /// what `publish_candidate` and `resume_plan` read. Returns exactly
+    /// what was invalidated so the caller can show it, not infer it.
+    pub fn retract_signal(&self, actor: &Actor, signal_id: &str) -> Result<RetractionPropagation> {
+        self.withdraw_signal(actor, signal_id)?;
+        self.propagate_retraction(signal_id)
+    }
+
+    /// The invalidation record for a snapshot, if any: which signal was
+    /// revoked and through which frozen view. `None` means the snapshot's
+    /// data is all still in force.
+    pub fn snapshot_invalidation(&self, snapshot: &ArtifactRef) -> Result<Option<Invalidation>> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT signal, dataset FROM invalidations WHERE snapshot = ?1
+                 ORDER BY signal, dataset",
+            )
+            .map_err(db_err)?;
+        let rows = stmt
+            .query_map(params![snapshot.to_hex()], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(db_err)?;
+        let mut signals = Vec::new();
+        let mut datasets = Vec::new();
+        for row in rows {
+            let (signal, dataset) = row.map_err(db_err)?;
+            signals.push(signal);
+            datasets.push(dataset);
+        }
+        if signals.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(Invalidation {
+            snapshot: *snapshot,
+            revoked_signals: signals,
+            dataset_revisions: datasets,
+            // weights already trained on withdrawn data are not made whole
+            // by un-retracting the record; only retraining can restore it
+            recoverable: false,
+        }))
+    }
+
+    /// Refuse to deploy an invalidated snapshot. This is the checkpoint the
+    /// publication path calls before it looks at gates.
+    pub fn require_deployable(&self, snapshot: &ArtifactRef) -> Result<()> {
+        if let Some(invalidation) = self.snapshot_invalidation(snapshot)? {
+            return Err(Error::new(
+                ErrorKind::IncompatibleState,
+                format!(
+                    "snapshot {snapshot} was trained on retracted signal(s) {:?} \
+                     (frozen view(s) {:?}); retrain without them — deployment of these \
+                     weights is refused",
+                    invalidation.revoked_signals, invalidation.dataset_revisions
+                ),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Refuse to continue an invalidated lineage. The same reasoning as
+    /// deployment: the data the run learned from is withdrawn.
+    pub fn require_resumable(&self, snapshot: &ArtifactRef) -> Result<()> {
+        self.require_deployable(snapshot).map_err(|e| {
+            Error::new(
+                e.kind,
+                format!("lineage cannot be resumed: {}", e.context),
+            )
+        })
+    }
+
+    /// Mark the signal retracted and record, for every affected snapshot,
+    /// the revoked signal and the frozen view that carried it. Does the
+    /// reverse walk: signal → datasets → runs → checkpoints → snapshots.
+    fn propagate_retraction(&self, signal_id: &str) -> Result<RetractionPropagation> {
+        // every frozen revision that froze this signal
+        let mut datasets = Vec::new();
+        {
+            let mut stmt = self
+                .conn
+                .prepare("SELECT id, body FROM datasets ORDER BY id")
+                .map_err(db_err)?;
+            let rows = stmt
+                .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))
+                .map_err(db_err)?;
+            for row in rows {
+                let (id, body) = row.map_err(db_err)?;
+                let revision: DatasetRevision = decode(&body, SCHEMA_VERSION)?;
+                if revision.signal_ids.iter().any(|s| s == signal_id) {
+                    datasets.push((id, revision));
+                }
+            }
+        }
+
+        // every run whose dataset revision is one of them
+        let dataset_ids: Vec<String> = datasets.iter().map(|(id, _)| id.clone()).collect();
+        let mut runs: Vec<Run> = Vec::new();
+        {
+            let mut stmt = self
+                .conn
+                .prepare("SELECT body, schema FROM runs ORDER BY id")
+                .map_err(db_err)?;
+            let rows = stmt
+                .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)))
+                .map_err(db_err)?;
+            for row in rows {
+                let (body, schema) = row.map_err(db_err)?;
+                let run: Run = decode(&body, require_schema(schema)?)?;
+                if dataset_ids.contains(&run.dataset_revision) {
+                    runs.push(run);
+                }
+            }
+        }
+        let run_ids: Vec<String> = runs.iter().map(|r| r.id.clone()).collect();
+
+        // every checkpoint of those runs, and the snapshots they carry
+        let mut checkpoints: Vec<Checkpoint> = Vec::new();
+        {
+            let mut stmt = self
+                .conn
+                .prepare("SELECT body, schema FROM checkpoints ORDER BY id")
+                .map_err(db_err)?;
+            let rows = stmt
+                .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)))
+                .map_err(db_err)?;
+            for row in rows {
+                let (body, schema) = row.map_err(db_err)?;
+                let ckpt: Checkpoint = decode(&body, require_schema(schema)?)?;
+                if run_ids.contains(&ckpt.run_id) {
+                    checkpoints.push(ckpt);
+                }
+            }
+        }
+
+        // A run trains *from* a base snapshot; every checkpoint of a tainted
+        // run carries that base. The base is what was deployed, so it is
+        // what must stop being deployable.
+        let mut snapshots: Vec<ArtifactRef> = runs.iter().map(|r| r.base_snapshot).collect();
+        for ckpt in &checkpoints {
+            snapshots.push(ckpt.snapshot);
+        }
+        snapshots.sort();
+        snapshots.dedup();
+
+        let tx = self.conn.unchecked_transaction().map_err(db_err)?;
+        for snapshot in &snapshots {
+            for (dataset, _) in &datasets {
+                tx.execute(
+                    "INSERT OR IGNORE INTO invalidations (snapshot, signal, dataset)
+                     VALUES (?1, ?2, ?3)",
+                    params![snapshot.to_hex(), signal_id, dataset],
+                )
+                .map_err(db_err)?;
+            }
+        }
+        tx.commit().map_err(db_err)?;
+
+        Ok(RetractionPropagation {
+            signal_id: signal_id.to_string(),
+            dataset_revisions: datasets.into_iter().map(|(id, _)| id).collect(),
+            invalidated_runs: run_ids,
+            invalidated_checkpoints: checkpoints.into_iter().map(|c| c.id).collect(),
+            invalidated_snapshots: snapshots,
+        })
+    }
+
+    // ── W12: reachability and retention ────────────────────────────
+
+    /// The declared retention horizon in milliseconds, or `None` when the
+    /// operator has declared none — and an undeclared policy collects
+    /// nothing.
+    pub fn retention_horizon_ms(&self) -> Result<Option<u64>> {
+        match self.meta("retention.horizon_ms")? {
+            None => Ok(None),
+            Some(v) => v
+                .parse()
+                .map(Some)
+                .map_err(|_| {
+                    Error::new(
+                        ErrorKind::IncompatibleState,
+                        format!("retention.horizon_ms is not a number: {v}"),
+                    )
+                }),
+        }
+    }
+
+    /// Declare (or clear, with `None`) the retention horizon: how old an
+    /// unreachable artifact must be before cleanup may delete it. A real
+    /// policy value the operator sets, not a constant pretending to be one.
+    pub fn set_retention_horizon_ms(&self, horizon_ms: Option<u64>) -> Result<()> {
+        match horizon_ms {
+            Some(ms) => self.set_meta("retention.horizon_ms", &ms.to_string()),
+            None => self.conn
+                .execute("DELETE FROM meta WHERE key = 'retention.horizon_ms'", [])
+                .map_err(db_err)
+                .map(|_| ()),
+        }
+    }
+
+    /// Read a `meta` key. Used for the retention policy and the coordinator
+    /// ownership record.
+    pub fn meta(&self, key: &str) -> Result<Option<String>> {
+        self.conn
+            .query_row("SELECT value FROM meta WHERE key = ?1", params![key], |row| {
+                row.get(0)
+            })
+            .optional()
+            .map_err(db_err)
+    }
+
+    pub(crate) fn set_meta(&self, key: &str, value: &str) -> Result<()> {
+        self.conn
+            .execute(
+                "INSERT INTO meta (key, value) VALUES (?1, ?2)
+                 ON CONFLICT(key) DO UPDATE SET value = ?2",
+                params![key, value],
+            )
+            .map_err(db_err)
+            .map(|_| ())
+    }
+
+    /// The set of artifacts reachable from a root that must survive
+    /// cleanup. Walks every `ArtifactRef` each record actually holds:
+    ///
+    /// * the active publication's snapshot, and each snapshot's parameters;
+    /// * each branch's head checkpoint, its whole parent chain, and each
+    ///   of those checkpoints' state artifacts and snapshots;
+    /// * every run that is not terminal, and its base snapshot;
+    /// * every frozen dataset revision's observations and their content
+    ///   blocks;
+    /// * every in-force signal's observation and its content blocks.
+    ///
+    /// Anything not in this set is a candidate for collection.
+    pub fn live_artifacts(&self) -> Result<BTreeSet<ArtifactRef>> {
+        let mut live: BTreeSet<ArtifactRef> = BTreeSet::new();
+
+        // the active publication is a root
+        if let Some((_version, snapshot)) = self.active_publication()? {
+            self.mark_snapshot(&mut live, &snapshot)?;
+        }
+
+        // every branch head: the checkpoint and its whole ancestry
+        for branch in self.branches() {
+            let mut cursor = branch.head.clone();
+            while let Some(checkpoint_id) = cursor {
+                let Ok(ckpt) = self.get_checkpoint(&checkpoint_id) else {
+                    break; // a head pointing at reclaimed history adds nothing
+                };
+                live.insert(ckpt.state_artifact);
+                self.mark_snapshot(&mut live, &ckpt.snapshot)?;
+                cursor = ckpt.parent.clone();
+            }
+        }
+
+        // non-terminal runs still owe their base snapshot
+        for run in self.runs() {
+            if !run.state.is_terminal() {
+                self.mark_snapshot(&mut live, &run.base_snapshot)?;
+            }
+        }
+
+        // frozen views and in-force signals keep their evidence readable:
+        // the observation records live in their own tables, so the bytes
+        // they protect are the content blocks
+        for observation in self.revision_observations()?.into_iter().chain(self.signal_roots()?) {
+            for block in observation.blocks {
+                live.insert(block.artifact);
+            }
+        }
+
+        Ok(live)
+    }
+
+    /// A live snapshot keeps its own manifest bytes and the parameters that
+    /// manifest names. A manifest that cannot be read is a damaged record,
+    /// not a reason to pretend its parameters are garbage.
+    fn mark_snapshot(&self, live: &mut BTreeSet<ArtifactRef>, digest: &ArtifactRef) -> Result<()> {
+        if !live.insert(*digest) {
+            return Ok(());
+        }
+        if let Ok(snapshot) = self.load_snapshot(digest) {
+            for param in snapshot.params {
+                live.insert(param.artifact);
+            }
+        }
+        Ok(())
+    }
+
+    /// The observations a frozen dataset revision names. A frozen view must
+    /// stay reproducible, so its evidence is a root; an observation a user
+    /// already deleted is simply not walked.
+    fn revision_observations(&self) -> Result<Vec<Observation>> {
+        let mut out = Vec::new();
+        let mut stmt = self
+            .conn
+            .prepare("SELECT body, schema FROM datasets ORDER BY id")
+            .map_err(db_err)?;
+        let rows = stmt
+            .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)))
+            .map_err(db_err)?;
+        for row in rows {
+            let (body, schema) = row.map_err(db_err)?;
+            let revision: DatasetRevision = decode(&body, require_schema(schema)?)?;
+            for observation_id in &revision.observation_ids {
+                if let Ok(observation) = self.get_observation(observation_id) {
+                    out.push(observation);
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// In-force signals keep their referenced evidence reachable.
+    fn signal_roots(&self) -> Result<Vec<Observation>> {
+        let mut out = Vec::new();
+        let mut stmt = self
+            .conn
+            .prepare("SELECT body, schema FROM signals WHERE status = 'accepted' ORDER BY id")
+            .map_err(db_err)?;
+        let rows = stmt
+            .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)))
+            .map_err(db_err)?;
+        for row in rows {
+            let (body, schema) = row.map_err(db_err)?;
+            let signal: LearningSignal = decode(&body, require_schema(schema)?)?;
+            if let Some(observation_id) = signal.observation_id {
+                if let Ok(observation) = self.get_observation(&observation_id) {
+                    out.push(observation);
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// Run one cleanup pass. Deletes only artifacts that are (a) not in the
+    /// live set and (b) older than the declared retention horizon. With no
+    /// declared horizon, nothing is deleted — an undeclared policy is not a
+    /// license to destroy history. The report names every deletion and every
+    /// refusal, so the pass is auditable.
+    pub fn collect_artifacts(&self) -> Result<CleanupReport> {
+        let Some(horizon_ms) = self.retention_horizon_ms()? else {
+            // no declared policy: collect nothing
+            return Ok(CleanupReport::default());
+        };
+        let live = self.live_artifacts()?;
+        let now_ms = epoch_millis();
+        let objects = self.artifacts.objects_with_age()?;
+        let mut report = CleanupReport {
+            horizon_ms,
+            ..CleanupReport::default()
+        };
+        for (digest, mtime) in objects {
+            let age_ms = now_ms.saturating_sub(epoch_millis_of(mtime));
+            if live.contains(&digest) {
+                // reachable: kept regardless of age, and named
+                if age_ms > horizon_ms as i64 {
+                    report.refused.push(digest);
+                }
+                continue;
+            }
+            if age_ms <= horizon_ms as i64 {
+                report.retained_young.push(digest);
+                continue;
+            }
+            if self.artifacts.remove(&digest)? {
+                report.deleted.push(digest);
+            }
+        }
+        report.deleted.sort();
+        report.refused.sort();
+        report.retained_young.sort();
+        Ok(report)
+    }
+
+    // ── helpers ────────────────────────────────────────────────────
+}
 
 pub(crate) fn db_err(error: rusqlite::Error) -> Error {
     Error::new(ErrorKind::BackendFailed, format!("sqlite: {error}"))
+}
+
+/// Wall-clock milliseconds. Used by the retention horizon, which is a real
+/// policy about real files, not a synthetic step counter.
+pub(crate) fn epoch_millis() -> i64 {
+    epoch_millis_of(SystemTime::now())
+}
+
+pub(crate) fn epoch_millis_of(when: SystemTime) -> i64 {
+    when.duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or_default()
 }
 
 /// A stored record written by a newer producer is not executed: the
