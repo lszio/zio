@@ -116,19 +116,17 @@ fn request(
 fn seed_world(store: &Store) -> (String, String) {
     let actor = grove::contracts::Actor::new("api-operator", ActorRole::Operator);
     let weights = store.artifacts().put(b"api-weights").unwrap();
-    let snapshot = ModelSnapshot {
-        schema: SCHEMA_VERSION,
-        owner: "api-operator".to_string(),
-        entrypoint: "predict".to_string(),
-        params: vec![ParamRef {
+    let snapshot = ModelSnapshot::new(
+        "api-operator",
+        "predict",
+        vec![ParamRef {
             module: "fusion".into(),
             shape: vec![1],
             dtype: "float32".into(),
             artifact: weights,
         }],
-        libraries: vec![],
-        preprocessing_version: "geometry-sensor-xor@1.0.0".into(),
-    };
+        "geometry-sensor-xor@1.0.0",
+    );
     let snapshot_hex = store
         .commit_manifest("ModelSnapshot", "api-operator", &snapshot)
         .unwrap()
@@ -179,7 +177,8 @@ fn roles_do_not_bleed_into_each_other() {
     let (base, store) = start_server();
     let (snapshot, _recipe) = seed_world(&store);
 
-    // a reader may observe...
+    // a reader may observe... (with a real 256-sample image, because the
+    // product stages the container the worker actually reads)
     let observe = request(
         &base,
         "POST",
@@ -191,7 +190,9 @@ fn roles_do_not_bleed_into_each_other() {
             "task": "task-1",
             "source": "line-a",
             "modality_mask": [true, true],
-            "content": "{\"image\": \"...\"}"
+            "scene_id": 7,
+            "pixels": vec![128u8; 256],
+            "readings": [1.5, -0.5]
         })),
     );
     assert_eq!(observe.status, 201, "{:?}", observe.body);

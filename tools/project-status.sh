@@ -62,6 +62,17 @@ check_core_invariants() {
     "ADR-016 zio-ai capability-denied prefix|ai/src/lib.rs|capability-denied:"
     "ADR-016 replay miss is fail-fast|ai/src/mock.rs|HostErrorKind::ReplayMiss"
     "ADR-016 external attach registers llm-complete|ai/src/lib.rs|\"llm-complete\""
+    "ADR-018 composition checks semantic space, not width|learning/src/composition.rs|same width is not the same meaning"
+    "ADR-018 permission closure is a maximum|learning/src/composition.rs|must not weaken the permission closure"
+    "ADR-018 shared parameter group is one evolution unit|learning/src/composition.rs|a shared parameter cannot be both"
+    "ADR-018 no available expert means abstain|learning/src/ensemble.rs|contributors.is_empty\(\)"
+    "ADR-018 population agreement is a target, not a label|learning/src/ensemble.rs|pub struct DistillationTarget"
+    "W11 the product serves its own assets same-origin|app/src/api.rs|fn web_root"
+    "W11 an asset handler cannot escape the web root|app/src/api.rs|is not a web asset"
+    "W12 an undeclared retention horizon deletes nothing|learning/src/store.rs|retention.horizon_ms"
+    "W13 composition writes a new identity|learning/src/composition.rs|name_snapshot"
+    "W15 a recipe gates the signal kinds it may consume|learning/src/recipes.rs|bind_signal_to_recipe"
+    "W04 isolation fails closed rather than degrading|learning/src/worker.rs|refusing to run a training worker unrestricted"
   )
   local entry name file pattern
   for entry in "${checks[@]}"; do

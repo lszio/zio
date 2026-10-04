@@ -83,6 +83,9 @@ fn seed_population(store: &Store, coordinator: &Coordinator) -> (String, String,
         }],
         libraries: vec![],
         preprocessing_version: "geometry-sensor-xor@1.0.0".into(),
+        modules: vec![],
+        ensemble: None,
+        graph: None,
     };
     let snapshot_digest = store.commit_manifest("ModelSnapshot", "trainer", &snapshot).unwrap();
 

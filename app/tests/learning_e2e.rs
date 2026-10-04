@@ -84,9 +84,46 @@ fn the_dual_demo_clears_the_frozen_gates_end_to_end() {
 
     let active = store.active_publication().unwrap().unwrap();
     assert_eq!(active.0, 1);
-    // the published model is the CANDIDATE's identity, not the baseline's
+    // The published identity is the CANDIDATE'S TRAINED WEIGHTS, not the
+    // placeholder contract the run was opened with. `run-joint`'s
+    // `base_snapshot` only ever held a seed; publishing it would point
+    // the deployment at bytes nobody trained, so the demo commits the
+    // worker's real output as its own snapshot and publishes that.
     let joint_run = runs.iter().find(|r| r.id == "run-joint").unwrap();
-    assert_eq!(active.1, joint_run.base_snapshot);
+    assert_ne!(
+        active.1, joint_run.base_snapshot,
+        "publication must not point at the run's placeholder base snapshot"
+    );
+    // the published snapshot carries real parameters, and its graph
+    let published = store.load_snapshot(&active.1).unwrap();
+    assert!(
+        !published.params.is_empty(),
+        "the published snapshot has no parameters; it is not a model"
+    );
+    assert!(
+        published.graph.is_some(),
+        "the published snapshot declares no operator graph, so it cannot serve"
+    );
+    for param in &published.params {
+        let bytes = store.artifacts().get(&param.artifact).unwrap();
+        let parsed: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let entry = &parsed["params"][&param.module];
+        assert!(
+            entry.get("w").is_some() && entry.get("b").is_some(),
+            "layer {} must carry both a weight and a bias; a missing bias \
+             describes a different model than the one trained",
+            param.module
+        );
+    }
+    // and it is the model the evaluation belongs to: the accuracy record
+    // under this protocol is bound to THIS digest
+    let records = store.evaluations_for(&active.1).unwrap();
+    assert!(
+        records.iter().any(|r| r.protocol_id == "accept-v1"
+            && r.metrics.iter().any(|(n, v)| n == "accuracy" && *v >= 0.90)),
+        "the published snapshot has no passing evaluation under the frozen \
+         protocol: {records:?}"
+    );
 }
 
 #[test]

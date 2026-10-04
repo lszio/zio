@@ -46,6 +46,9 @@ fn store_with_snapshots(name: &str, names: &[&str]) -> (Store, Vec<(String, Arti
             }],
             libraries: vec![],
             preprocessing_version: "geometry-sensor-xor@1.0.0".into(),
+            modules: vec![],
+            ensemble: None,
+            graph: None,
         };
         let digest = store
             .commit_manifest("ModelSnapshot", "trainer", &snapshot)

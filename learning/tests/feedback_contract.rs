@@ -55,6 +55,9 @@ fn seed_world(name: &str) -> (Store, ArtifactRef) {
         params: vec![ParamRef { module: "fusion".into(), shape: vec![1], dtype: "f32".into(), artifact: weights }],
         libraries: vec![],
         preprocessing_version: "v1".to_string(),
+        modules: vec![],
+        ensemble: None,
+        graph: None,
     };
     let digest = store.put_snapshot(&operator(), &snapshot).unwrap();
     (store, digest)
@@ -111,6 +114,9 @@ fn feedback_binds_to_the_exact_prediction_not_the_current_head() {
         params: vec![],
         libraries: vec![],
         preprocessing_version: "v2".to_string(),
+        modules: vec![],
+        ensemble: None,
+        graph: None,
     };
     let newer_digest = store.put_snapshot(&operator(), &newer).unwrap();
     store.publish(&Actor::new("trainer", ActorRole::Publisher), &newer_digest, None).unwrap();

@@ -47,6 +47,9 @@ fn seed_snapshot(store: &Store, owner: &str) -> ArtifactRef {
         }],
         libraries: vec![("zio.core".to_string(), "0.2.0".to_string())],
         preprocessing_version: "geometry-sensor-xor@1.0.0".to_string(),
+        modules: vec![],
+        ensemble: None,
+        graph: None,
     };
     store
         .commit_manifest("ModelSnapshot", owner, &snapshot)
@@ -150,6 +153,9 @@ fn snapshot_with_a_missing_parameter_artifact_is_refused() {
         }],
         libraries: vec![],
         preprocessing_version: "v1".to_string(),
+        modules: vec![],
+        ensemble: None,
+        graph: None,
     };
     let err = store.put_snapshot(&actor(ActorRole::Operator), &snapshot).unwrap_err();
     assert_eq!(err.kind, ErrorKind::ArtifactUnavailable);
@@ -166,6 +172,9 @@ fn reader_cannot_commit_a_snapshot() {
         params: vec![ParamRef { module: "m".into(), shape: vec![1], dtype: "f32".into(), artifact: weights }],
         libraries: vec![],
         preprocessing_version: "v1".to_string(),
+        modules: vec![],
+        ensemble: None,
+        graph: None,
     };
     let err = store.put_snapshot(&Actor::new("viewer", ActorRole::Reader), &snapshot).unwrap_err();
     assert_eq!(err.kind, ErrorKind::CapabilityDenied);

@@ -295,7 +295,7 @@ cargo clippy → warning-free target
 **论文/汇报**：工作坊论文（L3 后）→ 完整论文（L4 后）；内部里程碑
 汇报 ×4 + 外部技术分享。规划见 synthesis-plan 第 5/6/7 节。
 
-### grove 自学习库与产品（P1 已交付，P2–P4 Planned）
+### grove 自学习库与产品（P1–P4 已交付，W00–W17 实测通过）
 
 按 [grove 整体设计](self-learning-architecture.md) 与
 [grove P1–P4 交付计划](superpowers/plans/2026-10-02-self-learning.md) 扩展。
@@ -315,11 +315,20 @@ P1–P4 是 grove 自己的交付编号，不是 L1–L4 的重新编号。
 | P2 W08 grove CLI 端到端 | ✅ | `grove` 二进制（新 grove-app crate）：demo/inspect/checkpoint/fork/resume/compare/select/publish 全部映射库合同；协议为持久化记录，CLI 加载而非重建（flag 丢门槛无法发布——e2e 抓住的真漏洞）；`demo --case dual` 实测：基线 0.539 → 经真实暂停/续接的非线性候选 0.996（+45.7pp）→ 发布 v1；欠拟合模型发布被点名拒绝 | `cargo test -p grove-app`（6） |
 | P3 W09 多 worker 群体协调 | ✅ | attempt 租约（过期/取消的 attempt 无法覆盖新进度）、提交携带 attempt id + head 期望版本、账单按消息 id 幂等、外部未知结果保持 unknown；分配政策为纯 Zio（基线+领先+多样性配额、共享账本、安全点暂停）；**并行是实测的**：两条 worker 进程窗口重叠 >500ms，A 在检查点被杀后 B 继续且 A 可续接，fork 共用一条账本 | `cargo test -p grove --test population_contract`（8）；`grove demo --case population --workers 2`（重叠 940ms，两支各 0.996） |
 | P3 W10 产品 API 与授权发布 | ✅ | 可选 `http` feature（库与 CLI 不依赖网络栈）：同源 JSON API 覆盖 observe/signal/train/fork/publish/compare/events；**一个令牌一个角色**，写操作逐一校验（reader 不能标注、annotator 不能训练、operator 不能发布），localhost 不免鉴权；修改操作按 operation id 幂等（重放返回首次响应含状态码），发布带 expected-version；无令牌的非 loopback 绑定被拒绝 | `cargo test -p grove-app --features http --test api_contract`（6）；`grove serve` 真实进程验证 |
-| P3–P4 W11–W17 | Planned | 产品 Web UI、失效与保留、模块协同、经验索引、扩展 recipe、专家集成 | 见交付计划 |
+| P3 W11 产品界面 | ✅ | 同源 Web UI（不开 CORS 即操作控制面）；纠正绑定的预测与其快照、**已提交**与**已学习**分列；谱系中状态制品丢失的检查点标为不可恢复而非隐藏；模块/专家合同展示语义空间与权限要求；发布需二次确认。推理走**与训练同一个隔离 torch worker**，输入是产品自写的 GVD1 容器，像素不足 256 直接拒绝而不补零；键盘可操作、表单有标签、状态有文字 | `cargo test -p grove-app --features http --test ui_contract`（5）；浏览器实测走通观察→预测→纠正→比较→发布 |
+| P3 W12 撤回、保留与恢复 | ✅ | 从"必须存活"的根（活跃发布、分支 head、非终态 run、冻结视图）做可达性分析；保留期是**声明**的（store meta `retention.horizon_ms`），未声明即**一个都不删**；撤回信号沿冻结视图→run→检查点→快照传播并标记不可部署，发布与续接双双被拒而冻结成员不变；制品被删/被改字节返回 `artifact-unavailable`；重启回收过期租约并重取协调者所有权，旧 epoch 回执被拒 | `cargo test -p grove --test lifecycle_contract`（10） |
+| P4 W13 模块组合 | ✅ | 模块声明消费/产出语义空间，组合按空间而非宽度校验（同宽不同义被拒）；共享参数组为一个演化单元；权限闭包取最大值（组合可要求更多不可更少）；组合产生新身份与多父谱系且父快照不变；联合计划强制整体评价。`demo --case modular` 分离演化两个模块、异构组合被拒并给出原因、合成体联合训练至 1.000 并以整体分数发布；非分类器模块报 `n/a` 而非伪造 0.0 | `cargo test -p grove --test composition_contract`（9）；`grove demo --case modular` |
+| P4 W14 三索引经验 | ✅ | 结构/行为/语义三索引建立在**已有**信号与观察记录上，不另建事实库；行为指纹带探针集名，跨探针集不比较；语义向量带编码器与空间版本，版本不符且未显式迁移则拒绝。四项硬拒绝均有测试（语义近邻不并入不同 AST、探针集不混比、不越许可、被撤回来源的能力拒绝加载）；抽象晋升需原任务回归 + 新任务评价 | `cargo test -p grove --test memory_contract`（12）；`cargo test -p zio-cli --test lib_contract`（10）。**复用测量为负并如实记录**：未参与发现的任务上总描述长度 18→22，3 叶规模下抽象不划算 |
+| P4 W15 扩展 recipe | ✅ | 软蒸馏、偏好排序、合法动作集内的演示克隆、自监督、延迟环境反馈、受限离散策略梯度；宿主强制声明（未声明信号、越预算、未知 recipe 均拒绝）。实测：软蒸馏 KL 0.6918→0.1264；偏好 0.5469→0.9531 且弃答不进目标；演示 0.9297，25% 非法动作被 mask 后 0.8932；自监督移动表征而任务指标单列 0.5117 仍不过门槛；延迟奖励 64/64 结算、未结算时参数变化恰为 0.0；策略梯度 −1.0000→0.7500 | `python -m unittest discover -s workers/torch/tests`（72）；`cargo test -p grove --test recipe_contract`（15）。**外部供应商未提供软输出，仅本地教师硬蒸馏已联调** |
+| P4 W16 专家集成 | ✅ | 路由、专家版本、输出空间、组合规则与每调用预算共同构成一个快照身份；异构空间拒绝绑定，无可用专家 abstain，投票平局无胜者，`all-agree` 缺一专家即 abstain，单次调用按全部被调专家计费；群体一致只是带一致度的蒸馏目标，仍须走任务验收 | `cargo test -p grove --test ensemble_contract`（12）；`demo --case modular` 现场对比 vote 与 all-agree |
+| P4 W17 全链路交付 | ✅ | `cargo test --workspace --all-features` 364 通过 / 0 失败；`python -m unittest discover -s workers/torch/tests` 72 通过；dual / population / modular 三个实际场景全部可运行 | 见交付计划第 12 节 |
 
 P1 证明的是工程闭环（真实存储、真实信号生命周期、真实教师调用），
 不含任何业务收益声明。P2 起需要真实张量训练、检查点恢复与多进程证据，
 门槛见交付计划第 11 节。
+
+**未验证**：商业上游软输出与授权条款、真实业务数据与业务门槛、GPU 推理
+成本、截图证据（浏览器宿主失联）。本地闭环通过不改变这些状态。
 
 ---
 

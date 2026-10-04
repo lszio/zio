@@ -38,7 +38,7 @@ cd zio
 cargo run
 ```
 
-```
+```text
 Zio REPL
 Press Ctrl+D or type (exit) to quit
 zio> (+ 1 2 3)
@@ -54,6 +54,52 @@ zio> (unless false 42)
 zio> (load "program.zio")
 zio> (require :my.module)
 ```
+
+## grove 自学习产品
+
+grove 是一个独立的 crate 组（`learning/` = 宿主库，`app/` = 产品壳），
+**不改变上面的普通 Zio CLI**：`cargo run` 启动的 REPL 不依赖任何学习组件。
+
+三种运行形态，各自的能力边界是显式的：
+
+```bash
+# 1. 仅语言（无张量后端）：普通 Zio CLI 照常工作，grove 相关测试打印 skip
+cargo test --workspace
+
+# 2. 完整产品（CPU torch 后端）
+python3 -m venv .venv
+.venv/bin/pip install -r workers/torch/requirements.txt
+.venv/bin/pip install --index-url https://download.pytorch.org/whl/cpu torch
+cargo build -p grove-app --bin grove --features http
+
+# 3. 产品服务（令牌从环境变量读取，绝不从 argv 读取）
+export GROVE_TOKEN_READER=… GROVE_TOKEN_ANNOTATOR=…
+export GROVE_TOKEN_OPERATOR=… GROVE_TOKEN_PUBLISHER=…
+./target/debug/grove serve --root /tmp/grove-data --bind 127.0.0.1:8787
+#   → http://127.0.0.1:8787/ 打开产品界面
+```
+
+一个令牌对应**一个角色**：reader 不能标注、annotator 不能训练、operator
+不能发布，localhost 也不例外。无令牌的非 loopback 绑定会被直接拒绝。
+
+三个可运行的真实场景：
+
+```bash
+./target/debug/grove demo --case dual       --root /tmp/grove-dual      --device cpu
+./target/debug/grove demo --case population --root /tmp/grove-pop --workers 2 --device cpu
+./target/debug/grove demo --case modular    --root /tmp/grove-modular    --device cpu
+```
+
+- **dual**：线性基线 0.539 → 经真实暂停/续接的非线性候选 0.996（+45.7pp），
+  发布的是**真实训练权重**而非占位快照；
+- **population**：两个真实隔离 worker 进程并行训练（实测窗口重叠 966ms），
+  共用一条预算账本，僵尸回执被拒；
+- **modular**：两个模块分离演化 → 异构空间组合被拒 → 合成体联合训练至
+  1.000 并以整体分数发布。
+
+隔离要求 `unshare -Urn --pid --mount --fork` 可用；不可用时 worker **拒绝
+运行**，不降级为无隔离执行。缺少 torch 后端时相关能力明确失败或跳过，
+不会以 mock 或常量标签假冒训练。
 
 ## 示例
 
@@ -76,8 +122,8 @@ CLI 运行，并受可执行示例合同测试保护。`datalog-concept.zio` 只
 | [docs/roadmap.md](docs/roadmap.md) | 分 Phase 路线图、交付标准、依赖分析、应用蓝图 |
 | [docs/synthesis-plan.md](docs/synthesis-plan.md) | 程序合成模块计划：学习型提议（LLM 主线，遗传/RL/NN 扩展位）× eval 裁判 × 语言化记忆（含论文与汇报规划） |
 | [grove 整体设计](docs/self-learning-architecture.md) | 基于 Zio 的自学习库与产品：多源反馈、代码/权重联合学习、检查点、群体与模块演化（设计基线） |
-| [grove 交付计划](docs/superpowers/plans/2026-10-02-self-learning.md) | P1–P4、W00–W17 工作包、文件落点、依赖、真实验收与风险（W00–W10 已执行并验证，W11–W17 Planned；状态见第 12 节） |
-| [docs/adrs.md](docs/adrs.md) | 架构决策记录（ADR-001 ~ ADR-017） |
+| [grove 交付计划](docs/superpowers/plans/2026-10-02-self-learning.md) | P1–P4、W00–W17 工作包、文件落点、依赖、真实验收与风险（W00–W17 已执行并验证；证据与未验证项见第 12 节） |
+| [docs/adrs.md](docs/adrs.md) | 架构决策记录（ADR-001 ~ ADR-018） |
 | [docs/glossary.md](docs/glossary.md) | 术语参考 |
 | [blog/INDEX.md](blog/INDEX.md) | 系列博文 |
 
