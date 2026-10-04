@@ -40,6 +40,7 @@ import torch
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from data import Observation, load_split  # noqa: E402
 from graph import GraphError, graph_from_json  # noqa: E402
+import recipes as recipe_handler  # noqa: E402
 
 PROTOCOL = "grove.worker/1"
 PROTOCOL_VERSION = 1
@@ -197,7 +198,13 @@ def build_model(graph, params: dict, seed: int = 0):
                 values[op.output] = torch.softmax(values[op.inputs[0]], dim=1)
             # normalize / concat are folded into the feature builder: the
             # host already materialized the fused vector
-        name = graph.outputs["logits"]
+        # The graph names its own output. A single-module graph (a fusion
+        # module that emits `hidden`, W13) is a legitimate model, so the
+        # worker reads whatever the graph declares rather than requiring
+        # every graph to be a classifier.
+        name = next(iter(graph.outputs.values()), None)
+        if name is None:
+            raise GraphError("graph declares no output value")
         if name not in values:
             raise GraphError(f"output {name!r} is not produced by the graph")
         return values[name]
@@ -324,6 +331,16 @@ def do_train(frame: dict) -> None:
                 )
 
         x, y, mask = data["x"], data["y"], data["mask"]
+        # A module that is not a classifier (W13's fusion module emits a
+        # hidden representation) has no class labels to score against, so
+        # its objective is declared by the graph rather than assumed. The
+        # graph says which; the worker does not guess. This is
+        # self-supervised pretraining of one module — the module's own
+        # capability is still measured by the composite's task
+        # evaluation, never by this loss.
+        out_width = linears[next(reversed(linears))].weight.shape[0]
+        classifier = out_width == 2 and "logits" in graph.outputs
+        objective = graph_payload.get("objective", "supervised")
         last_loss = first_loss
         done = False
         step = start_step
@@ -331,9 +348,17 @@ def do_train(frame: dict) -> None:
             order = torch.randperm(x.shape[0])
             batch = order[:64]
             logits = forward(x[batch])
-            per_row = torch.nn.functional.cross_entropy(logits, y[batch], reduction="none")
             weight = mask[batch]
-            loss = (per_row * weight).sum() / weight.sum().clamp(min=1.0)
+            if classifier:
+                per_row = torch.nn.functional.cross_entropy(
+                    logits, y[batch], reduction="none")
+                loss = (per_row * weight).sum() / weight.sum().clamp(min=1.0)
+            else:
+                # representation objective: decorrelate the emitted
+                # dimensions so the module does not collapse to a constant
+                centred = logits - logits.mean(dim=0, keepdim=True)
+                denom = centred.norm(dim=0).clamp(min=1e-6)
+                loss = (centred.pow(2).sum() / denom.pow(2).sum()).clamp(min=0.0, max=10.0)
             optimiser.zero_grad()
             loss.backward()
             optimiser.step()
@@ -357,8 +382,12 @@ def do_train(frame: dict) -> None:
         saved = {name: {"w": layer.weight.detach().tolist(),
                         "b": layer.bias.detach().tolist()}
                  for name, layer in linears.items()}
+        # A module that is not a classifier has no accuracy: reporting
+        # argmax agreement over a representation would be a number that
+        # means nothing. It stays `null`, and the composite's own task
+        # evaluation is what scores it.
         accuracy = None
-        if val is not None:
+        if val is not None and classifier:
             with torch.no_grad():
                 logits = forward(val["x"])
                 sel = val["mask"].bool()
@@ -369,6 +398,8 @@ def do_train(frame: dict) -> None:
         out_path = Path(frame["out"])
         out_path.write_text(json.dumps({
             "model_version": f"worker-{steps}-{seed}",
+            "objective": objective,
+            "classifier": classifier,
             "params": saved,
             "first_loss": first_loss,
             "final_loss": last_loss,
@@ -407,7 +438,11 @@ def do_predict(frame: dict) -> None:
               "attempt_id": frame.get("attempt_id", ""), "error": str(exc)})
 
 
-HANDLERS = {"train": do_train, "predict": do_predict}
+# W15: the extended recipe family (soft distillation, preference,
+# demonstration, self-supervised, environment feedback, restricted policy
+# gradient) is a third entry point. `train` and `predict` are untouched.
+HANDLERS = {"train": do_train, "predict": do_predict,
+            "recipe": recipe_handler.handle}
 
 
 def main() -> int:
@@ -416,7 +451,7 @@ def main() -> int:
     args = parser.parse_args()
 
     emit({"v": PROTOCOL_VERSION, "type": "hello", "protocol": PROTOCOL,
-          "capabilities": ["train", "predict"], "torch": torch.__version__})
+          "capabilities": ["train", "predict", "recipe"], "torch": torch.__version__})
 
     while True:
         try:

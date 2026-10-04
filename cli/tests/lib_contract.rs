@@ -175,3 +175,89 @@ fn proposer_library_contract() {
         ],
     );
 }
+
+/// W14: three indexes over one fact base, and the refusals that keep
+/// them honest — a different AST is not merged, different probe sets are
+/// not compared, and a licence violation is an error not a missing row.
+#[test]
+fn memory_library_contract() {
+    let out = run_contract("memory.zio");
+    assert_markers(
+        &out,
+        "memory.zio",
+        &[
+            // structural index
+            "shape-same",
+            "shape-differs",
+            "structural-index-count",
+            "structural-neighbours",
+            "structural-neighbours-other",
+            "merge-refuses-different-ast",
+            "merge-same-ast-id",
+            // behavioural index, under a named probe set
+            "probe-same-match",
+            "probe-differs-nil",
+            "probe-compatible-differs",
+            "behavioural-bucket-v1",
+            "behavioural-bucket-v2",
+            // licence
+            "licence-allowed",
+            "licence-own-refused-is-string",
+            "licence-source-refused-is-string",
+            "licence-refusal-carries-id",
+            // abstraction extraction
+            "abstraction-spine",
+            "abstraction-truncates-empty",
+            // total description length, definition charged
+            "dl-before-is-one-program",
+            "dl-counts-definition",
+            "dl-two-calls-one-definition",
+            "dl-not-per-call",
+            "dl-zero-definition-is-call-only",
+            "dl-one-call-loses",
+            // macro is last resort and re-checked after expansion
+            "macro-not-for-short-spine",
+            "macro-for-deep-spine",
+            "macro-candidate-carries-name",
+            "macro-recheck-after-expansion",
+            "macro-expansion-not-the-macro-call",
+        ],
+    );
+}
+
+/// W14: the optional semantic index, bound to an encoder and a space
+/// version. A space change invalidates the index unless an explicit
+/// migration re-encodes it.
+#[test]
+fn vector_library_contract() {
+    let out = run_contract("vector.zio");
+    assert_markers(
+        &out,
+        "vector.zio",
+        &[
+            "space-ok",
+            "space-mismatch-refused",
+            "space-mismatch-mentions-version",
+            "space-empty-index-ok",
+            "encoder-ok",
+            "encoder-mismatch-refused",
+            "cosine-identical",
+            "cosine-orthogonal",
+            "cosine-zero-vector",
+            "threshold-passes",
+            "threshold-fails",
+            "nearest-returns-pair",
+            "nearest-picks-collinear",
+            "nearest-empty-index-nil",
+            "query-space-refused",
+            "query-space-refusal-not-a-record",
+            "query-encoder-refused",
+            "migration-sets-space",
+            "migration-sets-encoder",
+            "migration-records-origin",
+            "migration-rewrites-vector",
+            "migration-leaves-original",
+            "invalidate-empties",
+        ],
+    );
+}

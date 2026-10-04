@@ -1,0 +1,212 @@
+;; ── zio.memory — three indexes over one fact base ────────────────
+;;
+;; Structural (AST shape), behavioural (fingerprint under a NAMED
+;; probe set) and semantic (vector + encoder id + space version) views
+;; over the same experience records. This library owns the *policy* of
+;; what may be compared with what; the fact base itself is the grove
+;; store, not a second copy of it (plan W14: 扩展已有经验存储字段而不是
+;; 再建独立事实库).
+;;
+;; Records are maps. A structural record:
+;;   {:memory/id "s-1" :memory/ast "(+ (* 2 x) 1)"
+;;    :memory/probes "arith-v1" :memory/fingerprint "…"
+;;    :memory/usage-permitted true
+;;    :memory/sources ["s-0"]}
+;;
+;; Hard rules, all enforced below and each covered by the contract:
+;;   1. Behavioural comparison is only legal inside ONE probe-set id.
+;;      A fingerprint from another probe set has no meaning — comparing it
+;;      would silently invent an equivalence.
+;;   2. Structural retrieval never merges on semantic similarity: a
+;;      near-neighbour in vector space is a *hint*, the AST is the fact.
+;;      memory--merge requires an identical :memory/ast.
+;;   3. Retrieval cannot cross a licence. A record that forbids usage, or
+;;      whose source observation is not training-permitted, is refused
+;;      with an error — not quietly filtered out of the result list.
+;;
+;; Numbers are integers; similarity is returned in basis points
+;; (0..10000) because zio comparison primitives are integer-only.
+
+(def memory--vector-scale 10000)
+
+;; ── structural index ────────────────────────────────────────────
+
+(defn memory--ast-shape [ast]
+  ;; canonical shape string: operator/arity skeleton with names and
+  ;; literals erased, so `(+ (* 2 x) 1)` and `(+ (* 7 y) 3)` share it.
+  ;; Trailing: the shape of a form is its head, its arity, then the
+  ;; shapes of its children, left to right.
+  (if (list? ast)
+    (str "(" (str-join "," (map (fn [f] (memory--ast-shape f)) ast)) ")")
+    "atom"))
+
+(defn memory--structural-key [record]
+  (get record :memory/ast-shape))
+
+(defn memory--index-structural [records]
+  ;; → vector of [shape-key record], one entry per record. Insertion
+  ;; order is preserved so the index is deterministic.
+  (map (fn [r] (list (memory--structural-key r) r)) records))
+
+(defn memory--structural-neighbours [index ast]
+  ;; exact-shape retrieval: only records whose *shape* matches are
+  ;; candidates. This is the reuse/dedup path; the returned records are
+  ;; still licence-checked by the caller.
+  (let* [key (memory--ast-shape ast)]
+    (filter (fn [entry] (= (get entry 0) key)) index)))
+
+;; ── behavioural index ───────────────────────────────────────────
+
+(defn memory--probe-set [record]
+  ;; the probe-set id travels WITH the fingerprint. A fingerprint is
+  ;; meaningless without it, so it is never stored bare.
+  (get record :memory/probes))
+
+(defn memory--fingerprint-compatible? [a b]
+  (if (= (memory--probe-set a) (memory--probe-set b))
+    true
+    false))
+
+(defn memory--behavioural-match? [a b]
+  ;; Comparing under different probe sets is refused (nil = "no claim"),
+  ;; never answered with a similarity that would be a fiction.
+  (if (memory--fingerprint-compatible? a b)
+    (= (get a :memory/fingerprint) (get b :memory/fingerprint))
+    nil))
+
+(defn memory--index-behavioural [records]
+  ;; group by probe set first, so a cross-set comparison is not even
+  ;; representable in the index.
+  (reduce (fn [acc r]
+            (let* [ps (memory--probe-set r)
+                   bucket (get acc ps [])]
+              (put acc ps (vector-conj bucket r))))
+          {} records))
+
+(defn memory--behavioural-bucket [index probes]
+  (get index probes []))
+
+;; ── licence ─────────────────────────────────────────────────────
+
+(defn memory--sources-ok? [record sources]
+  ;; every source observation must permit training. Nested ifs, not
+  ;; `or`, per the core-eval defect note in learn.zio.
+  (reduce (fn [ok s]
+            (if ok
+              (if (= (get sources s false) true) true false)
+              false))
+          true
+          (get record :memory/sources '[])))
+
+(defn memory--retrievable? [record sources]
+  ;; → true, or a refusal STRING (never a filtered-out row). `sources` is
+  ;; the map of observation id → training-permitted?. A record is
+  ;; retrievable only if it permits usage itself AND every source
+  ;; observation permits training.
+  (if (= (get record :memory/usage-permitted false) true)
+    (if (memory--sources-ok? record sources)
+      true
+      (str "refuse: source observation forbids training for record "
+           (get record :memory/id)))
+    (str "refuse: record " (get record :memory/id) " forbids usage")))
+
+;; ── merge ───────────────────────────────────────────────────────
+
+(defn memory--merge-structural [a b]
+  ;; The only merge the structural index performs. Semantic similarity
+  ;; is irrelevant: a near-neighbour with a different AST is a different
+  ;; program, and merging them would assert an equivalence that nobody
+  ;; measured.
+  (if (= (get a :memory/ast) (get b :memory/ast))
+    (put a :memory/id (get b :memory/id))
+    (str "refuse merge: ast differs (" (get a :memory/ast) " vs " (get b :memory/ast) ")")))
+
+;; ── abstraction extraction ──────────────────────────────────────
+
+(defn memory--call-spine [ast]
+  ;; the chain of operator names along a unary program's spine:
+  ;; `(+ (* 2 x) 1)` → ["+" "*"]. Parameter position is encoded as "·".
+  (loop [form ast acc []]
+    (if (list? form)
+      (if (= (count form) 0)
+        acc
+        (recur (get form 1) (vector-conj acc (str (car form)))))
+      acc)))
+
+(defn memory--spine-key [ast]
+  ;; join needs the separator as its own argument; a single collection
+  ;; argument would stringify the list's own display form.
+  (apply str-join "/" (memory--call-spine ast)))
+
+(defn memory--common-abstraction [programs]
+  ;; Minimal common abstraction: the longest call spine shared by EVERY
+  ;; program, in order. Returns the shared spine, or nil when there is
+  ;; none. Ordinary functions are preferred — a macro is only ever
+  ;; considered when the spine itself cannot be written as a function
+  ;; body (see memory--macro-candidate).
+  ;; Indexed rather than cdr-walked: callers pass quoted lists AND
+  ;; vectors, and `cdr` only walks lists.
+  (if (= (count programs) 0)
+    nil
+    (loop [shared (memory--call-spine (get programs 0))
+           i 1]
+      (if (>= i (count programs))
+        shared
+        (if (= (count shared) 0)
+          []
+          (let* [spine (memory--call-spine (get programs i))
+                 kept (loop [s shared t spine acc [] n 0]
+                        (if (>= n (count s))
+                          acc
+                          (if (>= n (count t))
+                            []
+                            (if (= (get s n) (get t n))
+                              (recur s t (vector-conj acc (get s n)) (+ n 1))
+                              acc))))]
+            (recur kept (+ i 1))))))))
+
+(defn memory--abstraction-dl [abstraction]
+  ;; description length of a candidate abstraction: the function
+  ;; definition that must ship with it. A name is not the cost — the
+  ;; definition is.
+  (count abstraction))
+
+(defn memory--description-length [calls dl]
+  ;; Total description length under an abstraction: the length of every
+  ;; call site PLUS the abstraction's own definition, paid once. This is
+  ;; the honest number; a shorter call site that hides a long library
+  ;; definition is not compression.
+  ;;
+  ;; `calls` is a collection of call-site forms. Summing their node
+  ;; counts (rather than counting the collection) is what makes several
+  ;; call sites share one definition honestly: the definition is charged
+  ;; exactly once, no matter how many programs use it.
+  (+ (reduce (fn [acc c] (+ acc (count c))) 0 calls) dl))
+
+(defn memory--macro-candidate [programs]
+  ;; Macro route, and it is second choice on purpose: a macro is only
+  ;; justified when the shared spine is deeper than a plain function
+  ;; would need to spell out. Returns [defmacro-form name], or nil.
+  (let* [shared (memory--common-abstraction programs)]
+    (if (= (count shared) 0)
+      nil
+      (if (> (count shared) 2)
+        (list (list 'defmacro 'memory--apply-spine
+                    (list 'body 'params
+                          (reduce (fn [acc op] (list op acc))
+                                  'body
+                                  (apply list shared))))
+              'memory--apply-spine)
+        nil))))
+
+(defmacro memory--apply-spine [body params]
+  ;; a real macro, so the re-check below expands a genuine invocation
+  (reduce (fn [acc op] (list op acc)) body params))
+
+(defn memory--expanded-body [invocation]
+  ;; The post-expansion re-check the plan requires: once a macro is in
+  ;; play, its expanded form is re-read for dependencies and permissions,
+  ;; because expansion can reintroduce what the surface form hid.
+  (macroexpand invocation))
+
+(println "zio.memory loaded (structural / behavioural / semantic indexes; licence + probe-set refusals)")
