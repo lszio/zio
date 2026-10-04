@@ -8,7 +8,10 @@
 
 #[cfg(feature = "http")]
 pub mod api;
+pub mod container;
 pub mod demo;
+pub mod inference;
+pub mod modular;
 pub mod population;
 
 use std::path::{Path, PathBuf};

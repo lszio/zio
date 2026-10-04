@@ -1,0 +1,155 @@
+/* grove product UI.
+   Readable lists and an expandable tree — no graph editor, no drag-and-drop
+   orchestrator. Colour is never the only signal: every state also carries
+   a word, because "invalidated" in red and "invalidated" in green must not
+   depend on the reader's monitor.
+*/
+:root {
+  --ink: #16181d;
+  --muted: #5b6470;
+  --line: #d5dae1;
+  --bg: #fbfcfd;
+  --panel: #ffffff;
+  --accent: #1f4f8f;
+  --bad: #9b1c1c;
+  --good: #1c6b3a;
+  --warn-bg: #fff6e5;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  padding: 0 0 4rem;
+  background: var(--bg);
+  color: var(--ink);
+  font: 16px/1.55 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+header {
+  padding: 1.5rem 2rem 1rem;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel);
+}
+
+h1 { margin: 0; font-size: 1.6rem; letter-spacing: -0.01em; }
+h2 { margin: 0 0 0.4rem; font-size: 1.2rem; }
+h3 { margin: 1.4rem 0 0.5rem; font-size: 1rem; color: var(--muted); }
+
+.sub { margin: 0.25rem 0 0.9rem; color: var(--muted); max-width: 62ch; }
+.note { margin: 0.3rem 0 0.9rem; color: var(--muted); max-width: 78ch; font-size: 0.92rem; }
+.hint { display: block; color: var(--muted); font-size: 0.85rem; max-width: 70ch; }
+
+main { padding: 0 2rem; max-width: 1100px; }
+
+section {
+  margin: 1.8rem 0;
+  padding: 1.2rem 1.4rem 1.5rem;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.auth { display: flex; flex-direction: column; gap: 0.3rem; max-width: 60ch; }
+.auth input { max-width: 24rem; }
+
+label { font-weight: 600; font-size: 0.92rem; }
+
+.row {
+  display: grid;
+  grid-template-columns: minmax(12rem, 18rem) 1fr;
+  gap: 0.6rem;
+  align-items: center;
+  margin: 0.5rem 0;
+}
+
+input, select {
+  padding: 0.45rem 0.55rem;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  font: inherit;
+  background: #fff;
+  color: inherit;
+}
+
+/* A visible focus ring is the keyboard affordance; removing it would make
+   this page unusable without a mouse. */
+input:focus-visible, select:focus-visible, button:focus-visible {
+  outline: 3px solid var(--accent);
+  outline-offset: 1px;
+}
+
+button {
+  padding: 0.5rem 0.95rem;
+  border: 1px solid var(--accent);
+  border-radius: 5px;
+  background: var(--accent);
+  color: #fff;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+button:hover { filter: brightness(1.08); }
+
+/* A destructive control is marked by the word on the button, not only by
+   its colour. */
+button.danger { background: var(--bad); border-color: var(--bad); }
+
+.actions { margin-top: 1rem; }
+
+output {
+  display: inline-block;
+  margin-left: 0.8rem;
+  font-size: 0.92rem;
+  font-weight: 600;
+}
+
+output.ok, .ok { color: var(--good); }
+output.error, .error { color: var(--bad); }
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 0.6rem 0 1rem;
+  font-size: 0.93rem;
+}
+
+caption {
+  text-align: left;
+  color: var(--muted);
+  font-size: 0.87rem;
+  padding-bottom: 0.4rem;
+}
+
+th, td {
+  text-align: left;
+  padding: 0.45rem 0.6rem;
+  border-bottom: 1px solid var(--line);
+  vertical-align: top;
+}
+
+thead th { border-bottom: 2px solid var(--line); font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.03em; color: var(--muted); }
+
+/* Narrow screens: the table becomes a stack, and each cell keeps its
+   column name so nothing becomes an unlabelled value. */
+@media (max-width: 700px) {
+  main { padding: 0 1rem; }
+  header { padding: 1rem; }
+  .row { grid-template-columns: 1fr; }
+  thead { position: absolute; left: -9999px; }
+  table, tbody, tr, td { display: block; width: 100%; }
+  tr { border-bottom: 2px solid var(--line); padding: 0.4rem 0; }
+  td { border: 0; display: flex; gap: 0.6rem; }
+  td::before {
+    content: attr(data-label);
+    flex: 0 0 11rem;
+    font-weight: 600;
+    color: var(--muted);
+  }
+  td:empty { display: none; }
+}
+
+ul.tree, #modules, #conflicts { padding-left: 1.1rem; }
+ul.tree li, #modules > li { margin: 0.35rem 0; }
+li.checkpoint { color: var(--muted); }

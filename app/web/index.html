@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>grove — self-learning control surface</title>
+<link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+<header>
+  <h1>grove</h1>
+  <p class="sub">Self-learning control surface. Every number below comes from the store;
+     nothing on this page is a display value.</p>
+  <div class="auth">
+    <label for="token">API token</label>
+    <input id="token" type="password" autocomplete="off" placeholder="bearer token">
+    <span class="hint" id="role-hint">A token maps to exactly one role. Reads need reader;
+      annotating needs annotator; training needs operator; publishing needs publisher.</span>
+  </div>
+</header>
+
+<main>
+  <!-- ── observation & feedback ─────────────────────────────── -->
+  <section aria-labelledby="h-observe">
+    <h2 id="h-observe">1. Observe, predict, correct</h2>
+    <p class="note">A prediction names the exact model version that produced it.
+      A correction names the prediction and the field it fixes. Filing a correction
+      and a model learning from it are two different facts and are shown as two.</p>
+
+    <form id="observe-form">
+      <div class="row">
+        <label for="obs-id">Observation id</label>
+        <input id="obs-id" name="obs-id" value="obs-1" required>
+      </div>
+      <div class="row">
+        <label for="obs-task">Task</label>
+        <input id="obs-task" name="obs-task" value="geometry-sensor-xor@1.0.0" required>
+      </div>
+      <div class="row">
+        <label for="obs-mask">Modality mask (image, numeric)</label>
+        <input id="obs-mask" name="obs-mask" value="true,true" required>
+      </div>
+      <div class="row">
+        <label for="obs-readings">Sensor readings (2 signed numbers)</label>
+        <input id="obs-readings" name="obs-readings" value="1.2,-0.8" required>
+      </div>
+      <div class="row">
+        <label for="obs-bar">Image: bar orientation</label>
+        <select id="obs-bar" name="obs-bar">
+          <option value="horizontal">horizontal (figure 0)</option>
+          <option value="vertical">vertical (figure 1)</option>
+        </select>
+      </div>
+      <p class="note">The image is synthesised here exactly as the frozen task
+        defines it: a 16×16 bar with deterministic brightness and position.
+        The product never uploads an opaque blob it could not show you.</p>
+      <button type="submit">Record observation</button>
+      <output id="observe-out" role="status" aria-live="polite"></output>
+    </form>
+
+    <h3>Predictions</h3>
+    <form id="predict-form">
+      <div class="row">
+        <label for="pred-snapshot">Predict with snapshot (hex digest)</label>
+        <input id="pred-snapshot" name="pred-snapshot" required>
+        <button type="button" id="use-active">use active model</button>
+      </div>
+      <div class="row">
+        <label for="pred-observation">Observation to predict about</label>
+        <input id="pred-observation" name="pred-observation" value="obs-1" required>
+      </div>
+      <button type="submit">Predict</button>
+      <output id="predict-out" role="status" aria-live="polite"></output>
+    </form>
+    <p class="note">The snapshot supplies its own operator graph, so the answer
+      is these weights under the structure they were trained with. A model with
+      no graph is refused rather than guessed at.</p>
+    <table id="predictions">
+      <caption>Each prediction is bound to the snapshot that produced it.</caption>
+      <thead><tr>
+        <th scope="col">Prediction</th><th scope="col">Snapshot</th>
+        <th scope="col">Output</th><th scope="col">Abstained</th>
+        <th scope="col">Correct this</th>
+      </tr></thead>
+      <tbody><tr><td colspan="5">No predictions recorded yet.</td></tr></tbody>
+    </table>
+
+    <form id="signal-form">
+      <div class="row">
+        <label for="sig-id">Correction id</label>
+        <input id="sig-id" name="sig-id" value="corr-1" required>
+      </div>
+      <div class="row">
+        <label for="sig-kind">Kind</label>
+        <select id="sig-kind" name="sig-kind">
+          <option value="human-correction">human correction</option>
+          <option value="human-preference">human preference</option>
+          <option value="demonstration">demonstration</option>
+        </select>
+      </div>
+      <div class="row">
+        <label for="sig-pred">Prediction id it corrects</label>
+        <input id="sig-pred" name="sig-pred" placeholder="pred-1">
+      </div>
+      <div class="row">
+        <label for="sig-field">Field / region in scope</label>
+        <input id="sig-field" name="sig-field" placeholder="label">
+      </div>
+      <div class="row">
+        <label for="sig-content">Corrected value</label>
+        <input id="sig-content" name="sig-content" placeholder="1" required>
+      </div>
+      <button type="submit">Submit correction</button>
+      <output id="signal-out" role="status" aria-live="polite"></output>
+    </form>
+
+    <h3>Signal state</h3>
+    <table id="signals">
+      <caption>Filed is not learned. A signal is <em>learned into</em> a revision
+        only after a dataset freeze carried it.</caption>
+      <thead><tr>
+        <th scope="col">Signal</th><th scope="col">Status</th>
+        <th scope="col">In force</th><th scope="col">Learned into</th>
+      </tr></thead>
+      <tbody><tr><td colspan="4">No signals yet.</td></tr></tbody>
+    </table>
+
+    <h3>Conflicts</h3>
+    <ul id="conflicts" aria-live="polite"><li>None.</li></ul>
+  </section>
+
+  <!-- ── runs & lineage ─────────────────────────────────────── -->
+  <section aria-labelledby="h-lineage">
+    <h2 id="h-lineage">2. Runs, checkpoints and lineage</h2>
+    <table id="runs">
+      <caption>A resume creates a new run; the parent record is never rewritten.</caption>
+      <thead><tr>
+        <th scope="col">Run</th><th scope="col">State</th>
+        <th scope="col">Steps</th><th scope="col">Resumed from</th>
+      </tr></thead>
+      <tbody><tr><td colspan="4">No runs.</td></tr></tbody>
+    </table>
+
+    <h3>Lineage</h3>
+    <p class="note">Recovery level travels with the node. A node whose state
+      artifact is gone is marked not recoverable — it is not hidden.</p>
+    <ul id="lineage" class="tree" aria-live="polite"><li>Loading…</li></ul>
+
+    <div class="actions">
+      <button id="refresh" type="button">Refresh</button>
+    </div>
+  </section>
+
+  <!-- ── compare & select ───────────────────────────────────── -->
+  <section aria-labelledby="h-compare">
+    <h2 id="h-compare">3. Compare under one protocol, then choose</h2>
+    <form id="select-form">
+      <div class="row">
+        <label for="sel-protocol">Protocol</label>
+        <input id="sel-protocol" name="sel-protocol" value="accept-v1" required>
+      </div>
+      <div class="row">
+        <label for="sel-snapshots">Snapshots (comma separated)</label>
+        <input id="sel-snapshots" name="sel-snapshots" required>
+      </div>
+      <button type="submit">Compare</button>
+      <output id="select-out" role="status" aria-live="polite"></output>
+    </form>
+
+    <table id="comparison">
+      <caption>Scores bind to the snapshot that produced them, under this protocol only.</caption>
+      <thead><tr>
+        <th scope="col">Snapshot</th><th scope="col">Repeats</th>
+        <th scope="col">Mean</th><th scope="col">Gates</th>
+      </tr></thead>
+      <tbody><tr><td colspan="4">Nothing compared yet.</td></tr></tbody>
+    </table>
+  </section>
+
+  <!-- ── modules ────────────────────────────────────────────── -->
+  <section aria-labelledby="h-modules">
+    <h2 id="h-modules">4. Modules and experts</h2>
+    <p class="note">Parameter and structure changes, the shared-parameter
+      constraint, and each module's permission requirement. Composition is
+      refused when a module consumes a space its neighbour does not emit.</p>
+    <ul id="modules" aria-live="polite"><li>Loading…</li></ul>
+  </section>
+
+  <!-- ── publish ────────────────────────────────────────────── -->
+  <section aria-labelledby="h-publish">
+    <h2 id="h-publish">5. Publish</h2>
+    <p class="note">Publication is a separate grant from training, and it
+      re-checks every gate. A snapshot trained on a retracted signal is refused.</p>
+    <form id="publish-form">
+      <div class="row">
+        <label for="pub-snapshot">Snapshot</label>
+        <input id="pub-snapshot" name="pub-snapshot" required>
+      </div>
+      <div class="row">
+        <label for="pub-protocol">Protocol</label>
+        <input id="pub-protocol" name="pub-protocol" value="accept-v1" required>
+      </div>
+      <div class="row">
+        <label for="pub-version">Expected publication version</label>
+        <input id="pub-version" name="pub-version" placeholder="leave blank for first">
+      </div>
+      <button type="submit" class="danger">Publish this snapshot</button>
+      <output id="publish-out" role="status" aria-live="polite"></output>
+    </form>
+    <p id="publication" aria-live="polite"></p>
+  </section>
+</main>
+
+<script src="/app.js"></script>
+</body>
+</html>

@@ -3,7 +3,7 @@
 
 use std::path::PathBuf;
 
-use grove_app::{demo, inspect, load_protocol, open_store, operator, population, publisher, select, usage, Paths};
+use grove_app::{demo, inspect, load_protocol, modular, open_store, operator, population, publisher, select, usage, Paths};
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -61,10 +61,11 @@ fn run(args: &[String]) -> Result<String, grove::contracts::Error> {
         "demo" => {
             let case = opts
                 .case
-                .ok_or_else(|| usage("demo needs --case dual|population"))?;
+                .ok_or_else(|| usage("demo needs --case dual|population|modular"))?;
             let device = opts.device.unwrap_or_else(|| "cpu".to_string());
             match case.as_str() {
                 "dual" => demo::run_dual(&root, &paths, &device),
+                "modular" => modular::run_modular(&root, &paths, &device),
                 "population" => population::run_population(
                     &root,
                     &paths,
@@ -72,7 +73,8 @@ fn run(args: &[String]) -> Result<String, grove::contracts::Error> {
                     opts.workers.unwrap_or(2),
                 ),
                 other => Err(usage(&format!(
-                    "unknown case {other:?}; the delivered cases are `dual` and `population`"
+                    "unknown case {other:?}; the delivered cases are `dual`, \
+                     `population` and `modular`"
                 ))),
             }
         }

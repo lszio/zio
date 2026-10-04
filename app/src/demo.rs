@@ -144,7 +144,6 @@ pub fn run_dual(root: &Path, paths: &Paths, device: &str) -> Result<String> {
     // first leg's loss forward in the report
     let _ = loss1;
     store.consume_steps(&plan.run.id, 150)?;
-    record(&store, &operator, &snapshot_joint, joint_acc, 1)?;
     report.push_str(&format!(
         "candidate (nonlinear, paused+resumed): loss {joint_loss:.4}  val accuracy {joint_acc:.3}\n"
     ));
@@ -157,13 +156,39 @@ pub fn run_dual(root: &Path, paths: &Paths, device: &str) -> Result<String> {
         "lift over baseline: {lift_pp:+.1}pp (frozen gates: accuracy ≥ {GATE_ACCURACY}, lift ≥ +{GATE_LIFT_PP}pp)\n"
     ));
 
+    // 5b. The trained weights ARE the candidate. `seed_snapshot` above
+    //     only opened a run contract with placeholder parameters, so
+    //     publishing it would point the deployment at bytes nobody
+    //     trained. Commit the worker's actual output as the candidate's
+    //     parameter artifact and evaluate *that* — the scores recorded
+    //     above came from these weights, so the identity has to be the
+    //     same identity.
+    let trained = commit_trained_snapshot(
+        &store,
+        &operator,
+        "run-joint-candidate",
+        &scratch.join(format!("out-run-joint-{}.json", 150)),
+        nonlinear_graph(),
+    )?;
+    report.push_str(&format!(
+        "candidate weights committed: {} (val accuracy {:.3})\n",
+        &trained.to_hex()[..12],
+        joint_acc
+    ));
+    // The score binds to the identity the weights actually produced, not
+    // to the placeholder contract the run was opened with: publishing a
+    // snapshot whose evaluation belongs to different bytes is exactly the
+    // shell-rewrites-the-evidence failure the plan forbids.
+    record(&store, &operator, &trained, joint_acc, 1)?;
+
     // 6. publication only for a candidate that earned it — a demo that
     //    promotes an underfit model would be a lie with extra steps
     let publisher = publisher();
-    match evaluation::publish_candidate(&store, &publisher, &protocol, &snapshot_joint, None) {
+    match evaluation::publish_candidate(&store, &publisher, &protocol, &trained, None) {
         Ok(version) => {
             report.push_str(&format!(
-                "publication: candidate cleared every gate → v{version} active\n"
+                "publication: candidate cleared every gate → v{version} active ({})\n",
+                &trained.to_hex()[..12]
             ));
         }
         Err(e) => {
@@ -176,6 +201,142 @@ pub fn run_dual(root: &Path, paths: &Paths, device: &str) -> Result<String> {
         }
     }
     Ok(report)
+}
+
+/// Commit the worker's trained output as a real model snapshot.
+///
+/// The worker's `done` frame names a file holding `{params: {name: {w,
+/// b}}}`; that file becomes the snapshot's parameter artifact, so the
+/// published identity points at the exact weights that earned the
+/// score. A snapshot whose parameters are a placeholder cannot be
+/// deployed, and pretending otherwise is how a demo publishes a model
+/// that does not exist.
+pub fn commit_trained_snapshot(
+    store: &Store,
+    actor: &Actor,
+    name: &str,
+    weights_path: &Path,
+    graph: serde_json::Value,
+) -> Result<ArtifactRef> {
+    let bytes = std::fs::read(weights_path).map_err(|e| {
+        Error::new(
+            ErrorKind::BackendFailed,
+            format!("trained weights {} are unreadable: {e}", weights_path.display()),
+        )
+    })?;
+    // verify it is the worker's parameter format, not an arbitrary blob:
+    // a snapshot whose parameters are not `{layer: {w, b}}` cannot be
+    // loaded by the worker at inference time
+    let parsed: serde_json::Value = serde_json::from_slice(&bytes).map_err(|e| {
+        Error::new(
+            ErrorKind::BackendFailed,
+            format!("trained weights are not JSON: {e}"),
+        )
+    })?;
+    let params = parsed.get("params").and_then(|v| v.as_object()).ok_or_else(|| {
+        Error::new(
+            ErrorKind::BackendFailed,
+            "trained weights carry no `params` object: this is not a model",
+        )
+    })?;
+    if params.is_empty() {
+        return Err(Error::new(
+            ErrorKind::BackendFailed,
+            "trained weights carry no layers: an empty model is not a candidate",
+        ));
+    }
+    for (layer, entry) in params {
+        if entry.get("w").is_none() || entry.get("b").is_none() {
+            return Err(Error::new(
+                ErrorKind::BackendFailed,
+                format!(
+                    "layer {layer:?} is missing its weight or bias; a checkpoint \
+                     without a bias describes a different model than the one trained"
+                ),
+            ));
+        }
+    }
+    let artifact = store.artifacts().put(&bytes)?;
+    // The module decomposition is *derived from the trained graph*, not
+    // asserted beside it: the fusion layer and the classification head
+    // are separate layers with separate layers[] entries, so the module
+    // view would otherwise show a monolithic model and composition would
+    // have nothing to compose.
+    let modules = modules_of(&graph, params);
+    let snapshot = grove::contracts::ModelSnapshot {
+        schema: SCHEMA_VERSION,
+        owner: actor.id.clone(),
+        entrypoint: "predict".to_string(),
+        params: params
+            .iter()
+            .map(|(layer, entry)| {
+                let rows = entry["w"].as_array().map(|a| a.len()).unwrap_or(0) as u32;
+                grove::contracts::ParamRef {
+                    module: layer.clone(),
+                    shape: vec![rows],
+                    dtype: "float32".to_string(),
+                    artifact,
+                }
+            })
+            .collect(),
+        libraries: Vec::new(),
+        preprocessing_version: "geometry-sensor-xor@1.0.0".to_string(),
+        modules,
+        ensemble: None,
+        // the graph travels with the weights, so a prediction is the
+        // product of *these* bytes under *this* structure — a caller
+        // cannot pair committed weights with a graph of their own
+        graph: Some(graph),
+    };
+    let digest = store.commit_manifest("ModelSnapshot", &actor.id, &snapshot)?;
+    store.name_snapshot(name, &digest)?;
+    Ok(digest)
+}
+
+/// Read the module contract out of the graph: the first linear layer is
+/// the fusion module (it consumes the concatenated modalities) and the
+/// last is the head. Declaring them here means the product's module view
+/// shows the real structure, and `validate_modules` checks the semantic
+/// spaces against the same graph the worker will execute.
+fn modules_of(
+    graph: &serde_json::Value,
+    trained: &serde_json::Map<String, serde_json::Value>,
+) -> Vec<grove::contracts::ModuleSpec> {
+    let ops = graph["ops"].as_array().cloned().unwrap_or_default();
+    let linears: Vec<&serde_json::Value> = ops
+        .iter()
+        .filter(|op| op["kind"] == "linear")
+        .collect();
+    let mut out = Vec::new();
+    for (index, op) in linears.iter().enumerate() {
+        let name = op["output"].as_str().unwrap_or("layer").to_string();
+        // the module only exists if the worker actually trained it
+        if !trained.contains_key(&name) {
+            continue;
+        }
+        let is_fusion = index == 0;
+        out.push(grove::contracts::ModuleSpec {
+            input_space: if is_fusion { "fused".to_string() } else { "hidden".to_string() },
+            output_space: if is_fusion {
+                "hidden".to_string()
+            } else {
+                "logits".to_string()
+            },
+            layers: vec![name.clone()],
+            depends_on: if is_fusion {
+                Vec::new()
+            } else {
+                vec![linears[0]["output"].as_str().unwrap_or_default().to_string()]
+            },
+            shared_group: None,
+            // the head is the class boundary: it is what a composition
+            // must not silently re-purpose, so it is frozen context
+            frozen: index + 1 == linears.len(),
+            requires: grove::contracts::ActorRole::Operator,
+            name,
+        });
+    }
+    out
 }
 
 /// Generate the frozen data if the manifest is absent. A fresh root still
@@ -223,19 +384,17 @@ pub fn spawn_worker(paths: &Paths) -> Result<Worker> {
 
 pub fn seed_snapshot(store: &Store, actor: &Actor, tag: &str) -> Result<ArtifactRef> {
     let weights = store.artifacts().put(tag.as_bytes()).unwrap();
-    let snapshot = grove::contracts::ModelSnapshot {
-        schema: SCHEMA_VERSION,
-        owner: actor.id.clone(),
-        entrypoint: "predict".to_string(),
-        params: vec![grove::contracts::ParamRef {
+    let snapshot = grove::contracts::ModelSnapshot::new(
+        actor.id.clone(),
+        "predict",
+        vec![grove::contracts::ParamRef {
             module: "fusion".to_string(),
             shape: vec![1],
             dtype: "float32".to_string(),
             artifact: weights,
         }],
-        libraries: vec![],
-        preprocessing_version: "geometry-sensor-xor@1.0.0".to_string(),
-    };
+        "geometry-sensor-xor@1.0.0",
+    );
     store.commit_manifest("ModelSnapshot", &actor.id, &snapshot)
 }
 
