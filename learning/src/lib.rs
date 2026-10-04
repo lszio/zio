@@ -13,20 +13,37 @@
 //! (ADR-009 direction holds: `grove` attaches to `zio-core`, not vice versa).
 
 pub mod artifacts;
+pub mod composition;
 pub mod contracts;
 pub mod coordinator;
+pub mod ensemble;
 pub mod evaluation;
 pub mod checkpoint;
+pub mod lineage;
+pub mod memory;
+pub mod product;
+pub mod recipes;
 pub mod store;
 pub mod worker;
 
 pub use artifacts::{ArtifactDigest, ArtifactStore};
 pub use contracts::{
-    Actor, ActorRole, Branch, Checkpoint, DatasetRevision, Error, ErrorKind, ModelSnapshot,
-    Observation, Prediction, Recipe, Run, SchemaVersion, SignalKind,
+    Actor, ActorRole, Branch, Checkpoint, DatasetRevision, EnsembleRule, EnsembleSpec, Error,
+    ErrorKind, ExpertSpec, ModelSnapshot, ModuleSpec, Observation, Prediction, Recipe, Run,
+    SchemaVersion, SignalKind,
 };
 pub use store::Store;
 pub use worker::{Frame, Isolation, Worker, WorkerConfig};
+
+/// Wall-clock milliseconds. Every record that needs a timestamp calls
+/// this rather than `SystemTime::now()` inline, so a test can find every
+/// time value in one place.
+pub fn api_time_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
 
 /// Install grove's native bindings into an [`zio_core::context::EvalContext`].
 ///

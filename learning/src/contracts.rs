@@ -29,6 +29,12 @@ pub enum ErrorKind {
     Timeout,
     Cancelled,
     BackendFailed,
+    /// A declared contract was violated by data that does not belong in
+    /// the path: incompatible semantic spaces, a mismatched vocabulary, a
+    /// masked action that reached a loss. Distinct from
+    /// `incompatible-state` because the *caller's request* is malformed,
+    /// not the store's history.
+    ProtocolViolation,
 }
 
 impl ErrorKind {
@@ -44,6 +50,7 @@ impl ErrorKind {
             Self::Timeout => "timeout",
             Self::Cancelled => "cancelled",
             Self::BackendFailed => "backend-failed",
+            Self::ProtocolViolation => "protocol-violation",
         }
     }
 }
@@ -97,7 +104,12 @@ pub enum ActorRole {
 }
 
 impl ActorRole {
-    fn rank(self) -> u8 {
+    /// Containment strength. A role is a *capability*, not a score, so
+    /// there is deliberately no `Ord`: the only thing the number is for
+    /// is "does this grant include that one", and for merging a
+    /// permission closure across modules (a composition may require
+    /// MORE than its parts, never less).
+    pub fn rank(self) -> u8 {
         match self {
             Self::Reader => 0,
             Self::Annotator => 1,
@@ -218,6 +230,84 @@ pub struct ParamRef {
     pub artifact: ArtifactRef,
 }
 
+/// One module of a modular snapshot (W13).
+///
+/// A module binds the *semantic* space it accepts and the one it emits —
+/// two values of equal width in different spaces are not
+/// interchangeable, and a composition that joins them is a
+/// `protocol-violation`, not a lucky guess. `layers` names the values
+/// this module owns, so a local replacement can move one module without
+/// touching its neighbours.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ModuleSpec {
+    pub name: String,
+    /// The semantic space this module's input lives in.
+    pub input_space: String,
+    /// The semantic space this module's output lives in.
+    pub output_space: String,
+    /// Graph value names this module owns (its trainable parameters).
+    #[serde(default)]
+    pub layers: Vec<String>,
+    /// Modules whose output feeds this one.
+    #[serde(default)]
+    pub depends_on: Vec<String>,
+    /// Modules sharing this name are ONE evolution unit: their parameters
+    /// move together and can never be restored as two conflicting
+    /// versions.
+    #[serde(default)]
+    pub shared_group: Option<String>,
+    /// A frozen module is context for its neighbours: it may be
+    /// referenced by a composition but never trained by one.
+    #[serde(default)]
+    pub frozen: bool,
+    /// The permission closure: composing modules must not widen this.
+    pub requires: ActorRole,
+}
+
+/// How expert outputs become one answer (W16).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum EnsembleRule {
+    /// Majority vote. With no available expert the result is an
+    /// abstention, never a fabricated answer.
+    Vote,
+    /// Weighted by declared expert weights.
+    Weighted,
+    /// Refuse unless every declared expert produced an output in the
+    /// same space; a missing expert fails the request.
+    AllAgree,
+}
+
+/// One expert bound to a concrete snapshot version and the space its
+/// output lives in.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ExpertSpec {
+    pub name: String,
+    pub module: String,
+    pub snapshot: ArtifactRef,
+    /// The output space of THIS expert. Incompatible spaces are refused
+    /// at composition time, not averaged together at run time.
+    pub output_space: String,
+    #[serde(default)]
+    pub weight: f64,
+}
+
+/// Router, expert versions, combination rule and their dependencies, bound
+/// into the snapshot so the ensemble is one reviewable identity rather
+/// than a runtime convention.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EnsembleSpec {
+    /// The space the router's input features live in.
+    pub router_input_space: String,
+    /// The space all experts must agree on.
+    pub output_space: String,
+    pub rule: EnsembleRule,
+    pub experts: Vec<ExpertSpec>,
+    /// Hard ceiling on steps one ensemble call may consume, summed over
+    /// its experts. Routing around this is not a routing decision.
+    pub budget_per_call: u32,
+}
+
 /// Which principal produced this snapshot; cross-actor artifact
 /// references are rejected by the store unless ownership matches.
 /// Exact versions of the capability libraries the program needs.
@@ -229,12 +319,66 @@ pub struct ModelSnapshot {
     pub params: Vec<ParamRef>,
     pub libraries: Vec<(String, String)>,
     pub preprocessing_version: String,
+    /// Module decomposition. Empty = a monolithic model, which is what
+    /// every W00–W10 record is; the field exists so composition has a
+    /// place to live without a second record type.
+    #[serde(default)]
+    pub modules: Vec<ModuleSpec>,
+    /// Router + experts, when this snapshot is an ensemble.
+    #[serde(default)]
+    pub ensemble: Option<EnsembleSpec>,
+    /// The operator graph this snapshot executes, as the worker protocol
+    /// describes it. A snapshot that cannot say what it computes is not
+    /// deployable: the product would have to take the graph from the
+    /// caller, and a caller-supplied graph against committed weights is
+    /// how a prediction ends up describing a model nobody trained.
+    #[serde(default)]
+    pub graph: Option<serde_json::Value>,
 }
 
 impl ModelSnapshot {
     /// The canonical bytes this record is identified and frozen by.
     pub fn canonical_bytes(&self) -> Result<Vec<u8>> {
         canonical_json(self)
+    }
+
+    /// A monolithic snapshot: one entrypoint, no modules, no router.
+    /// Every pre-W13 record is exactly this.
+    pub fn new(
+        owner: impl Into<String>,
+        entrypoint: impl Into<String>,
+        params: Vec<ParamRef>,
+        preprocessing_version: impl Into<String>,
+    ) -> Self {
+        Self::with_graph(
+            owner,
+            entrypoint,
+            params,
+            preprocessing_version,
+            None,
+        )
+    }
+
+    /// The same, plus the graph the snapshot executes. A deployable
+    /// snapshot always has one — see [`ModelSnapshot::graph`].
+    pub fn with_graph(
+        owner: impl Into<String>,
+        entrypoint: impl Into<String>,
+        params: Vec<ParamRef>,
+        preprocessing_version: impl Into<String>,
+        graph: Option<serde_json::Value>,
+    ) -> Self {
+        Self {
+            schema: SCHEMA_VERSION,
+            owner: owner.into(),
+            entrypoint: entrypoint.into(),
+            params,
+            libraries: Vec::new(),
+            preprocessing_version: preprocessing_version.into(),
+            modules: Vec::new(),
+            ensemble: None,
+            graph,
+        }
     }
 }
 
