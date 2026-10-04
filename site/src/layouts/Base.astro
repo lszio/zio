@@ -8,11 +8,12 @@ interface Props {
 
 const { title, description } = Astro.props;
 
-// `base: '/site'` in astro.config.mjs — Astro.base is the single source of
-// truth for the prefix. The old hand-written HTML hardcoded `.wasm/...`
-// relative paths, which break the moment a page is not served from the
-// directory those paths were written against.
-const base = import.meta.env.BASE_URL;
+// The site is served from the domain root, but Astro.base stays the single
+// source of truth for the prefix so the same build works behind a subpath.
+// Normalised once: BASE_URL is '/' at the root and a bare '/site' on a
+// subpath, so every join below writes `${base}/…` explicitly rather than
+// relying on which shape it got.
+const base = import.meta.env.BASE_URL.replace(/\/$/, '');
 const links = [
   { href: `${base}/#philosophy`, label: '设计哲学' },
   { href: `${base}/#architecture`, label: '分层架构' },
@@ -21,11 +22,11 @@ const links = [
   { href: `${base}/grove/`, label: 'grove 自学习' },
 ];
 const docs = [
-  { href: `${base}/../docs/status.md`, label: 'Status' },
-  { href: `${base}/../docs/feature-matrix.md`, label: 'Feature Matrix' },
-  { href: `${base}/../docs/zos-spec.md`, label: 'ZOS Spec' },
-  { href: `${base}/../docs/zio-architecture.md`, label: 'Architecture' },
-  { href: `${base}/../docs/adrs.md`, label: 'ADRs' },
+  { href: '/docs/status.md', label: 'Status' },
+  { href: '/docs/feature-matrix.md', label: 'Feature Matrix' },
+  { href: '/docs/zos-spec.md', label: 'ZOS Spec' },
+  { href: '/docs/zio-architecture.md', label: 'Architecture' },
+  { href: '/docs/adrs.md', label: 'ADRs' },
 ];
 const current = Astro.url.pathname;
 // Hash links stay on the landing page; only the real subpages get aria-current.

@@ -4,7 +4,7 @@ import Repl from '../components/Repl.astro';
 import CodeTabs from '../components/CodeTabs.astro';
 import { stats } from '../data/stats';
 import { theorems, archLayers, roadmap } from '../data/content';
-const base = import.meta.env.BASE_URL;
+const base = import.meta.env.BASE_URL.replace(/\/$/, '');
 ---
 <Base title="Zio — 现代通用 Lisp（Rust + WASM）" description="Zio 是一门以同像性为基石的现代通用 Lisp 语言：零全局状态、ZOS 对象系统、卫生宏、CSP 通道与 WASM / JS 互操作。">
   <section class="hero">
@@ -21,8 +21,8 @@ const base = import.meta.env.BASE_URL;
         </p>
         <div class="hero-cta">
           <a href="#terminal" class="btn btn-primary">体验浏览器真实 WASM REPL</a>
-          <a href={`${base}agent/`} class="btn btn-secondary">Agent &amp; LLM 实战 →</a>
-          <a href={`${base}grove/`} class="btn btn-secondary">grove 自学习产品 →</a>
+          <a href={`${base}/agent/`} class="btn btn-secondary">Agent &amp; LLM 实战 →</a>
+          <a href={`${base}/grove/`} class="btn btn-secondary">grove 自学习产品 →</a>
         </div>
       </div>
       <Repl />

@@ -3,10 +3,9 @@
   "name": "zio-landing-site",
   "cleanUrls": true,
   "rewrites": [
-    { "source": "/", "destination": "/site/index.html" },
-    { "source": "/agent", "destination": "/site/agent/index.html" },
-    { "source": "/grove", "destination": "/site/grove/index.html" },
-    { "source": "/site/(.*)", "destination": "/site/$1" },
-    { "source": "/(.*)", "destination": "/site/$1" }
+    { "source": "/", "destination": "/index.html" },
+    { "source": "/grove", "destination": "/grove/index.html" },
+    { "source": "/agent", "destination": "/agent/index.html" },
+    { "source": "/(.*)", "destination": "/$1" }
   ]
 }

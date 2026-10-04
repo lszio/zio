@@ -1,7 +1,7 @@
 ---
 import Base from '../../layouts/Base.astro';
 import { scenarios } from '../../data/agent';
-const base = import.meta.env.BASE_URL;
+const base = import.meta.env.BASE_URL.replace(/\/$/, '');
 const cards = [
   { key: 'toolAgent', n: '①', title: 'Tool-Calling Agent Loop', desc: '模拟 LLM 按语义路由到工具（weather / calc），未命中工具时回退直答——Agent 循环的最小完备形态。' },
   { key: 'cspAgents', n: '②', title: '多 Agent CSP 协作', desc: 'Planner / Executor 经 CSP 通道投递消息，协调者汇聚收件箱——语言原语直接承担消息总线。' },
@@ -25,7 +25,7 @@ const cards = [
       <div class="hero-cta">
         <a href="#training" class="btn btn-primary">观看训练过程</a>
         <a href="#playground" class="btn btn-secondary">试用 Agent 编排</a>
-        <a href={`${base}grove/`} class="btn btn-secondary">grove 自学习产品 →</a>
+        <a href={`${base}/grove/`} class="btn btn-secondary">grove 自学习产品 →</a>
       </div>
     </div>
   </section>

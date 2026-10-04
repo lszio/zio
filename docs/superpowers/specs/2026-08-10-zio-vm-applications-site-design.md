@@ -394,7 +394,7 @@ DSL 使用 S-expression 声明：
 
 ### 12.1 技术边界
 
-> **实现说明（2026-10-05）**：本节的“手写 HTML + 零构建依赖”方案已被 Astro 静态构建替换，理由是子页面与共享布局需要复用，而手写复制三份导航/页脚不可维护。视觉与交互契约（Terminal 风格、真实 WASM REPL、移动端布局、reduced-motion）保持不变。
+> **实现说明（2026-10-05）**：本节的“手写 HTML + 零构建依赖”方案已被 Astro 静态构建替换，理由是子页面与共享布局需要复用，而手写复制三份导航/页脚不可维护。视觉与交互契约（Terminal 风格、真实 WASM REPL、移动端布局、reduced-motion）保持不变。站点从**域名根路径**提供（`/` 落地页、`/grove`、`/agent` 真实路由，无 `/site` 前缀）。
 > 实际结构：`site/src/pages/*.astro`（落地页、Agent 页）、`site/src/layouts/Base.astro`（共享布局）、`site/content/**/*.mdx`（子页面内容源，经内容集合编译）、`site/public/wasm/`（提交的 WASM 引擎）、`site/src/styles/global.css`。构建产物仍是纯静态文件，可发布到任意静态服务器。语言切换未实现，页面保持中文。
 
 ```text

@@ -57,7 +57,7 @@ zio> (require :my.module)
 
 ## 落地页
 
-站点是 Astro 静态构建，产物由 nginx 在 `/site/` 下提供：`/` 302 到 `/site/`。
+站点是 Astro 静态构建，产物由 nginx 在域名根路径提供：`/` 即落地页，`/grove`、`/agent` 是真实路由。
 
 ```bash
 cd site
@@ -71,8 +71,9 @@ bun run build      # 产出 site/dist
   **新增子页面只需在 `site/content/` 放一个 `.mdx` 文件**，无需改组件。
 - 引擎：`site/public/wasm/` 是提交的 WASM 产物。改过 `core/src` 后必须先跑
   `./tools/build-wasm.sh`（脚本会写入 `site/public/wasm/`），否则页面会静默运行旧引擎。
-- 布局前缀来自 `astro.config.mjs` 的 `base: '/site'`；wasm 通过
-  `src/lib/engine.ts` 用 `BASE_URL` 拼接，不要写相对路径。
+- 路径前缀来自 `astro.config.mjs` 的 `base`；wasm 通过 `src/lib/engine.ts` 用
+  `BASE_URL` 拼接，不要写相对路径。`BASE_URL` 在根路径是 `/`、在子路径是 `/site`
+  （无结尾斜杠），两处都先 `.replace(/\/$/, '')` 再显式拼 `/`，不要直接相加。
 - 镜像：`Dockerfile` 是「bun 构建 → nginx 托管」两阶段，`docker-compose.dokploy.yml`
   用它部署。
 
