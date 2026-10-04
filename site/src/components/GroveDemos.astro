@@ -1,0 +1,35 @@
+---
+const demos = [
+  {
+    case: 'dual',
+    title: 'dual — 代码与权重联合学习',
+    cmd: 'grove demo --case dual --root /tmp/grove-dual --device cpu',
+    body: '线性基线 0.539 → 经<strong>真实暂停/续接</strong>的非线性候选 0.996。发布的是真实训练权重，不是占位快照。',
+  },
+  {
+    case: 'population',
+    title: 'population — 多 worker 群体',
+    cmd: 'grove demo --case population --root /tmp/grove-pop --workers 2 --device cpu',
+    body: '两个真实隔离 worker 进程并行训练（实测窗口重叠 966ms），共用一条预算账本，僵尸回执被拒。',
+  },
+  {
+    case: 'modular',
+    title: 'modular — 模块分离演化与组合',
+    cmd: 'grove demo --case modular --root /tmp/grove-modular --device cpu',
+    body: '两个模块分离演化 → 异构空间组合被拒并给出原因 → 合成体联合训练至 1.000 并以整体分数发布。',
+  },
+];
+---
+<div class="demo-cards">
+  {demos.map((d) => (
+    <div class="card">
+      <h3>{d.title}</h3>
+      <pre class="demo-cmd">{d.cmd}</pre>
+      <p set:html={d.body} />
+    </div>
+  ))}
+</div>
+<p class="sim-note">
+  隔离依赖 <code>unshare -Urn --pid --mount --fork</code>；不可用时 worker <b>拒绝运行</b>，不降级为无隔离执行。
+  缺少 torch 后端时相关能力明确失败或跳过，不会以 mock 或常量标签假冒训练。
+</p>

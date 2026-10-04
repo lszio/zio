@@ -1,0 +1,112 @@
+---
+import Base from '../layouts/Base.astro';
+import Repl from '../components/Repl.astro';
+import CodeTabs from '../components/CodeTabs.astro';
+import { stats } from '../data/stats';
+import { theorems, archLayers, roadmap } from '../data/content';
+const base = import.meta.env.BASE_URL;
+---
+<Base title="Zio — 现代通用 Lisp（Rust + WASM）" description="Zio 是一门以同像性为基石的现代通用 Lisp 语言：零全局状态、ZOS 对象系统、卫生宏、CSP 通道与 WASM / JS 互操作。">
+  <section class="hero">
+    <div class="container hero-grid">
+      <div class="hero-content">
+        <div class="eyebrow">
+          <span class="eyebrow-dot"></span>
+          Zero Global State • {stats.rustTests} Tests Passing • Real WASM Runtime
+        </div>
+        <h1>A Modern General-Purpose Lisp.</h1>
+        <p>
+          Zio 是一门以同像性（Homoiconicity）为基石的现代通用脚本语言：一门语言覆盖从自动化脚本、服务编排到 Agent 应用的完整光谱。
+          基于 Rust 实现，编译为原生 WebAssembly，具备 Common Lisp CLOS/AMOP 对象系统、syntax-rules 卫生宏与 JS / DOM 深度互操作。
+        </p>
+        <div class="hero-cta">
+          <a href="#terminal" class="btn btn-primary">体验浏览器真实 WASM REPL</a>
+          <a href={`${base}agent/`} class="btn btn-secondary">Agent &amp; LLM 实战 →</a>
+          <a href={`${base}grove/`} class="btn btn-secondary">grove 自学习产品 →</a>
+        </div>
+      </div>
+      <Repl />
+    </div>
+  </section>
+
+  <section class="section" style="padding: 40px 0; background: rgba(0, 0, 0, 0.2);">
+    <div class="container stats-grid">
+      {stats.cards.map((c) => (
+        <div class="stat-card">
+          <div class="stat-number" data-target={c.value}>{c.value}</div>
+          <div class="stat-label">{c.label}</div>
+        </div>
+      ))}
+    </div>
+  </section>
+
+  <section class="section" id="philosophy">
+    <div class="container">
+      <div class="section-header">
+        <h2>正交严密的核心设计定理</h2>
+        <p>一门通用语言的设计原则——同样适用于脚本、服务与 Agent 编排</p>
+      </div>
+      <div class="grid-3">
+        {theorems.map((t) => (
+          <div class="card">
+            <div class="card-icon">{t.icon}</div>
+            <h3>{t.n}. {t.title}</h3>
+            <p set:html={t.body} />
+          </div>
+        ))}
+      </div>
+    </div>
+  </section>
+
+  <section class="section" id="architecture" style="background: rgba(0, 0, 0, 0.2);">
+    <div class="container">
+      <div class="section-header">
+        <h2>正交分层系统架构</h2>
+        <p>从底层 Host 到扩展库生态与 WASM 嵌入层</p>
+      </div>
+      <div class="arch-box">
+        {archLayers.map((l) => (
+          <div class="arch-layer">
+            <div class="arch-title">{l.title}</div>
+            <div class="arch-desc" set:html={l.desc} />
+          </div>
+        ))}
+      </div>
+    </div>
+  </section>
+
+  <section class="section" id="features">
+    <div class="container">
+      <div class="section-header">
+        <h2>核心特性与 JS 互操作演示</h2>
+        <p>体验 Zio 在 WASM 环境下的全量求值与 JavaScript 交互能力</p>
+      </div>
+      <CodeTabs />
+    </div>
+  </section>
+
+  <section class="section" id="roadmap">
+    <div class="container">
+      <div class="section-header">
+        <h2>路线图一览</h2>
+        <p>按功能 Phase 组织的自举与生态演进阶段</p>
+      </div>
+      <div class="grid-3">
+        {roadmap.map((r) => (
+          <div class="card" style={`border-left: 3px solid var(--accent-${r.accent});`}>
+            <div class="card-icon">{r.icon}</div>
+            <h3>{r.title}</h3>
+            <p>{r.body}</p>
+          </div>
+        ))}
+      </div>
+    </div>
+  </section>
+
+  <script>
+    import { initRepl, initCodeTabs, initStatsCounter } from '../scripts-repl.js';
+    initCodeTabs();
+    initStatsCounter();
+    initRepl();
+  </script>
+</Base>

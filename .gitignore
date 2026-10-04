@@ -11,3 +11,9 @@ target
 .venv/
 __pycache__/
 *.pt
+
+# Astro build output and deps. site/public/wasm is deliberately NOT ignored:
+# the committed wasm bundle is what the page loads (tools/build-wasm.sh).
+site/node_modules/
+site/dist/
+site/.astro/

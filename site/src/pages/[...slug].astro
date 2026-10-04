@@ -1,0 +1,38 @@
+---
+import { getCollection, render } from 'astro:content';
+import Base from '../layouts/Base.astro';
+
+// Subpages are external .mdx files under site/content/ — a new page is a new
+// file, no component work. The landing page is index.astro and is not part
+// of this collection.
+export async function getStaticPaths() {
+  const entries = await getCollection('pages', (e) => e.id !== 'index');
+  return entries
+    .sort((a, b) => a.data.order - b.data.order)
+    .map((entry) => ({ params: { slug: entry.id }, props: { entry } }));
+}
+
+const { entry } = Astro.props;
+const { Content } = await render(entry);
+const base = import.meta.env.BASE_URL;
+---
+<Base title={`${entry.data.title} — Zio`} description={entry.data.description}>
+  <section class="hero hero-page-head">
+    <div class="container">
+      <div class="eyebrow">
+        <span class="eyebrow-dot"></span>
+        子页面 · 由 site/content/ 下的 MDX 驱动
+      </div>
+      <h1>{entry.data.title}</h1>
+      <p class="hero-lead">{entry.data.description}</p>
+      <div class="hero-cta">
+        <a href={`${base}/`} class="btn btn-secondary">← 返回落地页</a>
+        <a href={`${base}/../docs/feature-matrix.md`} class="btn btn-secondary">权威特性矩阵</a>
+      </div>
+    </div>
+  </section>
+
+  <article class="section prose container">
+    <Content />
+  </article>
+</Base>

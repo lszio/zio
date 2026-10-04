@@ -18,7 +18,7 @@ fn run_program_source(name: &str, source: &str) -> Output {
         .expect("run zio-cli on program")
 }
 
-/// Mirrors the REPL presets in site/app.js (`presets`). eval_zio in wasm.rs
+/// Mirrors the REPL presets in site/src/scripts-repl.js (`presets`). eval_zio in wasm.rs
 /// creates a fresh Env per call, and the site replays cumulative programs per
 /// displayed line — each program below is one such cumulative program, ending
 /// in the line whose result the site shows.

@@ -1,0 +1,58 @@
+---
+title: grove — Zio 之上的自学习产品
+description: grove 是基于 Zio 的自学习库与产品：多源反馈、代码与权重联合学习、检查点恢复、群体与模块演化。本页为设计基线与实测数字的静态展示。
+order: 1
+---
+
+import GroveMetrics from '../../src/components/GroveMetrics.astro';
+import GroveDemos from '../../src/components/GroveDemos.astro';
+
+## 一句话定位
+
+`grove` 不是一个聊天 Agent，而是 **Zio 自己的学习层**：模型 = 程序结构 + 参数 + 版本绑定的能力库，
+学习同时改写代码与权重，Rust 宿主负责持久化、权限、预算与进程隔离。
+
+- 学习宿主库 `learning/`（crate 名 `grove`）
+- 产品壳 `app/`（crate 名 `grove-app`，二进制 `grove`）
+- 张量后端 `workers/torch/`（PyTorch CPU 参考实现，只执行许可算子图）
+- 策略与模型表示 `lib/zio/learn/*.zio`（纯 Zio）
+
+<GroveMetrics />
+
+## 三个可运行的真实场景
+
+不是演示动画：`grove demo --case ...` 会真实训练、真实写制品、真实发布模型。
+
+<GroveDemos />
+
+## 为什么它长在 Zio 上，而不是旁边
+
+| 能力 | Zio 提供的原语 |
+| --- | --- |
+| 模型即数据 | 同像性使程序描述可被宏、函数、数据库当作普通 Zio 值操作 |
+| 学习策略 | `lib/zio/learn/` 用 Lisp 写策略：候选搜索、配方、群体选择、能力抽象 |
+| 反馈生命周期 | 版本化记录 + 内容寻址制品（`learning/src/store.rs`、`artifacts.rs`） |
+| 并发 | CSP 通道承载多 worker 消息；协调者是纯 Zio 分配策略 |
+
+宿主库不重新实现算法，产品壳不复制学习逻辑，core 不感知学习——依赖保持单向。
+
+## 拒绝优先的产品原则
+
+grove 的多数代码在**拒绝**而不是在**接受**：
+
+- 快照必须自带算子图（`modules` / `ensemble` / `graph` 三字段缺一不可），
+  否则任何 reader 都能给已提交权重配一张自己编的图。
+- 组合检查是**语义**的，不是数值的：同维不同语义空间被拒。
+- `all-agree` 缺一个专家即 abstain——无法建立一致性时不假装一致。
+- 异构输出空间的专家在 bind 阶段被拒，绝不平均。
+- 未声明的信号类型、超上限预算、未知 recipe 一律拒绝。
+- 未声明保留期的可达性分析**不删除任何东西**：未声明策略不是销毁历史的许可。
+
+## 状态
+
+W00–W17 已实现为 **Experimental**，验收以契约测试与实测数字为准
+（`cargo test --workspace --all-features` 364 通过 / 0 失败，torch worker 72 通过）。
+权威能力状态见仓库 `docs/feature-matrix.md`。
+
+未验证项如实列出：商业上游模型的软输出与授权条款、真实业务数据与业务门槛、
+GPU 推理成本。这些不因本地闭环通过而标记为已联调。

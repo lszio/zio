@@ -1,0 +1,19 @@
+---
+// Measured values, copied from the delivery plan's execution-status table
+// (docs/superpowers/plans/2026-10-02-self-learning.md §12) and the demo runs.
+// Nothing here is estimated.
+const metrics = [
+  { value: '364', label: 'workspace 契约测试通过（--all-features）' },
+  { value: '72', label: 'torch worker 单元测试通过' },
+  { value: '+45.7pp', label: 'dual：0.539 → 0.996（真实暂停/续接）' },
+  { value: '966ms', label: 'population：两 worker 并行窗口重叠实测' },
+];
+---
+<div class="stats-grid grove-metrics">
+  {metrics.map((m) => (
+    <div class="stat-card">
+      <div class="stat-number stat-number-text">{m.value}</div>
+      <div class="stat-label">{m.label}</div>
+    </div>
+  ))}
+</div>

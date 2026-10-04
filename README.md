@@ -55,6 +55,27 @@ zio> (load "program.zio")
 zio> (require :my.module)
 ```
 
+## 落地页
+
+站点是 Astro 静态构建，产物由 nginx 在 `/site/` 下提供：`/` 302 到 `/site/`。
+
+```bash
+cd site
+bun install
+bun run dev        # 本地开发
+bun run build      # 产出 site/dist
+```
+
+- 页面：`src/pages/index.astro`（落地页 + 真实 WASM REPL）、
+  `src/pages/agent/index.astro`（Agent & LLM）、`content/**/*.mdx`（子页面内容源）。
+  **新增子页面只需在 `site/content/` 放一个 `.mdx` 文件**，无需改组件。
+- 引擎：`site/public/wasm/` 是提交的 WASM 产物。改过 `core/src` 后必须先跑
+  `./tools/build-wasm.sh`（脚本会写入 `site/public/wasm/`），否则页面会静默运行旧引擎。
+- 布局前缀来自 `astro.config.mjs` 的 `base: '/site'`；wasm 通过
+  `src/lib/engine.ts` 用 `BASE_URL` 拼接，不要写相对路径。
+- 镜像：`Dockerfile` 是「bun 构建 → nginx 托管」两阶段，`docker-compose.dokploy.yml`
+  用它部署。
+
 ## grove 自学习产品
 
 grove 是一个独立的 crate 组（`learning/` = 宿主库，`app/` = 产品壳），

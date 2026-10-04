@@ -32,7 +32,7 @@ Status meanings:
 | Concurrent primitives (`future-call`, `chan`) | Experimental — synchronous placeholder | [ADR-012](adrs.md): nothing spawns a thread; `future-call` evaluates eagerly. Real concurrency is a deferred decision |
 | Module system (`module`/`export`/`require`, `ns/name`, `:as`, `:refer`) | Experimental | [`cli/tests/modules.rs`](../cli/tests/modules.rs) — exports enforced on refer and qualified access; file modules via cwd or `ZIO_PATH` |
 | File I/O through IoHost (`load`/`slurp`/`spit`/`file-exists?`) | Experimental | [ADR-011](adrs.md); `BufferIoHost` offers an in-memory FS for tests/sandboxes |
-| WASM build + landing-page REPL | Experimental | [`core/src/wasm.rs`](../core/src/wasm.rs), [`site/index.html`](../site/index.html) |
+| WASM build + landing-page REPL | Experimental | [`core/src/wasm.rs`](../core/src/wasm.rs), [`site/src/pages/index.astro`](../site/src/pages/index.astro), [`site/src/lib/engine.ts`](../site/src/lib/engine.ts) |
 | ZIR, bytecode VM, and JIT | Planned | [approved VM design](superpowers/specs/2026-08-10-zio-vm-applications-site-design.md) |
 | Process capability and pacman updater | Planned | [approved applications design](superpowers/specs/2026-08-10-zio-vm-applications-site-design.md) |
 | Numeric kernel and scientific API | Planned | [approved applications design](superpowers/specs/2026-08-10-zio-vm-applications-site-design.md) |
@@ -56,7 +56,8 @@ Status meanings:
 | grove W16: expert routing, output combination, multi-teacher distillation | Experimental | router, expert snapshot versions, output space, combination rule and per-call budget are bound into one `ModelSnapshot` identity ([`learning/src/ensemble.rs`](../learning/src/ensemble.rs)). Experts in different output spaces are refused at bind time, never averaged; **no available expert means abstain**, a vote tie has no honest winner, and `all-agree` with a missing expert abstains because unanimity cannot be established; an unavailable expert is *named* and its cost still billed, so coverage is a real number. One call is charged for every expert it used. Population agreement is a distillation **target with an agreement level**, never a verified label — a unanimous-but-wrong population still faces task acceptance ([`learning/tests/ensemble_contract.rs`](../learning/tests/ensemble_contract.rs), 12; the rule contrast is demonstrated in `demo --case modular`) |
 | Concurrency model decision | Adopted (ADR-014) | threads bind to the VM phase; AST interpreter stays single-threaded; `Value` !Send is verified |
 | Memory model (Arc cycles) | Known, anchored (ADR-015) | self-referential closures leak by design until the VM-phase GC decision |
-| Landing site | Stable | [`site/index.html`](../site/index.html) |
+| Landing site | Stable | Astro static build: [`site/src/pages/index.astro`](../site/src/pages/index.astro) (landing), [`site/src/pages/agent/index.astro`](../site/src/pages/agent/index.astro) (Agent & LLM), [`site/content/grove/index.mdx`](../site/content/grove/index.mdx) (grove subpage, external MDX via content collection); wasm engine committed at `site/public/wasm`, rebuilt with `tools/build-wasm.sh` |
+| grove subpage on the landing site | Experimental | [`site/content/grove/index.mdx`](../site/content/grove/index.mdx) — static exposition of the grove design and measured demo numbers; it is **not** the product surface (`app/web/`, served by `grove serve`) and runs no learning itself |
 
 The stable reader row does not include set literals: `#{...}` remains planned
 and must not be used in runnable examples.

@@ -1,77 +1,13 @@
-// Zio Agent & LLM Page — real WASM evaluation, no server, no pre-recorded animation.
+// Agent & LLM page: real WASM evaluation, no server, no pre-recorded
+// animation. Logic moved from the previous site/agent.js; the engine load
+// now goes through ../lib/engine.js so the BASE_URL prefix is resolved once.
+
+import { loadEngine } from './lib/engine.js';
+import { scenarios } from './data/agent.js';
 
 let engine = null;
 
-// ── Zio sources (validated against the wasm engine; no string escapes exist
-//    in the reader, so mock LLM data is injected as map literals) ──
-const scenarios = {
-  toolAgent: `;; ── Tool-Calling Agent Loop（模拟 LLM 路由，本地离线规则）──
-(def env {:weather {:city "Hangzhou" :temp-c 24 :cond "sunny"}
-          :calc    {:expr "40 + 2" :value 42}})
-
-(defn route [msg]
-  (cond
-    ((str-contains? msg "天气") :weather)
-    ((str-contains? msg "计算") :calc)
-    (else :none)))
-
-(defn agent [msg]
-  (let* [tool (route msg)]
-    (cond
-      ((= tool :weather)
-       (let* [r (get env :weather)]
-         (str "Tool[weather] → " (get r :city) " " (get r :temp-c) "°C " (get r :cond))))
-      ((= tool :calc)
-       (let* [r (get env :calc)]
-         (str "Tool[calc] → " (get r :expr) " = " (get r :value))))
-      (else (str "LLM → " msg " | 无可用工具，直接回答")))))
-
-(list
-  (agent "查一下 Hangzhou 天气")
-  (agent "帮我计算 40 + 2")
-  (agent "写一首诗"))`,
-
-  cspAgents: `;; ── 多 Agent CSP 通道协作 ──
-(def bus (chan 8))
-
-(defn worker [name payload]
-  (do
-    (send! bus {:from name :msg payload})
-    (str name " 已投递: " payload)))
-
-(def a (worker "planner" "拆解任务: 抓取数据"))
-(def b (worker "executor" "执行: 抓取数据"))
-
-(def inbox (list (recv! bus) (recv! bus)))
-(defn summarize [acc m]
-  (str acc (get m :from) " → " (get m :msg) "；"))
-(str "协调者收到 ⇒ " (reduce summarize "" inbox))`,
-
-  llmPipeline: `;; ── LLM 结构化输出管道（模拟补全 → 提取 → JSON 序列化）──
-(def mock-llm {:summary {:tldr "Zio 是通用 Lisp" :tokens 12}
-               :extract {:entity "Zio" :score 95}})
-
-(defn run-pipeline [kind text]
-  (let* [c (get mock-llm kind)]
-    (cond
-      ((= kind :summary)
-       (json-stringify {:kind "summary" :input text :tldr (get c :tldr) :tokens (get c :tokens)}))
-      (else
-       (json-stringify {:kind "extract" :input text :entity (get c :entity) :score (get c :score)})))))
-
-(list
-  (run-pipeline :summary "Zio 是一门通用 Lisp 语言")
-  (run-pipeline :extract "Zio 与 Lisp 的关系"))`
-};
-
-const SCENARIO_OUT = { toolAgent: 'out-tool', cspAgents: 'out-csp', llmPipeline: 'out-pipeline' };
-const SCENARIO_SRC = { toolAgent: 'src-tool', cspAgents: 'src-csp', llmPipeline: 'src-pipeline' };
-
-function initWasm() {
-  return import('./wasm/zio_core.js')
-    .then(async (m) => { await m.default(); engine = new m.ZioSession(); return true; })
-    .catch((err) => { console.warn('WASM load failed:', err); return false; });
-}
+const SCENARIO_OUT = { toolAgent: 'out-toolAgent', cspAgents: 'out-cspAgents', llmPipeline: 'out-llmPipeline' };
 
 // ── Training lab: 4-armed bandit; policy + Q-learning fully in Zio ──
 const ARM_KEYS = ['q0', 'q1', 'q2', 'q3'];
@@ -146,6 +82,7 @@ function trainBatch() {
   const { q, c } = fullQ();
   const prog = buildProg(q, c, train.epsMilli, train.epsPerBatch, train.seed);
   document.getElementById('train-source').textContent = prog;
+  if (!engine) return { error: 'WASM 引擎尚未就绪' };
   let raw;
   try {
     raw = engine.eval(prog);
@@ -177,7 +114,6 @@ function drawChart() {
   ctx.font = '10px JetBrains Mono, monospace';
   ctx.fillStyle = '#64748b';
 
-  // gridlines
   [0, 0.25, 0.5, 0.75, 1].forEach((v) => {
     const y = pad.t + (1 - v) * (h - pad.t - pad.b);
     ctx.strokeStyle = 'rgba(255,255,255,0.06)';
@@ -193,11 +129,9 @@ function drawChart() {
   const x = (i) => pad.l + (epAvg.length === 1 ? 0 : (i / (epAvg.length - 1)) * (w - pad.l - pad.r));
   const y = (v) => pad.t + (1 - v) * (h - pad.t - pad.b);
 
-  // per-episode reward dots
   ctx.fillStyle = 'rgba(127,0,255,0.55)';
   epAvg.forEach((v, i) => { ctx.beginPath(); ctx.arc(x(i), y(v), 1.6, 0, Math.PI * 2); ctx.fill(); });
 
-  // moving average line (window 10)
   ctx.strokeStyle = '#00f2fe'; ctx.lineWidth = 2; ctx.beginPath();
   let started = false;
   for (let i = 0; i < epAvg.length; i++) {
@@ -207,7 +141,6 @@ function drawChart() {
   }
   ctx.stroke();
 
-  // 0.5 reference (random policy baseline)
   ctx.strokeStyle = 'rgba(255,184,0,0.5)'; ctx.lineWidth = 1; ctx.setLineDash([4, 4]);
   ctx.beginPath(); ctx.moveTo(pad.l, y(0.5)); ctx.lineTo(w - pad.r, y(0.5)); ctx.stroke();
   ctx.setLineDash([]);
@@ -219,7 +152,7 @@ function renderQBars() {
   const { q, c } = fullQ();
   const fmtPulls = (n) => (n >= 1000 ? (n / 1000).toFixed(1) + 'k' : String(n));
   const totalPulls = ARM_KEYS.reduce((a, k) => a + (c['c' + k.slice(1)] || 0), 0);
-  document.getElementById('q-bars').innerHTML = ARM_KEYS.map((k) => {
+  const bars = ARM_KEYS.map((k) => {
     const v = (q[k] || 0) / 1000;
     const pulls = c['c' + k.slice(1)] || 0;
     const pct = Math.max(0, Math.min(100, v * 100));
@@ -228,7 +161,13 @@ function renderQBars() {
       <div class="q-bar-track"><div class="q-bar-fill" style="width:${pct}%"></div></div>
       <span class="q-bar-val">Q=${v.toFixed(2)} ·${fmtPulls(pulls)}次</span>
     </div>`;
-  }).join('') + `<div class="sim-note">Q 估计值 vs 真实回报率 μ — 训练充分后 Q 应收敛于 μ，且最优臂 0 拉动次数最多（当前共 ${fmtPulls(totalPulls)} 次）</div>`;
+  }).join('');
+  const note = document.createElement('div');
+  note.className = 'sim-note';
+  note.textContent = `Q 估计值 vs 真实回报率 μ — 训练充分后 Q 应收敛于 μ，且最优臂 0 拉动次数最多（当前共 ${fmtPulls(totalPulls)} 次）`;
+  const host = document.getElementById('q-bars');
+  host.innerHTML = bars;
+  host.appendChild(note);
 }
 
 function renderStats() {
@@ -236,11 +175,19 @@ function renderStats() {
   const avg = recent.length ? (recent.reduce((a, b) => a + b, 0) / recent.length).toFixed(3) : '—';
   const { q } = fullQ();
   const best = ARM_KEYS.reduce((a, b) => ((q[b] || 0) > (q[a] || 0) ? b : a), 'q0');
-  document.getElementById('train-stats').innerHTML =
-    `<span class="stat-chip">回合 ${train.runs.length}</span>` +
-    `<span class="stat-chip">平均奖励(最近20回合) ${avg}</span>` +
-    `<span class="stat-chip">当前最优估计 臂${best.slice(1)}</span>` +
-    `<span class="stat-chip">ε ${(train.epsMilli / 1000).toFixed(2)}</span>`;
+  const host = document.getElementById('train-stats');
+  host.innerHTML = '';
+  for (const text of [
+    `回合 ${train.runs.length}`,
+    `平均奖励(最近20回合) ${avg}`,
+    `当前最优估计 臂${best.slice(1)}`,
+    `ε ${(train.epsMilli / 1000).toFixed(2)}`,
+  ]) {
+    const chip = document.createElement('span');
+    chip.className = 'stat-chip';
+    chip.textContent = text;
+    host.appendChild(chip);
+  }
 }
 
 function trainTick() {
@@ -249,8 +196,11 @@ function trainTick() {
   if (out.error) {
     train.running = false;
     setToggle();
-    document.getElementById('train-stats').innerHTML =
-      `<span class="stat-chip" style="color:#ff6b6b;border-color:#ff6b6b">求值错误: ${out.error}</span>`;
+    renderStats();
+    const chip = document.createElement('span');
+    chip.className = 'stat-chip is-error';
+    chip.textContent = `求值错误: ${out.error}`;
+    document.getElementById('train-stats').appendChild(chip);
     return;
   }
   out.runs.slice().reverse().forEach((r) => train.runs.push(r));
@@ -270,8 +220,11 @@ function resetTrain() {
 }
 
 function initTraining() {
-  const toggle = document.getElementById('train-toggle');
-  toggle.addEventListener('click', () => { train.running = !train.running; setToggle(); if (train.running) trainTick(); });
+  document.getElementById('train-toggle').addEventListener('click', () => {
+    train.running = !train.running;
+    setToggle();
+    if (train.running) trainTick();
+  });
   document.getElementById('train-reset').addEventListener('click', resetTrain);
   const eps = document.getElementById('eps-slider');
   eps.addEventListener('input', () => {
@@ -287,7 +240,6 @@ function initTraining() {
   drawChart(); renderQBars(); renderStats();
 }
 
-// ── Playground ──
 function unquote(s) {
   return s.startsWith('"') && s.endsWith('"') ? s.slice(1, -1) : s;
 }
@@ -298,8 +250,7 @@ function runScenario(key) {
   outEl.textContent = '求值中…';
   setTimeout(() => {
     try {
-      const raw = engine.eval(scenarios[key]);
-      outEl.textContent = unquote(raw);
+      outEl.textContent = unquote(engine.eval(scenarios[key]));
     } catch (e) {
       outEl.classList.add('err');
       outEl.textContent = 'Error: ' + e;
@@ -309,7 +260,8 @@ function runScenario(key) {
 
 function initScenarios() {
   for (const [key, src] of Object.entries(scenarios)) {
-    document.getElementById(SCENARIO_SRC[key]).textContent = src;
+    const srcEl = document.getElementById(`src-${key}`);
+    if (srcEl) srcEl.textContent = src;
   }
   document.querySelectorAll('.run-scenario').forEach((btn) => {
     btn.addEventListener('click', () => {
@@ -319,21 +271,21 @@ function initScenarios() {
   });
 }
 
-// ── Boot ──
-document.addEventListener('DOMContentLoaded', async () => {
+export function initAgentPage() {
   initScenarios();
   initTraining();
   const badge = document.getElementById('engine-badge');
-  const ok = await initWasm();
-  if (ok) {
-    badge.textContent = '⚡ Real WASM Engine Active';
-    badge.style.background = 'rgba(0,230,118,0.15)';
-    badge.style.color = '#00e676';
-    badge.style.borderColor = 'rgba(0,230,118,0.3)';
-  } else {
-    badge.textContent = 'WASM 加载失败';
-    badge.style.color = '#ff6b6b';
-    document.getElementById('train-source').textContent = ';; WASM 引擎加载失败，训练与试用不可用。';
-    document.getElementById('train-toggle').disabled = true;
-  }
-});
+  loadEngine()
+    .then((e) => {
+      engine = e;
+      badge.textContent = '⚡ Real WASM Engine Active';
+      badge.classList.add('is-live');
+    })
+    .catch((err) => {
+      console.error('WASM load failed:', err);
+      badge.textContent = 'WASM 加载失败';
+      badge.classList.add('is-failed');
+      document.getElementById('train-source').textContent = ';; WASM 引擎加载失败，训练与试用不可用。';
+      document.getElementById('train-toggle').disabled = true;
+    });
+}
