@@ -1500,21 +1500,7 @@ async fn select_candidate(
         digests.push(ArtifactRef::parse_hex(hex)?);
     }
     let rows = grove::evaluation::compare(&guard, &protocol, &digests)?;
-    let candidates: Vec<grove::evaluation::Candidate> = rows
-        .iter()
-        .map(|r| grove::evaluation::Candidate {
-            snapshot: r.snapshot,
-            quality: r
-                .mean
-                .iter()
-                .find(|(n, _)| n == "accuracy")
-                .map(|(_, v)| *v)
-                .unwrap_or(0.0),
-            cost: 1.0,
-            meets_gates: r.meets_gates,
-        })
-        .collect();
-    let kept: Vec<String> = grove::evaluation::non_dominated(&candidates)
+    let kept: Vec<String> = crate::select_candidates(&rows)?
         .iter()
         .map(|c| c.snapshot.to_hex())
         .collect();

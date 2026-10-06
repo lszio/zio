@@ -1,0 +1,38 @@
+;; Grove's advisory selection policy; native publication gates remain authoritative.
+;; Rows/candidates use keyword keys. Metric pairs retain their string metric names.
+
+(defn grove--selection-quality [row]
+  (loop [metrics (get row :mean [])]
+    (if (empty? metrics)
+      0
+      (let [metric (first metrics)]
+        (if (= (get metric 0) "accuracy")
+          (get metric 1)
+          (recur (rest metrics)))))))
+
+(defn grove--dominated? [candidate eligible]
+  (loop [others eligible]
+    (if (empty? others)
+      false
+      (let [other (first others)]
+        (if (and (not (= (get candidate :index) (get other :index)))
+                 (>= (get other :quality) (get candidate :quality))
+                 (<= (get other :cost) (get candidate :cost)))
+          true
+          (recur (rest others)))))))
+
+(defn grove-non-dominated [candidates]
+  ;; ponytail: O(n²) scan; add a sorted frontier only if candidate counts demand it.
+  ;; Preserve the existing weak comparison: equal quality/cost peers exclude each other.
+  (let [eligible (filter (fn [c] (get c :meets-gates)) candidates)]
+    (map (fn [c] (get c :index))
+         (filter (fn [c] (not (grove--dominated? c eligible))) eligible))))
+
+(defn grove-select [rows]
+  (grove-non-dominated
+    (map (fn [row]
+           {:index (get row :index)
+            :quality (grove--selection-quality row)
+            :cost (get row :cost)
+            :meets-gates (get row :meets-gates)})
+         rows)))

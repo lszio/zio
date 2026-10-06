@@ -124,6 +124,60 @@ fn count_objects(root: &Path) -> usize {
     }
     count
 }
+/// Adapt protocol comparison rows to Grove's embedded Zio selection policy.
+/// Only typed input/output conversion lives here; no publication or model bindings.
+pub fn select_candidates(
+    rows: &[grove::evaluation::Comparison],
+) -> Result<Vec<&grove::evaluation::Comparison>> {
+    use zio_core::bootstrap::{eval_source, language_context, ModuleRoots};
+    use zio_core::im::vector;
+    use zio_core::sexp::Sexp;
+    use zio_core::value::Value;
+
+    let strategy_error = |e: zio_core::error::EvalError| {
+        Error::new(ErrorKind::BackendFailed, format!("Grove selection strategy failed: {e}"))
+    };
+    let ctx = language_context(ModuleRoots::empty()).map_err(strategy_error)?;
+    eval_source(&ctx, "apps/grove/selection.zio", include_str!("../../../selection.zio"))
+        .map_err(strategy_error)?;
+    let input = rows.iter().enumerate().map(|(index, row)| {
+        Value::Map([
+            (Value::Keyword("index".into()), Value::Integer(index as i64)),
+            (Value::Keyword("mean".into()), Value::Vector(row.mean.iter().map(|(name, value)| {
+                Value::Vector(vector![Value::String(name.clone()), Value::Float(*value)])
+            }).collect())),
+            // ponytail: uniform cost preserves existing CLI/HTTP semantics; use measured inference cost when available.
+            (Value::Keyword("cost".into()), Value::Float(1.0)),
+            (Value::Keyword("meets-gates".into()), Value::Boolean(row.meets_gates)),
+        ].into_iter().collect())
+    }).collect();
+    ctx.env.set("grove-selection-rows".into(), Value::Vector(input));
+    let result = zio_core::eval::eval_in_context(
+        &Sexp::List(vector![
+            Sexp::Symbol("grove-select".into(), None),
+            Sexp::Symbol("grove-selection-rows".into(), None),
+        ], None),
+        &ctx,
+    ).map_err(strategy_error)?;
+    let indices = match result {
+        Value::List(indices) | Value::Vector(indices) => indices,
+        other => return Err(Error::new(
+            ErrorKind::BackendFailed,
+            format!("Grove selection returned {other}, not row indices"),
+        )),
+    };
+    indices.iter().map(|index| {
+        if let Value::Integer(index) = index {
+            if let Ok(index) = usize::try_from(*index) {
+                if let Some(row) = rows.get(index) {
+                    return Ok(row);
+                }
+            }
+        }
+        Err(Error::new(ErrorKind::BackendFailed, "Grove selection returned an invalid row index"))
+    }).collect()
+}
+
 
 /// `grove select --root PATH --protocol ID --snapshots a,b,c` — run the
 /// protocol comparison and the non-dominated selection, printing the
@@ -165,23 +219,7 @@ pub fn select(
         ));
     }
 
-    let candidates: Vec<grove::evaluation::Candidate> = rows
-        .iter()
-        .map(|r| grove::evaluation::Candidate {
-            snapshot: r.snapshot,
-            quality: r
-                .mean
-                .iter()
-                .find(|(n, _)| n == "accuracy")
-                .map(|(_, v)| *v)
-                .unwrap_or(0.0),
-            // inference cost accounting is a W08+ concern; uniform here so
-            // the selection axis is honest about being a placeholder
-            cost: 1.0,
-            meets_gates: r.meets_gates,
-        })
-        .collect();
-    let kept = grove::evaluation::non_dominated(&candidates);
+    let kept = select_candidates(&rows)?;
     out.push_str(&format!(
         "\nnon-dominated candidates: {}\n",
         kept.iter()

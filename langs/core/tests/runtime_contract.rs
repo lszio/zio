@@ -50,6 +50,37 @@ fn integer_comparison_stays_integral() {
 }
 
 #[test]
+fn mixed_ordering_respects_operand_direction_and_integer_boundaries() {
+    use std::cmp::Ordering::{Equal, Greater, Less};
+
+    for (float, integer, order) in [
+        ("0.95", "0", Greater),
+        ("-1.5", "-1", Less),
+        ("-1.5", "-2", Greater),
+        ("2.0", "2", Equal),
+        ("9007199254740992.0", "9007199254740993", Less),
+        ("9223372036854775808.0", "9223372036854775807", Greater),
+        ("-9223372036854775808.0", "-9223372036854775808", Equal),
+        ("-9223372036854777856.0", "-9223372036854775808", Less),
+    ] {
+        for (op, expected, reverse_expected) in [
+            ("<", order == Less, order == Greater),
+            (">", order == Greater, order == Less),
+            ("<=", order != Greater, order != Less),
+            (">=", order != Less, order != Greater),
+        ] {
+            for (left, right, expected) in [
+                (float, integer, expected),
+                (integer, float, reverse_expected),
+            ] {
+                let source = format!("({op} {left} {right})");
+                assert_eq!(run(&source).unwrap(), Value::Boolean(expected), "{source}");
+            }
+        }
+    }
+}
+
+#[test]
 fn float_ordering_rejects_non_finite_operands() {
     // `(/ 0.0)` is unary float division, so this is a real infinity.
     let err = run("(< (/ 0.0) 1.0)").expect_err("infinity must not order");

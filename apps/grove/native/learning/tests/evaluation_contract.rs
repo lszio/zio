@@ -7,9 +7,7 @@ use grove::contracts::{
     Actor, ActorRole, ArtifactRef, ErrorKind, EvaluationRecord, ModelSnapshot, ParamRef,
     SCHEMA_VERSION,
 };
-use grove::evaluation::{
-    self, Candidate, EvaluationProtocol, RepeatOutcome,
-};
+use grove::evaluation::{self, EvaluationProtocol, RepeatOutcome};
 use grove::store::Store;
 
 fn operator() -> Actor {
@@ -259,48 +257,6 @@ fn an_operator_cannot_publish() {
     )
     .unwrap_err();
     assert_eq!(err.kind, ErrorKind::CapabilityDenied);
-}
-
-// ── selection ──────────────────────────────────────────────────────
-
-#[test]
-fn selection_keeps_the_cheap_non_dominated_candidate() {
-    let snap = |b: u8| ArtifactRef { digest: [b; 32] };
-    let strong_expensive = Candidate {
-        snapshot: snap(1),
-        quality: 0.95,
-        cost: 10.0,
-        meets_gates: true,
-    };
-    let cheap_close = Candidate {
-        snapshot: snap(2),
-        quality: 0.91,
-        cost: 1.0,
-        meets_gates: true,
-    };
-    // below the 0.90 protocol gate: brilliant cost is not a licence
-    let weak = Candidate {
-        snapshot: snap(3),
-        quality: 0.70,
-        cost: 0.5,
-        meets_gates: false,
-    };
-    let gated_out = Candidate {
-        snapshot: snap(4),
-        quality: 0.99,
-        cost: 0.1,
-        meets_gates: false, // brilliant but failed the gate
-    };
-
-    let candidates = vec![strong_expensive, cheap_close, weak, gated_out];
-    let kept = evaluation::non_dominated(&candidates);
-    let ids: Vec<u8> = kept.iter().map(|c| c.snapshot.digest[0]).collect();
-    // the gate-failed model is excluded no matter how good it looks
-    assert!(!ids.contains(&4));
-    // the weak model fails the gate, no matter how cheap it is
-    assert!(!ids.contains(&3));
-    // quality and cost are both real axes: both survivors stay
-    assert!(ids.contains(&1) && ids.contains(&2));
 }
 
 // ── shared acceptance budget ───────────────────────────────────────

@@ -20,7 +20,7 @@ Rust 保留语言运行时、可信宿主与必要原语；领域组合、策略
 | 领域库 | `libs/numa/`、`libs/loom/`、`libs/learning/` | Zio vector、agent/proposer、learn/memory 与学习子模块；不因目录迁移而新增功能或发布包 |
 | 基础设施 | `contribs/native/loom/` | 已有通用 Rust 模型/工具合同、预算、传输与教师适配；Rust crate 名仍为 `loom`，不是 `libs/loom/` 的 Zio 库 |
 | 语言站点 | `apps/site/` | 语言介绍、文档与 WASM playground；不是 Grove 产品 |
-| Grove 应用 | `apps/grove/` | `main.zio` 是实际 Zio 入口，组合 Loom 通用 agent 循环；Rust 业务仍在 `native/app/` 与 `native/learning/`，CPU 后端在 `workers/torch/` |
+| Grove 应用 | `apps/grove/` | `main.zio` 是实际 Zio 入口，组合 Loom 通用 agent 循环；`selection.zio` 决定 accuracy 与质量／成本候选筛选；其他 Rust 业务仍在 `native/app/` 与 `native/learning/`，CPU 后端在 `workers/torch/` |
 
 ```text
 apps/grove/  →  libs/（Zio 领域组合） → langs/（语言语义）
@@ -41,25 +41,26 @@ apps/site/ → 语言介绍 / 文档 / playground
 
 - Rust 语言实现仍在 `langs/core/`；完整展开/分析、bytecode VM、JIT 和自举编译器为 Planned。
 - `.zio` 库已归入 `libs/`，但 Datalog 查询等未实现能力不会因移动文件而完成。
-- Grove 的 `apps/grove/main.zio` 按宿主授权组合 `libs/loom/agent.zio`；应用的存储、调度、
-  评价、治理、CLI/HTTP 及其他 Rust 业务仍在 `apps/grove/native/`。
+- Grove 的 `apps/grove/main.zio` 按宿主授权组合 `libs/loom/agent.zio`；`apps/grove/selection.zio`
+  已接管候选筛选，CLI 与 HTTP 共用一条 typed adapter，原 Rust `Candidate`/`non_dominated` 已删除。
+  应用的存储、调度、评估记录、发布硬门槛、治理、CLI/HTTP 外壳及其他 Rust 业务仍在 `apps/grove/native/`。
   **这些业务后续迁为 Zio 是目标，当前 Grove 并未整体重写为 Zio。**
 - `contribs/native/loom/` 保留可复用 native transport/host adapter，
   不把其整个 Rust 实现当成未来 Zio Loom 库的目标本体。
 - Tree-sitter 与 LSP 是后续工具目标，当前没有已交付实现；目录变更不证明工具链自托管。
 
-目录迁移只证明结构归属。以下是本轮 Linux x64 实跑结果，不引用历史计数代替验证；
-完整命令、警告与验收记录见[本轮计划](superpowers/plans/2026-10-07-language-first-layout.md#verified-integration-results-2026-10-07)。
+目录迁移只证明结构归属。下表区分首轮切换与后续业务迁移的 Linux x64 实跑证据，不泛化为其他平台验收：
+结构切换命令、警告与验收记录见[首轮计划](superpowers/plans/2026-10-07-language-first-layout.md#verified-integration-results-2026-10-07)，后续入口与候选筛选记录见[业务迁移计划](superpowers/plans/2026-10-07-grove-zio-entry.md#follow-on-real-candidate-selection-policy)。
 
-| 表面 | 本轮证据 |
+| 表面 | 已观察到的证据 |
 |---|---|
-| Rust workspace | `cargo test --workspace --all-features`：489 passed；最终运行串行完成 |
-| torch worker | 77 个 Python 合同测试通过；真实隔离路径通过，未以无隔离模式替代 |
-| 普通语言 CLI | basics、ZOS、learn 示例实际运行；CLI 的直接依赖为 `im` 与 `zio-core`，不再含 Loom |
-| 构建与站点 | WASM、Astro、Docker 镜像构建成功；nginx 实际提供 46 个页面，包括中文 book 路径 |
-| 浏览器 | 六个真实 WASM 预设、多行编辑、持久定义、Ctrl+Enter、reader 错误恢复通过；390/768/1024 宽度无观察到的横向溢出，桌面与移动端截图已检查 |
-| Grove | 真实双路 CPU 训练只产生未发布候选；HTTP 拒绝保护区修改和 Operator 审批；Publisher 审批移动指针，重放不增版本，旧版本冲突被拒绝 |
-| 状态与限制 | `tools/project-status.sh --check` 通过；默认 feature 的测试清单仍为 474，不等同于全 feature 实跑数量。Grove Zio 化、自举编译器及其他平台验证未完成 |
+| Rust workspace | 候选筛选迁移后 `cargo test --workspace --all-features`：491 passed，48 suites，0 failures |
+| torch worker | 首轮：77 个 Python 合同测试通过；真实隔离路径通过，未以无隔离模式替代 |
+| 普通语言 CLI | 首轮：basics、ZOS、learn 示例实际运行；后续：混合数值排序和 Grove Zio 策略实跑。CLI 的直接依赖为 `im` 与 `zio-core`，不再含 Loom |
+| 构建与站点 | 首轮：WASM、Astro、Docker 镜像与 nginx 46 页通过；后续：重建 WASM/Astro，47 页构建通过，未重新构建 Docker 镜像 |
+| 浏览器 | 首轮：多行编辑、持久定义、reader 错误恢复与 390/768/1024 宽度验证；后续：六个真实 WASM 预设、混合数值排序和 Ctrl+Enter 实跑，390px playground/Grove 无观察到的横向溢出，桌面与移动端截图已检查 |
+| Grove | 首轮：真实双路 CPU 候选与人工审批/重放/冲突拒绝；后续：CPU 基线 0.53125、候选 1.000，CLI/HTTP 的 Zio 筛选一致且不发布，未知 token 403 拒绝 |
+| 状态与限制 | `tools/project-status.sh --check` 通过；默认 feature 的测试清单为 476，不等同于全 feature 实跑数量。Grove Zio 化、自举编译器及其他平台验证未完成 |
 
 ## 3 当前组成与演进方向
 
@@ -80,6 +81,7 @@ libs/{std,numa,loom,learning}/ (Zio 源文件，不是 Rust workspace crate)
 
 具体 Cargo feature 与依赖以实际 manifest 为准，不在文档复制固定 crate/测试数量。
 `apps/grove/main.zio` 定义 Grove 的 `agent-entry`，通过有根的 `require :libs.loom.agent :refer [agent-run]` 导入通用循环，不依赖进程 cwd；`libs/loom/proposer.zio` 是提议器。
+`apps/grove/selection.zio` 接收 keyword 行字段、保留 string 名称的指标对，决定 accuracy（缺失按零质量）、门槛失败候选排除与质量／成本比较；native 适配器只转换 `evaluation::Comparison` 并检查返回的整数行索引，不授予 Grove 存储、模型或发布 bindings。该策略在构建时嵌入 native 外壳；目前 CLI/HTTP 成本仍为 1，且保留同质同价互相排除的原弱比较行为，不声称热更新或完整推理成本核算。
 `libs/learning/` 持学习与记忆组合，`libs/numa/vector.zio` 持向量计算，
 学习/评价/发布治理不进入通用计算或传输适配器。
 

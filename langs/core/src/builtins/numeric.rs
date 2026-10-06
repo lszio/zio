@@ -194,7 +194,12 @@ fn compare(a: &Value, b: &Value) -> Result<Order, EvalError> {
             std::cmp::Ordering::Equal => Order::Equal,
             std::cmp::Ordering::Greater => Order::Greater,
         }),
-        (Value::Integer(x), Value::Float(y)) | (Value::Float(y), Value::Integer(x)) => {
+        (Value::Float(_), Value::Integer(_)) => compare(b, a).map(|order| match order {
+            Order::Less => Order::Greater,
+            Order::Equal => Order::Equal,
+            Order::Greater => Order::Less,
+        }),
+        (Value::Integer(x), Value::Float(y)) => {
             if !y.is_finite() {
                 return Err(EvalError::custom(
                     "cannot order against a non-finite number; use a finite number",
@@ -206,8 +211,8 @@ fn compare(a: &Value, b: &Value) -> Result<Order, EvalError> {
             let y = *y;
             let magnitude = y.abs();
             if magnitude >= 9007199254740992.0 {
-                // |y| >= 2^63 is outside every i64.
-                if magnitude >= 9223372036854775808.0 {
+                // -2^63 is an i64; +2^63 and floats below -2^63 are not.
+                if y >= 9223372036854775808.0 || y < -9223372036854775808.0 {
                     return Ok(if y > 0.0 { Order::Less } else { Order::Greater });
                 }
                 return Ok(match (*x as i128).cmp(&(y as i128)) {

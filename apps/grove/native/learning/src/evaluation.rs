@@ -216,37 +216,6 @@ pub fn compare(
     Ok(out)
 }
 
-/// Quality/cost non-dominated selection: a candidate survives unless
-/// another candidate is at least as good on quality AND at least as cheap.
-/// The cheap-but-slightly-worse model stays on the menu — deployment cost
-/// is a real axis, not noise.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Candidate {
-    pub snapshot: ArtifactRef,
-    /// Mean quality under the protocol (e.g. accuracy, higher is better).
-    pub quality: f64,
-    /// Full deployment cost per inference (lower is better).
-    pub cost: f64,
-    pub meets_gates: bool,
-}
-
-pub fn non_dominated(candidates: &[Candidate]) -> Vec<&Candidate> {
-    // only deployable candidates take part in the domination check: a
-    // gate-failed model is not an alternative anyone can choose, so its
-    // numbers must not shadow a real option
-    let eligible: Vec<&Candidate> = candidates.iter().filter(|c| c.meets_gates).collect();
-    eligible
-        .iter()
-        .enumerate()
-        .filter(|(i, c)| {
-            !eligible.iter().enumerate().any(|(j, other)| {
-                !(i == &j) && other.quality >= c.quality && other.cost <= c.cost
-            })
-        })
-        .map(|(_, c)| *c)
-        .collect()
-}
-
 /// Publish a *model* snapshot that earned it.
 ///
 /// The gate check lives here (the comparison must exist, meet every

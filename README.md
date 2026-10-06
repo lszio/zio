@@ -81,6 +81,7 @@ bun run build      # 产出 apps/site/dist
 ## grove 自学习产品
 
 Grove 是 `apps/grove/` 的独立应用。`apps/grove/main.zio` 是实际 Zio 入口，按宿主的 keyword 授权预算组合 `libs/loom/agent.zio` 的通用循环；库不再定义 Grove 的 `agent-entry` 或默认轮数。
+`apps/grove/selection.zio` 已接管 accuracy 指标选择、硬门槛失败候选排除和质量／成本非支配筛选，CLI 与 HTTP 共用这一策略；native 只传递评估行并检查返回索引。策略构建时嵌入宿主，尚不是可热更新的策略发布功能。成本仍统一为 1，同质量同成本候选仍按原弱比较规则互相排除。
 存储、调度、评价、CLI/HTTP 等 Rust 业务仍在 `native/learning/` 与 `native/app/`，CPU worker 在 `workers/torch/`，尚未整体迁为 Zio。普通 `cargo run -p zio-cli` REPL 不依赖这些学习组件。
 
 三种运行形态，各自的能力边界是显式的：
