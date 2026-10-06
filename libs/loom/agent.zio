@@ -15,9 +15,6 @@
 ;; — the host counts them, so a loop here that asks for ten thousand
 ;; turns gets the number the grant gave it.
 ;;
-;; Both bindings return string-keyed maps, matching `json-parse`, so
-;; a caller reads them the same way whether the map came from the model
-;; or from the sandbox.
 
 ;; A reply with no source is not a program. Treating it as one would
 ;; hand the host an empty string and report whatever the sandbox said
@@ -65,10 +62,3 @@
            :execution outcome}
           (recur (+ turn 1) (feedback-of outcome)))))))
 
-;; The entry the host calls. `task` is the task text, `budget` the
-;; grant-derived ceiling. Named apart from `agent-run` so the host has
-;; one symbol to bind and one contract to check.
-(defn agent-entry [task budget]
-  (agent-run task (get budget "max_turns" 3)))
-
-(println "zio.agent loaded (real decision logic; harness-complete and harness-execute-zio are host bindings)")

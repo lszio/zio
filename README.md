@@ -80,8 +80,8 @@ bun run build      # 产出 apps/site/dist
 
 ## grove 自学习产品
 
-Grove 是 `apps/grove/` 的独立应用，现有 Rust 业务在 `native/learning/` 与 `native/app/`，CPU worker 在 `workers/torch/`。这批 Rust 业务仍待后续迁为 Zio，
-**不改变上面的普通 Zio CLI**：`cargo run -p zio-cli` 启动的 REPL 不依赖任何学习组件。
+Grove 是 `apps/grove/` 的独立应用。`apps/grove/main.zio` 是实际 Zio 入口，按宿主的 keyword 授权预算组合 `libs/loom/agent.zio` 的通用循环；库不再定义 Grove 的 `agent-entry` 或默认轮数。
+存储、调度、评价、CLI/HTTP 等 Rust 业务仍在 `native/learning/` 与 `native/app/`，CPU worker 在 `workers/torch/`，尚未整体迁为 Zio。普通 `cargo run -p zio-cli` REPL 不依赖这些学习组件。
 
 三种运行形态，各自的能力边界是显式的：
 

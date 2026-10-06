@@ -1,8 +1,8 @@
 //! G02: the trusted half of the agent loop.
 //!
-//! The agent's decisions live in `libs/loom/agent.zio` — what to ask the
-//! model, when to stop, what to do with an execution outcome. What
-//! lives here is what the agent may not decide: what a model call
+//! Grove's entry lives in `apps/grove/main.zio`, which composes the reusable
+//! `libs/loom/agent.zio` loop: when to stop and how to handle execution outcomes.
+//! What lives here is what the agent may not decide: what a model call
 //! costs, what a generated program is allowed to reach, and how long it
 //! may run. Those are host decisions because they are decisions about
 //! *authority*, and authority is not something a program can hold.
@@ -44,7 +44,7 @@ use zio_core::value::{NativeFn, Value};
 /// a caller's argument: which logic runs is a host decision, and a
 /// caller-supplied path would let the caller run logic it wrote under
 /// the host's authority.
-pub const DEFAULT_AGENT_LOGIC: &str = "libs/loom/agent.zio";
+pub const DEFAULT_AGENT_LOGIC: &str = "apps/grove/main.zio";
 
 /// The task the agent is given, as the host read it from disk.
 #[derive(Debug, Clone)]

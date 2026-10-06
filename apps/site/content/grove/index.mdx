@@ -11,7 +11,7 @@ import GroveDemos from '../../src/components/GroveDemos.astro';
 
 `Grove` 的目标是 **基于 Zio 的独立 APP**：第一产品主线是可执行 Zio Agent 逻辑、真实 LLM 生成代码、可见执行证据和受控修订，不以学习宿主库或产品壳作为产品边界。这个 Zio 应用目标尚未完成，不能把当前 Rust 应用称为已经由 Zio 实现。
 
-当前 Rust legacy 在 `apps/grove/native/learning`（crate `grove`）与 `apps/grove/native/app`（crate `grove-app`，二进制 `grove`）；`apps/grove/workers/torch` 提供 CPU 参考训练后端。语言实现和 CLI 在 `langs/core` 与 `langs/cli`，现有 Rust LLM 基础设施在 `contribs/native/loom`（crate `zio-ai`）。Zio 策略与模型表示在 `libs/learning`，标准库、向量和 Agent 代码分别在 `libs/std`、`libs/numa`、`libs/loom`。移动目录没有改变实现语言或交付完整能力；CLI 不是 Rill，Rill 没有实现。
+当前 `apps/grove/main.zio` 是实际 Zio 应用入口，通过有根的 `require` 组合 `libs/loom/agent.zio` 通用循环，并读取宿主的 `:max_turns` 授权；库不再定义 Grove 的入口或默认轮数。存储、调度、评价、CLI/HTTP 等 Rust 业务仍在 `apps/grove/native/learning`（crate `grove`）与 `apps/grove/native/app`（crate `grove-app`，二进制 `grove`）；`apps/grove/workers/torch` 提供 CPU 后端。通用 Rust 模型适配在 `contribs/native/loom`（crate `loom`），不是 Zio 库的替代实现。Grove 尚未整体迁为 Zio，Rill 尚未实现。
 
 ZOS 的 object/class/GF/method/MOP 方向属于语言核心，不从 core 移出；完整 MOP 为 **Planned**。**Planned**：核心职责收敛，展开、分析与编译器由 Zio 自举；Rust 保留最小运行时、宿主与性能原语。编译器自举不等于用 Zio 编写编辑器或 APP。
 
@@ -64,7 +64,7 @@ grove 的多数代码在**拒绝**而不是在**接受**：
 
 历史 W00–W17 交付记录为 **Experimental**；当时记录 workspace 契约测试 364 通过 / 0 失败、torch worker 72 通过。数字是历史快照，不表示本次重新验证，也不代表目标产品已完成。
 
-**Current**：CPU torch demo 确有训练；服务 `train/resume` 仅记录队列请求，没有 dispatcher；frozen/trainable 尚未强制约束优化器，也未实现代码与权重联合提交。`learned_into` 表示冻结数据集成员关系，不证明训练消费；progress 是当前记录的合成投影，不是真实训练事件流。`agent.zio` 是预置 echo，站点是静态文档与模拟实验，不是 Grove 产品 Web。
+**Current**：Grove 的 Zio 入口复用真实 agent 循环；授权、隔离执行和发布边界由 native 宿主执行，CPU torch demo 确有训练。站点仍是语言文档和历史 demo 展示，不是 Grove 产品 Web。服务调度、模型表示与其他能力的当前状态以仓库能力矩阵为准，不从目录或入口迁移推断完整产品已交付。
 
 **Planned**：完整 Numa 数值后端与 Loom harness、Rill、Grove Zio 应用、上述第一产品验收主线、真实训练调度与受控发布。商业上游模型授权、真实业务数据／门槛、GPU 成本仍需独立验证。
 

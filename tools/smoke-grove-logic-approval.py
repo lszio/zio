@@ -100,12 +100,12 @@ def main():
         print("A1. a proposal naming a protected region is refused:",
               protected[1]["detail"][:88])
 
-        source = ("(defn agent-run [task max-turns]\n"
-                  "  (if (> max-turns 0) {:status \"candidate\"} {:status \"exhausted\"}))\n\n"
+        source = ("(defn agent-entry [task budget]\n"
+                  "  (if (> (get budget :max_turns 0) 0) {:status \"candidate\"} {:status \"exhausted\"}))\n\n"
                   "(defn validate-entry [s] (= \"agent-entry\" s))\n")
         proposed = call("POST", "/api/logic/propose", operator, {
             "id": "smoke-candidate",
-            "module_path": "libs/loom/agent.zio",
+            "module_path": "apps/grove/main.zio",
             "source": source,
             "diff": "+validate-entry\n",
         })

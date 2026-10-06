@@ -20,7 +20,7 @@ Rust 保留语言运行时、可信宿主与必要原语；领域组合、策略
 | 领域库 | `libs/numa/`、`libs/loom/`、`libs/learning/` | Zio vector、agent/proposer、learn/memory 与学习子模块；不因目录迁移而新增功能或发布包 |
 | 基础设施 | `contribs/native/loom/` | 已有通用 Rust 模型/工具合同、预算、传输与教师适配；Rust crate 名仍为 `loom`，不是 `libs/loom/` 的 Zio 库 |
 | 语言站点 | `apps/site/` | 语言介绍、文档与 WASM playground；不是 Grove 产品 |
-| Grove 应用 | `apps/grove/` | 独立产品，当前 Rust `native/app/` 与 `native/learning/`，CPU 后端在 `workers/torch/` |
+| Grove 应用 | `apps/grove/` | `main.zio` 是实际 Zio 入口，组合 Loom 通用 agent 循环；Rust 业务仍在 `native/app/` 与 `native/learning/`，CPU 后端在 `workers/torch/` |
 
 ```text
 apps/grove/  →  libs/（Zio 领域组合） → langs/（语言语义）
@@ -41,7 +41,7 @@ apps/site/ → 语言介绍 / 文档 / playground
 
 - Rust 语言实现仍在 `langs/core/`；完整展开/分析、bytecode VM、JIT 和自举编译器为 Planned。
 - `.zio` 库已归入 `libs/`，但 Datalog 查询等未实现能力不会因移动文件而完成。
-- Grove 已有 Zio agent 策略与生成执行证据见特性矩阵；应用的存储、调度、
+- Grove 的 `apps/grove/main.zio` 按宿主授权组合 `libs/loom/agent.zio`；应用的存储、调度、
   评价、治理、CLI/HTTP 及其他 Rust 业务仍在 `apps/grove/native/`。
   **这些业务后续迁为 Zio 是目标，当前 Grove 并未整体重写为 Zio。**
 - `contribs/native/loom/` 保留可复用 native transport/host adapter，
@@ -79,7 +79,7 @@ libs/{std,numa,loom,learning}/ (Zio 源文件，不是 Rust workspace crate)
 ```
 
 具体 Cargo feature 与依赖以实际 manifest 为准，不在文档复制固定 crate/测试数量。
-`libs/loom/agent.zio` 是 Zio agent 组合，`libs/loom/proposer.zio` 是提议器；
+`apps/grove/main.zio` 定义 Grove 的 `agent-entry`，通过有根的 `require :libs.loom.agent :refer [agent-run]` 导入通用循环，不依赖进程 cwd；`libs/loom/proposer.zio` 是提议器。
 `libs/learning/` 持学习与记忆组合，`libs/numa/vector.zio` 持向量计算，
 学习/评价/发布治理不进入通用计算或传输适配器。
 

@@ -178,26 +178,25 @@ fn a_first_attempt_that_fails_produces_a_second_attempt() {
 
 #[test]
 fn the_grants_turn_ceiling_stops_the_loop_not_the_source() {
-    // Every attempt fails, so only the ceiling can end this.
-    let model = ScriptedModel::new(vec![
-        source_reply("(defn agent-entry [] (error \"nope\"))"),
-        source_reply("(defn agent-entry [] (error \"nope\"))"),
-        source_reply("(defn agent-entry [] (error \"nope\"))"),
-        source_reply("(defn agent-entry [] (error \"nope\"))"),
-    ]);
-    let (_store, host, ctx, dir) = setup("ceiling", model, budget(2));
-    let report = host.run(&ctx).expect("run agent");
+    // Failed programs must stop at the requested ceiling, not a library default.
+    for max_turns in [0, 2, 4] {
+        let model = ScriptedModel::new(vec![
+            source_reply("(defn agent-entry [] (error \"nope\"))");
+            4
+        ]);
+        let (_store, host, ctx, dir) =
+            setup(&format!("ceiling-{max_turns}"), model, budget(max_turns));
+        let report = host.run(&ctx).expect("run agent");
 
-    assert_eq!(
-        report.status, "exhausted",
-        "a run that never succeeded is exhausted, not a candidate"
-    );
-    assert!(
-        report.calls_made <= 2,
-        "the host must not let the loop exceed the grant, made {}",
-        report.calls_made
-    );
-    let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(report.status, "exhausted");
+        assert_eq!(report.turns, max_turns, "wrong reported turn count");
+        assert_eq!(
+            report.calls_made,
+            u64::from(max_turns),
+            "wrong consumed model budget"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
 
 #[test]

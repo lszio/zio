@@ -1,0 +1,6 @@
+;; Grove owns application dispatch; Loom supplies the reusable agent loop.
+;; The host supplies keyword-keyed grants and meters both host bindings.
+(require :libs.loom.agent :refer [agent-run])
+
+(defn agent-entry [task budget]
+  (agent-run task (get budget :max_turns 0)))
