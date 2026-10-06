@@ -2,6 +2,27 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+> **Historical scope, synchronized 2026-10-05:** This Phase 0 plan is retained
+> as the original truth-baseline procedure, not the current implementation
+> backlog. Current boundaries and execution order are in
+> [ADR-019](../../adrs.md#adr-019-grove-独立应用与同像性逻辑演化) and the
+> [convergence plan](2026-10-05-zio-grove-convergence.md). Counts and capability
+> status come from `docs/status.md` and `docs/feature-matrix.md`; old command
+> outputs and checkboxes below are not evidence of Grove G1–G3 completion.
+>
+> **Naming update, 2026-10-05:** Numa (compute), Rill (CLI composition),
+> and Loom (Agent harness) are official independently versioned, on-demand
+> libraries, not built-in Zio language features. Grove is an independent app
+> consuming Zio and these libraries; the language core has no reverse dependency.
+> Learning goals, experiments, feedback, checkpoints, independent evaluation,
+> human approval, logic evolution and Web belong to Grove. New library capabilities
+> remain Planned. Current `zio-ai`/`ai/` is the starting point for Loom;
+> `zio-cli`/`cli/` remains an executable host that will consume Rill.
+> Historical paths, package names, commands and evidence below remain unchanged.
+> Short names do not assign registry package IDs; future canonical directories
+> and logical namespaces are described in the [glossary](../../glossary.md),
+> not executable installation instructions.
+
 **Goal:** Make the repository's documentation, examples, warnings, status report, and AST performance baseline truthful and reproducible before changing the execution engine.
 
 **Architecture:** This phase does not introduce VM, capabilities, numeric APIs, macros, or the landing site. It establishes executable example contracts, fixes the existing stdlib tail-recursion defect at its source, generates a checked-in status snapshot from repository facts, and records an AST-only benchmark artifact. Documentation then uses the same stable/experimental/planned vocabulary everywhere.

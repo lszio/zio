@@ -30,7 +30,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -50,10 +50,16 @@ pub struct ApiState {
     /// The store is behind a mutex because rusqlite's `Connection` is
     /// `Send` but not `Sync`; the API serializes database access and the
     /// coordinator keeps its own Arc for the training paths.
-    pub store: Arc<Mutex<Store>>,
+    /// One connection, shared with the queue owner.
+    ///
+    /// An `Arc<Store>` here plus the owner's own would be *two*
+    /// connections to one SQLite file, and a reader can be served a
+    /// snapshot taken before the writer's last commit. That is not
+    /// theoretical: a resume reported a checkpoint committed moments
+    /// earlier as missing, and an artifact that hashed correctly as
+    /// corrupt.
+    pub store: Arc<parking_lot::Mutex<Store>>,
     pub tokens: Arc<HashMap<String, ActorRole>>,
-    /// Idempotency: operation id → the response it already produced.
-    pub receipts: Arc<Mutex<HashMap<String, (u16, serde_json::Value)>>>,
     /// Where the real worker lives. The API spawns it to answer a
     /// prediction, so the product's answers come from the same isolated
     /// backend the trainer uses.
@@ -62,6 +68,10 @@ pub struct ApiState {
     /// store's own root so a restart can clean it deterministically.
     pub scratch: PathBuf,
     pub started_ms: i64,
+    /// The queue owner. Present so a request that queues work writes it
+    /// through the same owner the loop uses, and so the API can report a
+    /// run's real state rather than echoing what it submitted.
+    pub runner: Option<Arc<crate::runner::Runner>>,
 }
 
 impl ApiState {
@@ -79,13 +89,89 @@ impl ApiState {
         let scratch = store.artifacts().root().parent().unwrap().join("scratch");
         let _ = std::fs::create_dir_all(&scratch);
         Self {
-            store: Arc::new(Mutex::new(store)),
+            store: Arc::new(parking_lot::Mutex::new(store)),
             tokens: Arc::new(tokens),
-            receipts: Arc::new(Mutex::new(HashMap::new())),
             paths: Arc::new(crate::Paths::from_repo_root()),
             scratch,
             started_ms: now_ms(),
+            runner: None,
         }
+    }
+
+    /// A state that shares the caller's store handle with a queue owner.
+    ///
+    /// The owner keeps the store behind its own mutex, so `new` — which
+    /// re-opens the root whenever the caller's `Arc` is still shared —
+    /// would leave the API on a *second connection* to the same file.
+    /// That is not a performance detail: a reader can be served a
+    /// snapshot taken before the owner's last commit, so the API
+    /// reported a checkpoint that had just been committed as missing.
+    pub fn with_runner(
+        store: Arc<Store>,
+        tokens: HashMap<String, ActorRole>,
+        runner: Arc<crate::runner::Runner>,
+    ) -> Self {
+        let scratch = store.artifacts().root().parent().unwrap().join("scratch");
+        let _ = std::fs::create_dir_all(&scratch);
+        let shared = Arc::new(parking_lot::Mutex::new(
+            Arc::try_unwrap(store).unwrap_or_else(|shared| {
+                // Only reachable when a caller kept its own handle; the
+                // owner does not, so the common path takes the first
+                // branch and there is exactly one connection.
+                Store::open(shared.artifacts().root().parent().unwrap())
+                    .expect("reopen the store root the caller shared")
+            }),
+        ));
+        // The owner is rebuilt over *this* lock, so the API and the loop
+        // read and write the same connection. The settings come from the
+        // caller's owner so nothing is configured twice.
+        let owner = crate::runner::Runner::adopt(
+            Arc::clone(&shared),
+            runner.config(),
+            runner.training_env(),
+        );
+        Self {
+            store: shared,
+            tokens: Arc::new(tokens),
+            paths: Arc::new(crate::Paths::from_repo_root()),
+            scratch,
+            started_ms: now_ms(),
+            runner: Some(Arc::new(owner)),
+        }
+    }
+
+    /// Record the answer an operation produced, in the ledger.
+    ///
+    /// Durable because the point of an operation id is that a *retry*
+    /// gets the same answer — and a retry can be minutes later, in a
+    /// process that never saw the first one. The previous in-memory map
+    /// made a restart silently re-do the work.
+    pub fn record_receipt<T: serde::Serialize>(
+        &self,
+        operation_id: &str,
+        status: u16,
+        body: &T,
+    ) -> std::result::Result<(), GroveError> {
+        let text = serde_json::to_string(body).map_err(|e| {
+            GroveError::new(
+                ErrorKind::BackendFailed,
+                format!("receipt body is not encodable: {e}"),
+            )
+        })?;
+        let actor = grove::contracts::Actor::new("grove-api", ActorRole::Operator);
+        let guard = store(self);
+        guard.put_receipt(&actor, operation_id, status, &text)
+    }
+
+    /// The answer an operation id produced, if any.
+    pub fn replay_receipt<T: serde::de::DeserializeOwned>(
+        &self,
+        operation_id: &str,
+    ) -> Option<(u16, T)> {
+        let guard = store(self);
+        let (status, body) = guard.get_receipt(operation_id).ok().flatten()?;
+        let parsed = serde_json::from_str(&body).ok()?;
+        Some((status, parsed))
     }
 }
 
@@ -140,8 +226,8 @@ type ApiResult<T> = std::result::Result<T, ApiError>;
 
 /// The store guard. Handlers take it once and use it for their whole
 /// transaction — a poisoned mutex is a genuine failure, not a warning.
-fn store(state: &ApiState) -> std::sync::MutexGuard<'_, Store> {
-    state.store.lock().unwrap_or_else(|e| e.into_inner())
+fn store(state: &ApiState) -> parking_lot::MutexGuard<'_, Store> {
+    state.store.lock()
 }
 
 // ── auth ───────────────────────────────────────────────────────────
@@ -233,6 +319,41 @@ pub struct ForkBody {
     pub quota: Option<u32>,
 }
 
+/// A proposed change to the agent's logic.
+///
+/// `source` is the real text a reviewer will read; it is committed to
+/// the artifact store before any comparison runs, so what the scope check
+/// inspects is what the approval is later about.
+#[derive(Debug, Deserialize)]
+pub struct ProposeBody {
+    pub id: String,
+    /// The parent's source artifact. `None` for a first candidate.
+    #[serde(default)]
+    pub parent: Option<String>,
+    /// The repository path the change is about. The governance map is
+    /// consulted about this string, and a proposal naming a protected
+    /// path is refused before its contents are read.
+    pub module_path: String,
+    pub source: String,
+    /// Review material. Never compared for authority.
+    #[serde(default)]
+    pub diff: Option<String>,
+    /// The `require`s the proposer declares. Checked against what the
+    /// source actually declares, in both directions.
+    #[serde(default)]
+    pub declared_dependencies: Vec<String>,
+    /// Failure evidence the proposal was built from.
+    #[serde(default)]
+    pub evidence: Vec<String>,
+}
+
+/// Which candidate, under which frozen protocol.
+#[derive(Debug, Deserialize)]
+pub struct EvaluateBody {
+    pub id: String,
+    pub protocol: String,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct ObserveBody {
     pub operation_id: String,
@@ -300,20 +421,20 @@ fn replayed<T: serde::de::DeserializeOwned>(
     state: &ApiState,
     operation_id: &str,
 ) -> Option<IdempotentResponse<T>> {
-    let receipts = state.receipts.lock().ok()?;
-    let (status, value) = receipts.get(operation_id)?;
-    let body = serde_json::from_value(value.clone()).ok()?;
-    let code = axum::http::StatusCode::from_u16(*status).unwrap_or(StatusCode::OK);
+    let (status, body) = state.replay_receipt::<T>(operation_id)?;
+    let code = axum::http::StatusCode::from_u16(status).unwrap_or(StatusCode::OK);
     Some((code, Json(body)))
 }
 
 /// Record the response an operation produced, so its replay returns the
-/// same thing.
-fn remember<T: Serialize>(state: &ApiState, operation_id: &str, status: u16, body: &T) {
-    if let Ok(mut receipts) = state.receipts.lock() {
-        let value = serde_json::to_value(body).unwrap_or(serde_json::Value::Null);
-        receipts.insert(operation_id.to_string(), (status, value));
-    }
+/// same thing — from the ledger, so a restart does not lose it.
+fn remember<T: Serialize>(
+    state: &ApiState,
+    operation_id: &str,
+    status: u16,
+    body: &T,
+) -> ApiResult<()> {
+    state.record_receipt(operation_id, status, body).map_err(ApiError::from)
 }
 
 /// Replay guard for a synchronous mutation: check, do, record.
@@ -326,7 +447,10 @@ fn idempotent<T: Serialize + serde::de::DeserializeOwned>(
         return Ok(replay);
     }
     let (status, body) = make()?;
-    remember(state, operation_id, status, &body);
+    // A failed write here is not a warning. The work was done; if its
+    // receipt did not land, the next retry would do it again, and the
+    // caller is better told now than after the second run.
+    remember(state, operation_id, status, &body)?;
     Ok((
         axum::http::StatusCode::from_u16(status).unwrap_or(StatusCode::OK),
         Json(body),
@@ -588,8 +712,12 @@ async fn fork(
     })
 }
 
-/// `POST /api/publish` — publication is a publisher grant, with the
-/// expected-version check.
+/// `POST /api/approve` — the authenticated human approval boundary.
+///
+/// The token is the authentication: a request body cannot name its own
+/// actor, and there is no `approved: true` field to set. The library
+/// re-checks the gates and the recorded approval, so a caller cannot
+/// skip the qualification step by going straight to the pointer.
 async fn publish(
     State(state): State<ApiState>,
     headers: HeaderMap,
@@ -599,7 +727,7 @@ async fn publish(
     idempotent(&state, &body.operation_id, || {
         let snapshot = ArtifactRef::parse_hex(&body.snapshot)?;
         let protocol: EvaluationProtocol = store(&state).get_protocol(&body.protocol)?;
-        let version = grove::evaluation::publish_candidate(
+        let (version, approval) = grove::evaluation::publish_snapshot(
             &store(&state),
             &actor,
             &protocol,
@@ -611,11 +739,118 @@ async fn publish(
             ReceiptBody {
                 status: "active".into(),
                 operation_id: body.operation_id.clone(),
-                id: None,
+                id: Some(approval.id),
                 version: Some(version),
             },
         ))
     })
+}
+
+/// `GET /api/approvals` — the recorded human decisions, newest first.
+/// A review board that cannot see *who approved what* has no audit.
+async fn list_candidates(
+    State(state): State<ApiState>,
+    headers: HeaderMap,
+) -> ApiResult<Json<serde_json::Value>> {
+    require(&state, &headers, ActorRole::Reader)?;
+    let guard = store(&state);
+    let active = guard.active_publication()?;
+    let active_json = match active {
+        Some((version, snapshot)) => serde_json::json!({
+            "version": version,
+            "snapshot": snapshot.to_hex(),
+            "candidate": guard.active_candidate_id()?,
+        }),
+        None => serde_json::Value::Null,
+    };
+    Ok(Json(serde_json::json!({
+        "approvals": guard.approval_log()?,
+        "active": active_json,
+    })))
+}
+
+/// `POST /api/logic/propose` — an operator offers a new logic candidate.
+///
+/// The source arrives as bytes in the request and is committed to the
+/// artifact store before anything is compared, so what the scope check
+/// reads is the same bytes a reviewer will read.
+async fn propose_candidate(
+    State(state): State<ApiState>,
+    headers: HeaderMap,
+    Json(body): Json<ProposeBody>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let actor = require(&state, &headers, ActorRole::Operator)?;
+    let guard = store(&state);
+    let governance = grove::logic::default_governance();
+    let source_ref = guard.artifacts().put(body.source.as_bytes())?;
+    let diff_ref = guard
+        .artifacts()
+        .put(body.diff.as_deref().unwrap_or_default().as_bytes())?;
+    let candidate = grove::logic::LogicCandidate {
+        schema: SCHEMA_VERSION,
+        id: body.id,
+        parent_logic_ref: match body.parent.as_deref() {
+            None | Some("") => None,
+            Some(hex) => Some(ArtifactRef::parse_hex(hex)?),
+        },
+        module_path: body.module_path,
+        source_ref,
+        declared_dependencies: body.declared_dependencies,
+        diff_ref,
+        evidence_refs: body
+            .evidence
+            .iter()
+            .map(|hex| ArtifactRef::parse_hex(hex))
+            .collect::<GroveResult<Vec<_>>>()?,
+        created_at_ms: now_ms(),
+    };
+    // The parent's bytes are read for the comparison, and the parent
+    // may legitimately be the *active* logic rather than a named
+    // artifact — that is the normal case for "improve what is running".
+    let parent_source = match &candidate.parent_logic_ref {
+        Some(hex) => Some(String::from_utf8_lossy(&guard.artifacts().get(hex)?).into_owned()),
+        None => None,
+    };
+    let parent_deps = match &parent_source {
+        Some(text) => grove::execution::probe_dependencies(text),
+        None => Vec::new(),
+    };
+    let digest = grove::logic::propose(
+        &guard,
+        &actor,
+        &governance,
+        &candidate,
+        parent_source.as_deref(),
+        &parent_deps,
+    )?;
+    Ok(Json(serde_json::json!({
+        "id": candidate.id,
+        "candidate": digest.to_hex(),
+        "source": source_ref.to_hex(),
+        "state": "proposed",
+    })))
+}
+
+/// `POST /api/logic/evaluate` — qualify a candidate under one frozen
+/// protocol. This changes its state and nothing else: the deployment
+/// stays where it is until someone approves.
+async fn evaluate_candidate(
+    State(state): State<ApiState>,
+    headers: HeaderMap,
+    Json(body): Json<EvaluateBody>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let actor = require(&state, &headers, ActorRole::Operator)?;
+    let guard = store(&state);
+    let candidate = guard.get_candidate(&body.id)?;
+    let protocol: EvaluationProtocol = guard.get_protocol(&body.protocol)?;
+    let verdict = grove::logic::evaluate_candidate(&guard, &actor, &protocol, &candidate, now_ms())?;
+    Ok(Json(serde_json::json!({
+        "id": verdict.candidate_id,
+        "state": verdict.state.as_str(),
+        "gate_failures": verdict.gate_failures,
+        "evaluations": verdict.evaluation_refs.iter().map(|r| r.to_hex()).collect::<Vec<_>>(),
+        "active_unchanged": guard.active_publication()?.map(|(v, _)| v),
+    })))
 }
 
 /// `GET /api/evaluations/{snapshot}` — the protocol-scoped comparison.
@@ -643,16 +878,52 @@ async fn compare(
 
 /// `GET /api/events` — correlated events for the run view. Sensitive
 /// raw content and tokens never appear here.
-async fn events(State(state): State<ApiState>, headers: HeaderMap) -> ApiResult<Json<Vec<Event>>> {
+async fn events(
+    State(state): State<ApiState>,
+    headers: HeaderMap,
+    Query(params): Query<EventQuery>,
+) -> ApiResult<Json<Vec<Event>>> {
     require(&state, &headers, ActorRole::Reader)?;
-    let mut out = Vec::new();
     let guard = store(&state);
+    let mut out = Vec::new();
+
+    // The durable log, when the caller named a run. A run with no events
+    // is a real answer ("nothing happened"), not a 404.
+    if let Some(run_id) = params.run.as_deref() {
+        // The run must exist: a typo should not look like an empty log.
+        guard.get_run(run_id)?;
+        // Sequences start at zero and `read_events` is *exclusive* of its
+        // cursor. An omitted cursor therefore reads the whole log, while
+        // an explicit `0` skips the first event — the distinction a
+        // poller needs, and the one `#[serde(default)]` on a plain
+        // integer would have erased.
+        let recorded = match params.after_sequence {
+            None => grove::events::read_events_from_start(&guard, run_id)?,
+            Some(after) => grove::events::read_events(&guard, run_id, after)?,
+        };
+        for event in recorded {
+            out.push(Event {
+                at_ms: event.at_ms,
+                kind: event.kind,
+                subject: run_id.to_string(),
+                detail: event.detail,
+            });
+        }
+        return Ok(Json(out));
+    }
+
+    // Without a run, the state projection the product UI reads. It
+    // reports the runs that exist now, not a history of them.
     for run in guard.runs() {
         out.push(Event {
             at_ms: now_ms(),
             kind: "run".into(),
             subject: run.id.clone(),
-            detail: format!("{:?} {}/{} steps", run.state, run.steps_consumed, run.steps_budget),
+            detail: format!(
+                "{}/{} steps",
+                wire_name(run.state, "unknown"),
+                format_args!("{}/{}", run.steps_consumed, run.steps_budget)
+            ),
         });
     }
     for cp in guard.checkpoints() {
@@ -674,6 +945,213 @@ async fn events(State(state): State<ApiState>, headers: HeaderMap) -> ApiResult<
     Ok(Json(out))
 }
 
+/// Cursor for `GET /api/events`.
+#[derive(Debug, Default, Deserialize)]
+pub struct EventQuery {
+    /// Exclusive cursor over the durable log. **Omitted** reads the whole
+    /// log; an explicit `0` skips sequence 0, which is what a poller
+    /// that just processed the first event should ask for.
+    #[serde(default)]
+    pub after_sequence: Option<u64>,
+    /// Which run's log to read. Without it the endpoint answers the
+    /// product's state projection instead.
+    pub run: Option<String>,
+}
+
+// ── the queue: what actually gets run ─────────────────────────────
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct QueueBody {
+    pub operation_id: String,
+    /// What to run. Exactly one of `source` (a Zio program) or
+    /// `training` (a CPU training spec) must be present: a request that
+    /// names neither, or both, is refused rather than guessed at, because
+    /// guessing means running work the caller did not describe.
+    #[serde(default)]
+    pub source: Option<String>,
+    #[serde(default)]
+    pub training: Option<TrainingRequest>,
+    #[serde(default = "default_budget")]
+    pub steps_budget: u32,
+    #[serde(default)]
+    pub dataset_revision: Option<String>,
+}
+
+/// A CPU training request as it arrives over HTTP. Paths are
+/// host-relative and are re-staged into the worker's scratch before the
+/// worker sees them, so a caller cannot point the worker at an arbitrary
+/// file by naming one.
+#[derive(Debug, Clone, Deserialize)]
+pub struct TrainingRequest {
+    pub graph: serde_json::Value,
+    pub weights: String,
+    pub data: String,
+    #[serde(default)]
+    pub val_data: Option<String>,
+    pub steps: u32,
+    #[serde(default)]
+    pub seed: u64,
+    #[serde(default)]
+    pub save_at: Option<u32>,
+}
+
+fn default_budget() -> u32 {
+    100
+}
+
+/// Resolve a caller-supplied input path against the server's own root.
+///
+/// A path in a request body is a path the *server* reads, so it is
+/// resolved like every other server-side path: relative to the checkout,
+/// never taken as absolute, and refused if it escapes the root. A
+/// training request that could name `/etc/shadow` would not be a
+/// training request.
+fn resolve_input(state: &ApiState, raw: &str) -> Result<PathBuf, ApiError> {
+    let root = state.paths.root.clone();
+    let candidate = PathBuf::from(raw);
+    if candidate.is_absolute() {
+        return Err(GroveError::new(
+            ErrorKind::CapabilityDenied,
+            format!("input path {raw} must be relative to the server root, not absolute"),
+        )
+        .into());
+    }
+    let joined = root.join(candidate);
+    if !joined.starts_with(&root) {
+        return Err(GroveError::new(
+            ErrorKind::CapabilityDenied,
+            format!("input path {raw} escapes the server root"),
+        )
+        .into());
+    }
+    if !joined.is_file() {
+        return Err(GroveError::new(
+            ErrorKind::ArtifactUnavailable,
+            format!("input path {raw} does not name a readable file"),
+        )
+        .into());
+    }
+    Ok(joined)
+}
+
+/// `POST /api/learning/queue` — submit work the owner will actually run.
+///
+/// This is the endpoint that makes the queue more than a table. It
+/// writes the run *and* the work that run is for, so an owner that
+/// starts later — including after a restart — can pick it up without the
+/// original caller still being around.
+async fn enqueue_zio_work(
+    State(state): State<ApiState>,
+    headers: HeaderMap,
+    Json(body): Json<QueueBody>,
+) -> ApiResult<Json<RunRef>> {
+    let actor = require(&state, &headers, ActorRole::Operator)?;
+    let Some(runner) = state.runner.clone() else {
+        return Err(GroveError::new(
+            ErrorKind::CapabilityDenied,
+            "this server has no queue owner; work cannot be accepted because nothing \
+             would run it",
+        )
+        .into());
+    };
+    let run_id = format!("run-{}", body.operation_id);
+    let run = grove::contracts::Run {
+        schema: grove::contracts::SCHEMA_VERSION,
+        id: run_id.clone(),
+        task_id: "task-queue".into(),
+        base_snapshot: ArtifactRef::parse_hex(
+            "0000000000000000000000000000000000000000000000000000000000000001",
+        )?,
+        dataset_revision: body
+            .dataset_revision
+            .clone()
+            .unwrap_or_else(|| "ds-none".to_string()),
+        recipe: "recipe-queue".into(),
+        state: grove::contracts::RunState::Queued,
+        steps_consumed: 0,
+        steps_budget: body.steps_budget,
+        resumed_from: None,
+    };
+    let kind = match (body.source.clone(), body.training.clone()) {
+        (Some(source), None) => crate::runner::WorkKind::Zio { source },
+        (None, Some(spec)) => crate::runner::WorkKind::Training {
+            spec: crate::runner::TrainingSpec {
+                graph: spec.graph,
+                // Resolved against the server's own root, not the
+                // caller's: a path from a request body is a path the
+                // server would read on the caller's behalf.
+                weights: resolve_input(&state, &spec.weights)?,
+                data: resolve_input(&state, &spec.data)?,
+                val_data: spec
+                    .val_data
+                    .as_deref()
+                    .map(|p| resolve_input(&state, p))
+                    .transpose()?,
+                steps: spec.steps,
+                seed: spec.seed,
+                save_at: spec.save_at,
+                // The queue endpoint starts fresh work; only a resume
+                // names a state to continue from, and letting a caller
+                // name one here would be a resume without a checkpoint.
+                resume: None,
+            },
+        },
+        (None, None) | (Some(_), Some(_)) => {
+            return Err(GroveError::new(
+                ErrorKind::InvalidInput,
+                "queue exactly one of \"source\" (a Zio program) or \"training\" (a CPU \
+                 training spec); a request that names both or neither is not a run anyone \
+                 asked for",
+            )
+            .into())
+        }
+    };
+    let request = crate::runner::RunRequest {
+        run_id: run_id.clone(),
+        kind,
+    };
+    runner.enqueue(&actor, &run, &request)?;
+    Ok(Json(RunRef {
+        id: run.id,
+        state: "queued".into(),
+        steps_consumed: 0,
+        steps_budget: body.steps_budget,
+        resumed_from: None,
+    }))
+}
+
+/// `POST /api/learning/runs/{id}/cancel` — record a cancel intent.
+///
+/// Cancellation is an intent, not an outcome: a run cancelled while
+/// queued never starts, and one cancelled while running is torn down by
+/// the owner holding its claim. The response says which of the two the
+/// run was, so a caller is not told "cancelled" for a run that is still
+/// computing.
+async fn cancel_run(
+    State(state): State<ApiState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> ApiResult<Json<RunRef>> {
+    let actor = require(&state, &headers, ActorRole::Operator)?;
+    let Some(runner) = state.runner.clone() else {
+        return Err(GroveError::new(
+            ErrorKind::CapabilityDenied,
+            "this server has no queue owner; a cancel would have nothing to honour it",
+        )
+        .into());
+    };
+    let was_running = store(&state).get_run(&id)?.state == grove::contracts::RunState::Running;
+    runner.cancel(&actor, &id)?;
+    let run = store(&state).get_run(&id)?;
+    Ok(Json(RunRef {
+        id: run.id,
+        state: if was_running { "cancelling".into() } else { wire_name(run.state, "unknown") },
+        steps_consumed: run.steps_consumed,
+        steps_budget: run.steps_budget,
+        resumed_from: run.resumed_from,
+    }))
+}
+
 /// The product router. Same-origin by construction: the UI in W11 is
 /// served from this same origin, so no CORS policy is opened.
 pub fn router(state: ApiState) -> Router {
@@ -687,13 +1165,18 @@ pub fn router(state: ApiState) -> Router {
         .route("/api/signals", post(post_signal))
         .route("/api/signals/{id}", get(get_signal))
         .route("/api/learning/runs", post(start_run))
+        .route("/api/learning/queue", post(enqueue_zio_work))
+        .route("/api/learning/runs/{id}/cancel", post(cancel_run))
         .route("/api/learning/fork", post(fork))
         .route("/api/learning/pause", post(pause_run))
         .route("/api/learning/resume", post(resume_run))
         .route("/api/learning/select", post(select_candidate))
         .route("/api/modules", get(list_modules))
         .route("/api/lineage", get(lineage))
-        .route("/api/publish", post(publish))
+        .route("/api/approve", post(publish))
+        .route("/api/logic/candidates", get(list_candidates))
+        .route("/api/logic/propose", post(propose_candidate))
+        .route("/api/logic/evaluate", post(evaluate_candidate))
         .route("/api/evaluations/{snapshot}", get(compare))
         .route("/api/events", get(events))
         .route("/", get(index_page))
@@ -868,6 +1351,11 @@ pub struct PauseBody {
 
 #[derive(Debug, Deserialize)]
 pub struct ResumeBody {
+    /// What the resumed run should train. A resume that names no work
+    /// would queue a run the owner loop skips forever, so the request is
+    /// refused rather than honoured as a bare row.
+    #[serde(default)]
+    pub training: Option<TrainingRequest>,
     pub checkpoint: String,
     pub run: String,
     #[serde(default)]
@@ -938,6 +1426,54 @@ async fn resume_run(
         &body.run,
         body.steps_budget.unwrap_or(1000),
     )?;
+    // A resumed run that carries no work is a row nobody will ever pick
+    // up: `resume_plan` writes the run, and the queue's unit of work is
+    // the `queued_work` row. Without this the run sat in `queued`
+    // forever and the owner loop skipped it silently — the response
+    // said "queued" and the work never started.
+    let Some(runner) = state.runner.clone() else {
+        return Err(GroveError::new(
+            ErrorKind::CapabilityDenied,
+            "this server has no queue owner; a resume would create a run nothing would execute",
+        )
+        .into());
+    };
+    let work = body.training.clone().ok_or_else(|| {
+        GroveError::new(
+            ErrorKind::InvalidInput,
+            "a resume must say what to run (\"training\"); a run with no work would queue \
+             forever",
+        )
+    })?;
+    // The checkpoint's own state artifact is the resume point, and it
+    // comes from the store rather than the request: a caller-supplied
+    // state path here would let a resume read a file no checkpoint
+    // ever committed.
+    let state_artifact = store(&state)
+        .get_checkpoint(&plan.checkpoint_id)?
+        .state_artifact
+        .to_hex();
+    let request = crate::runner::RunRequest {
+        run_id: plan.run.id.clone(),
+        kind: crate::runner::WorkKind::Training {
+            spec: crate::runner::TrainingSpec {
+                graph: work.graph,
+                weights: resolve_input(&state, &work.weights)?,
+                data: resolve_input(&state, &work.data)?,
+                val_data: work
+                    .val_data
+                    .as_deref()
+                    .map(|p| resolve_input(&state, p))
+                    .transpose()?,
+                steps: work.steps,
+                seed: work.seed,
+                save_at: work.save_at,
+                resume: Some(serde_json::Value::String(state_artifact)),
+            },
+        },
+    };
+    runner.enqueue(&actor, &plan.run, &request)?;
+
     Ok(Json(serde_json::json!({
         "run": plan.run.id,
         "resumed_from_checkpoint": plan.checkpoint_id,

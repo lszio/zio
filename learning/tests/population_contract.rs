@@ -55,6 +55,7 @@ fn worker_config() -> WorkerConfig {
         working_dir: repo_root(),
         timeout: Duration::from_secs(240),
         max_address_space: 4 * 1024 * 1024 * 1024,
+        handshake_timeout: Duration::from_secs(180),
     }
 }
 

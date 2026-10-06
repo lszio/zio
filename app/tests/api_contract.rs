@@ -279,7 +279,7 @@ fn roles_do_not_bleed_into_each_other() {
     let publish_by_operator = request(
         &base,
         "POST",
-        "/api/publish",
+        "/api/approve",
         Some("operator-tok"),
         Some(serde_json::json!({
             "operation_id": "op-pub-1", "snapshot": snapshot,
@@ -371,7 +371,7 @@ fn a_conflicting_publication_version_is_refused() {
     let first = request(
         &base,
         "POST",
-        "/api/publish",
+        "/api/approve",
         Some("publisher-tok"),
         Some(serde_json::json!({
             "operation_id": "op-pub-2", "snapshot": snapshot,
@@ -385,7 +385,7 @@ fn a_conflicting_publication_version_is_refused() {
     let stale = request(
         &base,
         "POST",
-        "/api/publish",
+        "/api/approve",
         Some("publisher-tok"),
         Some(serde_json::json!({
             "operation_id": "op-pub-3", "snapshot": snapshot,

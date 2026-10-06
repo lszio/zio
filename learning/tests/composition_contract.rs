@@ -377,3 +377,92 @@ fn a_run_records_the_composite_it_fine_tunes() {
     // the budget is a hard ceiling, not a suggestion
     assert!(store.consume_steps(&run.id, 100).is_err());
 }
+
+// ── joint fine-tune: frozen members are verified, not promised ─────
+
+#[test]
+fn a_joint_fine_tune_that_moves_a_frozen_module_is_refused() {
+    let store = store("joint_frozen");
+    let actor = operator();
+
+    let mut frozen = module("encoder", "pixel", "pixel");
+    frozen.frozen = true;
+    let head = module("head", "pixel", "logits");
+    let parent = seed(
+        &store,
+        &actor,
+        "composite-frozen",
+        vec![frozen.clone(), head.clone()],
+        br#"{"encoder": [1.0, 2.0]}"#,
+    );
+    let parent_digest = store.snapshot_digest("composite-frozen").unwrap();
+    assert_eq!(parent_digest, parent);
+
+    // The caller claims it wrote "the frozen state plus the updated
+    // layers". It did not: the frozen module moved.
+    let moved = br#"{"encoder": [9.0, 9.0], "head": [0.5]}"#;
+    let err = composition::commit_joint(&store, &actor, "composite-frozen", "composite-v2", moved, 0.9)
+        .expect_err("a frozen module that changed must be refused");
+    assert_eq!(err.kind, grove::contracts::ErrorKind::ProtocolViolation);
+    assert!(err.context.contains("frozen"), "the error must name the frozen module: {}", err.context);
+    // Nothing was named or committed.
+    assert!(store.snapshot_digest("composite-v2").is_err());
+}
+
+#[test]
+fn a_joint_fine_tune_that_drops_a_frozen_module_is_refused() {
+    let store = store("joint_dropped");
+    let actor = operator();
+
+    let mut frozen = module("encoder", "pixel", "pixel");
+    frozen.frozen = true;
+    let head = module("head", "pixel", "logits");
+    seed(
+        &store,
+        &actor,
+        "composite-drop",
+        vec![frozen, head],
+        br#"{"encoder": [1.0, 2.0]}"#,
+    );
+
+    let err = composition::commit_joint(
+        &store,
+        &actor,
+        "composite-drop",
+        "composite-drop-v2",
+        br#"{"head": [0.5]}"#,
+        0.9,
+    )
+    .expect_err("a composite cannot drop a frozen member");
+    assert!(err.context.contains("drop a frozen member"), "{}", err.context);
+}
+
+#[test]
+fn a_joint_fine_tune_that_leaves_the_frozen_module_intact_commits() {
+    let store = store("joint_ok");
+    let actor = operator();
+
+    let mut frozen = module("encoder", "pixel", "pixel");
+    frozen.frozen = true;
+    let head = module("head", "pixel", "logits");
+    seed(
+        &store,
+        &actor,
+        "composite-ok",
+        vec![frozen, head],
+        br#"{"encoder": [1.0, 2.0]}"#,
+    );
+
+    let params = br#"{"encoder": [1.0, 2.0], "head": [0.5]}"#;
+    let artifact = composition::commit_joint(
+        &store,
+        &actor,
+        "composite-ok",
+        "composite-ok-v2",
+        params,
+        0.9,
+    )
+    .expect("an honest joint fine-tune commits");
+    assert!(store.artifacts().exists(&artifact));
+    assert!(store.snapshot_digest("composite-ok-v2").is_ok());
+}

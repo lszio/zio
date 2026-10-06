@@ -8,11 +8,13 @@
 
 #[cfg(feature = "http")]
 pub mod api;
+pub mod agent;
 pub mod container;
 pub mod demo;
 pub mod inference;
 pub mod modular;
 pub mod population;
+pub mod runner;
 
 use std::path::{Path, PathBuf};
 
@@ -89,6 +91,22 @@ pub fn inspect(store: &Store) -> Result<String> {
             snapshot.to_hex()
         )),
         None => out.push_str("\npublication: none\n"),
+    }
+
+    // The decisions, not just the outcome: a version number with nobody
+    // behind it is not an audit trail.
+    let approvals = store.approval_log()?;
+    out.push_str(&format!("\napprovals ({}):\n", approvals.len()));
+    for approval in &approvals {
+        out.push_str(&format!(
+            "  {:<34} {:<12} v{version}\n",
+            approval["id"].as_str().unwrap_or("?"),
+            approval["authenticated_actor"].as_str().unwrap_or("?"),
+            version = approval["expected_publication_version"]
+                .as_i64()
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| "any".to_string()),
+        ));
     }
     Ok(out)
 }

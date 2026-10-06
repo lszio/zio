@@ -14,12 +14,12 @@ use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::time::Duration;
 
-use zio_ai::teacher::http_teacher::HttpTeacherHost;
-use zio_ai::teacher::{
+use loom::teacher::http_teacher::HttpTeacherHost;
+use loom::teacher::{
     validate_request, ContentPart, Modality, OutputKind, ProposedProgram, RecordingTeacher,
     TeacherCapability, TeacherHost, TeacherRequest, TeacherResponse, UsageLicence,
 };
-use zio_ai::HostErrorKind;
+use loom::HostErrorKind;
 
 fn hard_teacher() -> TeacherCapability {
     TeacherCapability {
@@ -61,11 +61,11 @@ fn request(capability: TeacherCapability, wants: Vec<OutputKind>, licence: Usage
 
 /// A scripted teacher used to exercise the host-side rules without a socket.
 struct ScriptedTeacher {
-    answer: Box<dyn Fn(&TeacherRequest) -> Result<TeacherResponse, zio_ai::HostError> + Send + Sync>,
+    answer: Box<dyn Fn(&TeacherRequest) -> Result<TeacherResponse, loom::HostError> + Send + Sync>,
 }
 
 impl TeacherHost for ScriptedTeacher {
-    fn query(&self, request: &TeacherRequest) -> Result<TeacherResponse, zio_ai::HostError> {
+    fn query(&self, request: &TeacherRequest) -> Result<TeacherResponse, loom::HostError> {
         validate_request(request)?;
         (self.answer)(request)
     }

@@ -1,16 +1,21 @@
-//! zio-ai — host-side AI capability protocols for zio (ADR-016).
+//! Loom — the official standalone harness library for zio (ADR-019).
 //!
-//! The crate is a capability socket, not intelligence: it defines the
-//! [`LlmHost`] / [`EmbedHost`] traits, a deterministic mock (record/replay,
-//! see [`mock`]), an optional OpenAI-compatible HTTP implementation (the
-//! `http` feature, see [`http`]), and [`install`] — the external attach
-//! point that registers the `llm-complete` / `embed` native bindings into
-//! an `EvalContext`.
+//! Loom is a capability socket, not intelligence and not a product. It
+//! owns the *contract* a model provider has to speak
+//! ([`harness`]: messages, tool calls, sessions, budgets, cancellation)
+//! and the transports that carry it: a deterministic mock
+//! ([`mock`]), an OpenAI-compatible HTTP client behind the `http` feature
+//! ([`http`]), and the teacher capability protocol ([`teacher`]).
 //!
-//! core stays untouched (ADR-009): zio-ai depends on zio-core, never the
-//! reverse. Both bindings are always registered; without a host installed
-//! a call fails with the stable `capability-denied:` prefix (anchored by
-//! contract tests), which is why `install` takes `Option<Arc<dyn _>>`.
+//! It does not own evaluation, approval, or publication: those belong to
+//! the application that embeds it, which is why [`harness::Session`] takes
+//! its policy by injection rather than deciding any of it.
+//!
+//! zio-core stays untouched (ADR-009): Loom depends on zio-core, never the
+//! reverse. The `llm-complete` / `embed` bindings are always registered;
+//! without a host a call fails with the stable `capability-denied:` prefix
+//! (anchored by contract tests), which is why `install` takes
+//! `Option<Arc<dyn _>>`.
 
 use std::fmt;
 use std::sync::Arc;
@@ -20,7 +25,18 @@ use zio_core::error::EvalError;
 use zio_core::im::Vector;
 use zio_core::value::{NativeFn, Value};
 
+pub mod harness;
 pub mod mock;
+
+/// The harness types a consumer names in its own signatures, re-exported
+/// so the common path is one import. `LlmHost` / `EmbedHost` are
+/// *defined* here, so they need no re-export; `ModelHost` and the
+/// message types live in [`harness`] and are surfaced here because a
+/// consumer implementing a provider should not have to know that.
+pub use harness::{
+    Budget, ChatMessage, ChatRequest, ChatResponse, ModelHost, Options, Session, Tools,
+    ToolCall, Usage,
+};
 
 pub mod teacher;
 
@@ -37,12 +53,15 @@ pub struct LlmOptions {
     pub stop: Vec<String>,
 }
 
-/// Host-provided text completion capability (ADR-016).
+/// A text-completion provider.
 ///
-/// The host is an untrusted external process by construction: its output
-/// only ever re-enters zio through the reader → whitelist → eval gates,
-/// so no host can smuggle authority into the evaluator.
-pub trait LlmHost {
+/// This is the *narrow* port: one prompt in, one string out. It exists
+/// for embedders that genuinely only need completion, and
+/// [`harness::ModelHost`] is implemented for every provider in this crate
+/// so the two never diverge. The Zio `llm-complete` binding speaks this,
+/// backed by a session, so the narrow port is a view over the structured
+/// contract rather than a second transport.
+pub trait LlmHost: Send + Sync {
     fn complete(&self, prompt: &str, opts: &LlmOptions) -> Result<String, HostError>;
 }
 
@@ -50,7 +69,7 @@ pub trait LlmHost {
 ///
 /// Vectors are advisory data (semantic bridge for natural-language tasks);
 /// nothing in the learning loop depends on them.
-pub trait EmbedHost {
+pub trait EmbedHost: Send + Sync {
     fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f64>>, HostError>;
 }
 
@@ -73,6 +92,15 @@ pub enum HostErrorKind {
     ReplayMiss,
     /// Local I/O failure (reading or writing recordings).
     Io,
+    /// The call would exceed a declared budget. The provider was not
+    /// called: an over-budget call spends nothing.
+    Budget,
+    /// The session was cancelled. No further provider call is made, so a
+    /// cancellation cannot leave a side effect behind.
+    Cancelled,
+    /// The provider did not report a cost and none is known. The
+    /// reservation stays held; an unknown cost is not zero.
+    UnknownCost,
 }
 
 impl HostErrorKind {
@@ -85,6 +113,9 @@ impl HostErrorKind {
             HostErrorKind::Config => "config",
             HostErrorKind::ReplayMiss => "replay-miss",
             HostErrorKind::Io => "io",
+            HostErrorKind::Budget => "budget",
+            HostErrorKind::Cancelled => "cancelled",
+            HostErrorKind::UnknownCost => "unknown-cost",
         }
     }
 }
@@ -123,17 +154,21 @@ pub(crate) fn fnv1a64(bytes: &[u8]) -> u64 {
 
 // ── External attach (ADR-016) ───────────────────────────────────
 
-/// Attach AI hosts to an evaluation context by registering the
-/// `llm-complete` / `embed` native bindings.
+/// Attach a model host and an embedding host to an evaluation context by
+/// registering the `llm-complete` / `embed` native bindings.
 ///
-/// This is the only wiring zio-ai performs: hosts are captured by the
+/// This is the only wiring Loom performs: hosts are captured by the
 /// binding closures, so `EvalContext` gains no fields and zio-core gains
 /// no dependency. Both bindings are always registered — pass `None` when
 /// a capability is not provisioned and calls fail with the stable
 /// `capability-denied:` prefix instead of a missing-symbol error.
+///
+/// `llm-complete` is an *extension* binding Loom provides, not a language
+/// primitive: core has no knowledge of it, and it is registered here from
+/// outside.
 pub fn install(
     ctx: &EvalContext,
-    llm: Option<Arc<dyn LlmHost>>,
+    llm: Option<Arc<dyn ModelHost>>,
     embed: Option<Arc<dyn EmbedHost>>,
 ) {
     ctx.env.set(
@@ -155,7 +190,7 @@ pub fn install(
 }
 
 fn llm_complete_fn(
-    host: &Option<Arc<dyn LlmHost>>,
+    host: &Option<Arc<dyn ModelHost>>,
     args: &Vector<Value>,
 ) -> Result<Value, EvalError> {
     let Some(host) = host else {
@@ -174,10 +209,71 @@ fn llm_complete_fn(
         None => return Err(EvalError::custom("llm-complete: expected a prompt string")),
     };
     let opts = parse_llm_options(args)?;
-    let response = host
-        .complete(&prompt, &opts)
+    // The text binding is a view over a session: one user turn, no
+    // tools, answered by the same structured contract every other
+    // transport uses. There is no second, text-only path.
+    let session = harness::Session::new(Arc::clone(host));
+    let message = session
+        .send_with(
+            &prompt,
+            &harness::Tools::none(),
+            harness::Options {
+                temperature: opts.temperature,
+                stop: opts.stop.clone(),
+            },
+        )
         .map_err(|e| EvalError::custom(format!("llm-complete: {e}")))?;
-    Ok(Value::String(response))
+    match message.content {
+        serde_json::Value::String(text) => Ok(Value::String(text)),
+        other => Ok(Value::String(other.to_string())),
+    }
+}
+
+/// Adapt a text-only provider onto the structured contract, so an
+/// embedder that has one cannot also end up with a second transport.
+pub struct SessionLlmHost {
+    inner: Arc<dyn LlmHost>,
+}
+
+impl SessionLlmHost {
+    pub fn new(inner: Arc<dyn LlmHost>) -> Self {
+        SessionLlmHost { inner }
+    }
+}
+
+impl harness::ModelHost for SessionLlmHost {
+    fn respond(
+        &self,
+        request: &harness::ChatRequest,
+        budget: &harness::Budget,
+    ) -> Result<harness::ChatResponse, HostError> {
+        let last = request.messages.last().cloned().unwrap_or(harness::ChatMessage {
+            role: "user".into(),
+            content: serde_json::Value::String(String::new()),
+            tool_calls: Vec::new(),
+            tool_call_id: None,
+        });
+        let prompt = last.content.as_str().unwrap_or_default().to_string();
+        let text = self
+            .inner
+            .complete(&prompt, &LlmOptions::default())
+            .map_err(|e| {
+                // A failure spends nothing, so the reservation goes back.
+                let _ = budget;
+                e
+            })?;
+        Ok(harness::ChatResponse {
+            request_id: request.request_id.clone(),
+            message: harness::ChatMessage {
+                role: "assistant".into(),
+                content: serde_json::Value::String(text),
+                tool_calls: Vec::new(),
+                tool_call_id: None,
+            },
+            usage: harness::Usage::default(),
+            finish_reason: "stop".into(),
+        })
+    }
 }
 
 /// `(llm-complete prompt & :temperature x :max-tokens n :stop s)`

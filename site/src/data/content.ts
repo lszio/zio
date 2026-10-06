@@ -4,21 +4,21 @@ export interface Roadmap { icon: string; accent: string; title: string; body: st
 
 export const theorems: Theorem[] = [
   { icon: '⚡', n: 1, title: '状态显式化', body: '零 <code>thread_local</code> 全局变量。所有状态在显式 <code>EvalContext</code> 中，在 Rust/WASM/浏览器端隔离运行。' },
-  { icon: '🦀', n: 2, title: 'Rust 合同，Lisp 组合', body: 'Rust 提供底层 Native 契约与 WASM 零开销性能边界；Lisp 提供元编程与灵活组合层。' },
+  { icon: '🦀', n: 2, title: 'Rust 边界，Zio 自举方向', body: '当前运行时由 Rust 实现。Planned：Zio 承担展开、分析与编译器自举；Rust 保留最小运行时、宿主和性能原语。编译器自举不等于编辑器或 APP 的 Zio 化。' },
   { icon: '🌐', n: 3, title: 'JS / Web 原体深度互操作', body: '内置 <code>js/eval</code>、<code>js/console-log</code>、<code>js/dom-set-text</code> 等原语，直接在浏览器 WASM 环境操作 DOM 与 JS 全局上下文。' },
-  { icon: '🧬', n: 4, title: '宏扩充 Eval 语义', body: '内置 <code>syntax-rules</code> 模式匹配与自动 gensym 命名空间，彻底消除变量捕获。' },
+  { icon: '🧬', n: 4, title: '宏扩充 Eval 语义', body: '内置 <code>syntax-rules</code> 模式匹配与 gensym，已有卫生子集测试；不宣称完整卫生性或所有变量捕获均被消除。' },
   { icon: '📦', n: 5, title: '协议优于实现', body: '基于 CLOS / AMOP 哲学的 ZOS 对象系统，Generic Function 支持基于 C3 线性化算法的多分派 (Multi-Dispatch)。' },
-  { icon: '🔄', n: 6, title: '统一并发与 CSP', body: '内置 Future / Promise 异步延迟解算与 Go/Clojure 风格 CSP Channel（<code>chan</code>, <code>send!</code>, <code>recv!</code>）。' },
+  { icon: '🔄', n: 6, title: 'Future 与 Channel 原语', body: 'Current：Future 与 <code>chan / send! / recv!</code> 提供同步求值与队列演示，不是异步并发调度器。Planned：完整异步／取消语义。' },
 ];
 
 export const archLayers: ArchLayer[] = [
   {
-    title: '应用程序与 Web 宿主层 (Application & WASM Layer)',
-    desc: 'Astro 落地页 (Web REPL, <code>site/src/pages</code>) • zio-cli (CLI &amp; REPL) • grove serve (自学习控制面) • [Planned: LSP Server / DAP Debugger]',
+    title: '独立 APP 与静态站点 (Application & Web)',
+    desc: 'Current: Astro 静态文档与 WASM REPL；grove serve 提供实验 CLI/API，不是已完成产品 Web。Planned: Grove 消费 Numa、Rill、Loom 独立库，负责实验、反馈、检查点、逻辑演化、独立评估、人工批准与产品 Web。',
   },
   {
-    title: '自学习产品层 (grove: Learning Library & Product)',
-    desc: 'learning/ (grove 宿主库: 存储·制品·隔离 worker·预算) • workers/torch/ (PyTorch 参考训练后端) • app/ (grove-app: CLI 与 HTTP API)',
+    title: '官方独立库 Numa / Rill / Loom (Planned)',
+    desc: 'Numa：数值计算、类型化连续数组/矩阵/向量与后端接口，不治理学习。Rill：参数、子命令、帮助、命令组合、终端 IO 与退出状态，不是语言求值器。Loom：模型、工具、会话、预算、取消、provider 与 ACP，不治理 Grove 学习/评估/发布。三库独立版本、按需引入，不是语言内建层；core 无反向依赖。Current: core / cli / ai / learning / app 五 crate，zio-ai 未改名，zio-cli 二进制不是 Rill 库。',
   },
   {
     title: '扩展库生态层 (Extension Library Layer)',
@@ -30,7 +30,7 @@ export const archLayers: ArchLayer[] = [
   },
   {
     title: '运行时 &amp; ZOS 对象层 (Runtime &amp; ZOS Layer)',
-    desc: 'AST Evaluator (TCO Trampoline) • ZOS Class/GF/Method/C3 • syntax-rules 卫生宏 • Future/Channel • JS FFI (js/eval, js/dom-set-text)',
+    desc: 'Current: AST Evaluator • ZOS Class/GF/Method/C3 子集 • 宏卫生子集 • 同步 Future/Channel • JS FFI。ZOS object/class/GF/method/MOP 方向保留在语言核心；Planned: 完整 MOP 与 core 职责收敛。',
   },
   {
     title: '前端语法层 (Frontend Reader)',
@@ -49,14 +49,14 @@ export const roadmap: Roadmap[] = [
   },
   {
     icon: '🚀', accent: 'cyan', title: 'Phase 3 & Phase 4 & WASM',
-    body: '卫生宏引擎、ZOS 多分派 & MOP 反射、Future/Promise 异步解算、CSP 通道、JSON 原语与 WASM / JS FFI 原体交付。',
+    body: 'Current：syntax-rules 卫生子集、ZOS 多分派子集、同步 Future/Channel 演示、JSON 与 WASM / JS FFI。Planned：完整 MOP、完整卫生性与异步调度；历史阶段名称不代表这些目标已交付。',
   },
   {
-    icon: '🌱', accent: 'purple', title: 'grove 自学习产品 (Experimental)',
-    body: '基于 Zio 的自学习库与产品：多源反馈、代码/权重联合学习、检查点恢复、群体与模块演化。W00–W17 已实现并以契约测试验证。',
+    icon: '🌱', accent: 'purple', title: 'Grove 独立 APP (Planned)',
+    body: '真实 LLM 生成代码，经解析、能力检查与隔离执行，以错误和证据修订；Web 展示源码/路径/diff，反馈产生逻辑候选，独立评估后人工批准正式版本。历史 CPU demo 不代表此闭环完成。',
   },
   {
-    icon: '🔮', accent: 'purple', title: 'Phase 5 & Phase 6 (扩展生态)',
-    body: '扩展库（persistent / entity / protocol）、zio-datalog 图查询、zio-agent 编排框架 MVP 交付，Cranelift JIT 可行化探索。',
+    icon: '🔮', accent: 'purple', title: '核心自举与独立库 (Planned)',
+    body: 'ZOS 与展开/分析/编译器工具链仍属 Zio 语言；Planned：Zio 自举，Rust 保留最小宿主。Numa、Rill、Loom 是 Grove 按需消费的官方独立库，不是内建语言能力或已可安装包。Loom 的 ACP 为 Agent Client Protocol，先 client 与 teacher adapter、后 server。Grove 自动实验仅限批准预算/编辑范围，可信基线与发布守卫不可自改。',
   },
 ];

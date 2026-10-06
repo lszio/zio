@@ -3,7 +3,7 @@
 
 use std::path::PathBuf;
 
-use grove_app::{demo, inspect, load_protocol, modular, open_store, operator, population, publisher, select, usage, Paths};
+use grove_app::{agent, demo, inspect, load_protocol, modular, open_store, operator, population, publisher, select, usage, Paths};
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -34,12 +34,12 @@ fn main() {
 fn run(args: &[String]) -> Result<String, grove::contracts::Error> {
     let Some(command) = args.first() else {
         return Err(usage(
-            "usage: grove <demo|inspect|checkpoint|fork|resume|compare|select|publish> [options]",
+            "usage: grove <demo|inspect|checkpoint|fork|resume|compare|select|approve|decline> [options]",
         ));
     };
     const COMMANDS: &[&str] = &[
-        "demo", "inspect", "checkpoint", "fork", "resume", "compare", "select", "publish",
-        "serve",
+        "demo", "inspect", "checkpoint", "fork", "resume", "compare", "select", "approve",
+        "decline", "run", "serve",
     ];
     if !COMMANDS.contains(&command.as_str()) {
         return Err(usage(&format!(
@@ -153,25 +153,95 @@ fn run(args: &[String]) -> Result<String, grove::contracts::Error> {
             }
             select(&store, protocol, &snapshots)
         }
-        "publish" => {
+        #[cfg(feature = "model-http")]
+        "run" => {
+            let task_path = opts
+                .task
+                .clone()
+                .ok_or_else(|| usage("run needs --task TASK.json"))?;
+            let config_path = opts.provider_config.clone().ok_or_else(|| {
+                usage("run needs --provider-config CONFIG.json (base_url and model; the key comes from the environment)")
+            })?;
+            let task = agent::load_task(&task_path)?;
+            let config = agent::ProviderConfig::load(&config_path, "GROVE_PROVIDER_KEY")?;
+            let run_budget = agent::RunBudget {
+                max_turns: opts.max_turns.unwrap_or(3),
+                ..agent::RunBudget::default()
+            };
+            let grant = agent::candidate_grant(&run_budget, Vec::new());
+            let model_host: std::sync::Arc<dyn loom::harness::ModelHost> =
+                std::sync::Arc::new(
+                    loom::http::HttpAiHost::builder()
+                        .base_url(&config.base_url)
+                        .api_key(&config.api_key)
+                        .model(&config.model)
+                        .build(),
+                );
+            let (host, ctx) = agent::AgentHost::new(
+                std::sync::Arc::new(grove::store::Store::open(&root)?),
+                operator(),
+                task,
+                run_budget,
+                grant,
+                Paths::from_repo_root().root,
+                model_host,
+            )?;
+            let logic = opts.logic.clone();
+            Ok(host
+                .run_with_logic(&ctx, logic.as_deref())
+                ?.render())
+        }
+        // Without the `model-http` feature there is no network
+        // transport at all, so the command names its own absence rather
+        // than reporting a provider failure.
+        #[cfg(not(feature = "model-http"))]
+        "run" => Err(usage(
+            "run needs the model-http feature: build with --features model-http",
+        )),
+        "approve" => {
             let snapshot = opts
                 .snapshot
-                .ok_or_else(|| usage("publish needs --snapshot HEX"))?;
+                .ok_or_else(|| usage("approve needs --snapshot HEX"))?;
             let digest = grove::contracts::ArtifactRef::parse_hex(&snapshot)?;
             let protocol = load_protocol(
                 &store,
                 opts.protocol
                     .as_deref()
-                    .ok_or_else(|| usage("publish needs --protocol ID"))?,
+                    .ok_or_else(|| usage("approve needs --protocol ID"))?,
             )?;
-            let version = grove::evaluation::publish_candidate(
+            // The whole boundary: qualify under the frozen protocol,
+            // record the authenticated approval, then move the pointer
+            // with the version check. There is deliberately no
+            // `--force` and no auto-approve path — the only way to
+            // publish is to have read the comparison and asked for it.
+            let (version, approval) = grove::evaluation::publish_snapshot(
                 &store,
                 &publisher(),
                 &protocol,
                 &digest,
                 opts.expected_version,
             )?;
-            Ok(format!("publication: v{version} active → {snapshot}\n"))
+            Ok(format!(
+                "publication: v{version} active → {snapshot}\n  \
+                 approved by {} against {}\n",
+                publisher().id,
+                approval.id
+            ))
+        }
+        "decline" => {
+            let snapshot = opts
+                .snapshot
+                .ok_or_else(|| usage("decline needs --snapshot HEX (or --candidate ID)"))?;
+            let subject = opts
+                .candidate
+                .clone()
+                .unwrap_or_else(|| snapshot.clone());
+            let reason = opts
+                .reason
+                .clone()
+                .unwrap_or_else(|| "no reason given".to_string());
+            grove::logic::decline(&store, &publisher(), &subject, &reason, now_ms())?;
+            Ok(format!("declined {subject}: {reason}\n  nothing was published\n"))
         }
         other => unreachable!("{other} is validated above"),
     }
@@ -192,6 +262,12 @@ struct Opts {
     snapshot: Option<String>,
     workers: Option<usize>,
     expected_version: Option<u32>,
+    task: Option<PathBuf>,
+    logic: Option<PathBuf>,
+    provider_config: Option<PathBuf>,
+    max_turns: Option<u32>,
+    candidate: Option<String>,
+    reason: Option<String>,
 }
 
 fn parse_opts(args: &[String]) -> Result<Opts, grove::contracts::Error> {
@@ -210,6 +286,12 @@ fn parse_opts(args: &[String]) -> Result<Opts, grove::contracts::Error> {
         snapshot: None,
         workers: None,
         expected_version: None,
+        task: None,
+        logic: None,
+        provider_config: None,
+        max_turns: None,
+        candidate: None,
+        reason: None,
     };
     let mut i = 0;
     while i < args.len() {
@@ -241,6 +323,18 @@ fn parse_opts(args: &[String]) -> Result<Opts, grove::contracts::Error> {
                 );
             }
             "snapshot" => opts.snapshot = value.cloned(),
+            "candidate" => opts.candidate = value.cloned(),
+            "reason" => opts.reason = value.cloned(),
+            "task" => opts.task = value.map(PathBuf::from),
+            "logic" => opts.logic = value.map(PathBuf::from),
+            "provider-config" => opts.provider_config = value.map(PathBuf::from),
+            "max-turns" => {
+                opts.max_turns = Some(
+                    value
+                        .and_then(|v| v.parse().ok())
+                        .ok_or_else(|| usage("--max-turns needs a number"))?,
+                )
+            }
             "expected-version" => {
                 opts.expected_version = Some(
                     value
@@ -286,8 +380,30 @@ fn run_serve(args: &[String]) -> Result<(), grove::contracts::Error> {
         }
     }
     grove_app::api::check_bind(bind, tokens.len())?;
-    let store = open_store(&root)?;
-    let state = grove_app::api::ApiState::new(std::sync::Arc::new(store), tokens);
+    let store = std::sync::Arc::new(open_store(&root)?);
+
+    // The owner loop, not just the HTTP surface. Without this a
+    // `Queued` row is a promise nobody keeps: the API accepted the work
+    // and nothing ever ran it. Construction claims coordinator
+    // ownership, which is what makes a restart a new epoch and makes
+    // the previous owner's in-flight receipts unable to land.
+    let runner = std::sync::Arc::new(
+        grove_app::runner::Runner::with_training(
+            std::sync::Arc::clone(&store),
+            grove_app::runner::RunnerConfig::default(),
+            grove_app::runner::TrainingEnvironment::probe(
+                &grove_app::Paths::from_repo_root().root,
+            ),
+        )
+        .map_err(|e| usage(&format!("no queue owner: {e}")))?,
+    );
+    eprintln!("grove owner epoch {}", runner.epoch());
+
+    let state = grove_app::api::ApiState::with_runner(
+        std::sync::Arc::clone(&store),
+        tokens,
+        std::sync::Arc::clone(&runner),
+    );
     let app = grove_app::api::router(state);
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -298,9 +414,37 @@ fn run_serve(args: &[String]) -> Result<(), grove::contracts::Error> {
             .await
             .map_err(|e| usage(&format!("cannot bind {bind}: {e}")))?;
         eprintln!("grove serving on http://{bind}");
-        axum::serve(listener, app)
+        // The queue is consumed on a blocking task: executing a run is
+        // synchronous work (a Zio program, or a worker process), and
+        // running it on the async runtime would block every other
+        // request for the length of a training step. The loop shares
+        // the *same* owner as the router — a second `Runner` would
+        // claim ownership again and bump the epoch out from under the
+        // first one's claims.
+        let owner = std::sync::Arc::clone(&runner);
+        let worker = tokio::task::spawn_blocking(move || {
+            eprintln!("grove owner loop at epoch {}", owner.epoch());
+            let actor = grove::contracts::Actor::new(
+                "grove-owner",
+                grove::contracts::ActorRole::Operator,
+            );
+            loop {
+                match owner.tick(&actor, "srv") {
+                    Ok(Some(outcome)) => eprintln!(
+                        "grove owner: run {} -> {} ({} steps, {} events)",
+                        outcome.run_id, outcome.status, outcome.steps, outcome.events
+                    ),
+                    Ok(None) => {}
+                    Err(e) => eprintln!("grove owner: queue error: {e}"),
+                }
+                std::thread::sleep(std::time::Duration::from_millis(200));
+            }
+        });
+        let served = axum::serve(listener, app)
             .await
-            .map_err(|e| usage(&format!("server stopped: {e}")))
+            .map_err(|e| usage(&format!("server stopped: {e}")));
+        worker.abort();
+        served
     })
 }
 

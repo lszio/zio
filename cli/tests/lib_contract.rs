@@ -87,14 +87,25 @@ fn agent_library_contract() {
         &out,
         "agent.zio",
         &[
-            "make-agent-name",
-            "make-agent-status",
-            "make-agent-empty-history",
-            "register-tool-count",
-            "step-status",
-            "step-history-count",
-            "step-history-role",
-            "run",
+            // A failing first attempt is retried, and the second is the
+            // candidate. `retry-calls` is the evidence that the logic
+            // asked again rather than the harness doing it.
+            "retry-status",
+            "retry-turns",
+            "retry-calls",
+            "retry-ran-twice",
+            // The ceiling the grant set ends the loop and the failure
+            // is reported, not swallowed into an exhausted run.
+            "ceiling-status",
+            "ceiling-turns",
+            "ceiling-calls",
+            "ceiling-reports-failure",
+            // A reply with no source is not a program, and a failure
+            // keeps its error for the next turn.
+            "source-of-empty",
+            "source-of-present",
+            "feedback-keeps-error",
+            "feedback-defaults",
         ],
     );
 }

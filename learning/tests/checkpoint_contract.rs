@@ -34,6 +34,28 @@ fn operator() -> Actor {
     Actor::new("trainer", ActorRole::Operator)
 }
 
+/// A state artifact in the current schema. `optimizer.adam` is keyed by
+/// `layer.weight` / `layer.bias`, which is what lets a resume check that
+/// the artifact describes this attempt's parameters.
+fn write_state(path: &Path, run_id: &str, step: u32) {
+    std::fs::write(
+        path,
+        serde_json::json!({
+            "schema": checkpoint::STATE_SCHEMA,
+            "protocol": checkpoint::STATE_PROTOCOL,
+            "run_id": run_id, "step": step,
+            "params": {},
+            "optimizer": {"adam": {
+                "h0.weight": {"step": step, "exp_avg": [], "exp_avg_sq": []},
+                "h0.bias":   {"step": step, "exp_avg": [], "exp_avg_sq": []}
+            }},
+            "rng": {"cpu": ""}
+        })
+        .to_string(),
+    )
+    .unwrap();
+}
+
 fn worker_config() -> WorkerConfig {
     let root = repo_root();
     WorkerConfig {
@@ -44,6 +66,7 @@ fn worker_config() -> WorkerConfig {
         working_dir: repo_root(),
         timeout: Duration::from_secs(240),
         max_address_space: 4 * 1024 * 1024 * 1024,
+        handshake_timeout: Duration::from_secs(180),
     }
 }
 
@@ -211,16 +234,7 @@ fn a_state_from_a_foreign_run_is_refused() {
     seed_run(&store, "run-B", 100);
 
     let state = root.join("state.json");
-    std::fs::write(
-        &state,
-        serde_json::json!({
-            "schema": 1, "protocol": "grove.worker.state/1",
-            "run_id": "run-A", "step": 10,
-            "params": {}, "optimizer": {}, "rng": {"cpu": ""}
-        })
-        .to_string(),
-    )
-    .unwrap();
+    write_state(&state, "run-A", 10);
 
     // committing under run-B's name would splice two runs' training state
     let err = checkpoint::commit(
@@ -245,16 +259,7 @@ fn a_good_state_commits_and_is_loadable() {
     seed_run(&store, "run-1", 100);
 
     let state = root.join("state.json");
-    std::fs::write(
-        &state,
-        serde_json::json!({
-            "schema": 1, "protocol": "grove.worker.state/1",
-            "run_id": "run-1", "step": 25,
-            "params": {}, "optimizer": {}, "rng": {"cpu": ""}
-        })
-        .to_string(),
-    )
-    .unwrap();
+    write_state(&state, "run-1", 25);
 
     let committed = checkpoint::commit(
         &store,
@@ -283,16 +288,7 @@ fn committed_checkpoint(store: &Store, root: &Path, run_id: &str, step: u32, spe
     // the run's own ledger reflects the spent steps before the boundary
     store.consume_steps(run_id, spent).unwrap();
     let state = root.join(format!("state-{run_id}-{step}.json"));
-    std::fs::write(
-        &state,
-        serde_json::json!({
-            "schema": 1, "protocol": "grove.worker.state/1",
-            "run_id": run_id, "step": step,
-            "params": {}, "optimizer": {}, "rng": {"cpu": ""}
-        })
-        .to_string(),
-    )
-    .unwrap();
+    write_state(&state, run_id, step);
     checkpoint::commit(
         store,
         &operator(),
@@ -413,16 +409,7 @@ fn a_failed_save_never_claims_paused() {
 
     // with a good state file, the run becomes paused
     let state = root.join("state.json");
-    std::fs::write(
-        &state,
-        serde_json::json!({
-            "schema": 1, "protocol": "grove.worker.state/1",
-            "run_id": "run-1", "step": 40,
-            "params": {}, "optimizer": {}, "rng": {"cpu": ""}
-        })
-        .to_string(),
-    )
-    .unwrap();
+    write_state(&state, "run-1", 40);
     let ckpt = checkpoint::pause(&store, &operator(), "run-1", &state, 2).unwrap();
     assert_eq!(store.get_run("run-1").unwrap().state, RunState::Paused);
     assert_eq!(store.get_checkpoint(&ckpt.id).unwrap().budget_spent_steps, 0);

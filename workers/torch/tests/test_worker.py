@@ -30,6 +30,28 @@ from graph import (  # noqa: E402
     graph_to_json,
 )
 
+from worker import build_model, make_optimiser, trainable_layers  # noqa: E402
+
+def two_layer_graph_payload() -> dict:
+    """Two linear layers, only the second declared trainable."""
+    return {
+        "inputs": {
+            "image": {"shape": [256], "dtype": "float32", "space": "pixel"},
+            "numeric": {"shape": [2], "dtype": "float32", "space": "signed"},
+        },
+        "ops": [
+            {"kind": "normalize", "inputs": ["image"], "output": "img", "attrs": {}},
+            {"kind": "normalize", "inputs": ["numeric"], "output": "num", "attrs": {}},
+            {"kind": "concat", "inputs": ["img", "num"], "output": "fused", "attrs": {}},
+            {"kind": "linear", "inputs": ["fused"], "output": "frozen", "attrs": {"out": 32}},
+            {"kind": "relu", "inputs": ["frozen"], "output": "hidden", "attrs": {}},
+            {"kind": "linear", "inputs": ["hidden"], "output": "active", "attrs": {"out": 2}},
+        ],
+        "outputs": {"logits": "active"},
+        "trainable": ["active"],
+    }
+
+
 PROTOCOL = "grove.worker/1"
 
 
@@ -46,6 +68,26 @@ def linear_graph_payload() -> dict:
 def json_layer(rows: int, cols: int) -> dict:
     """One linear layer's artifact: weight (rows=out, cols=in) plus bias."""
     return {"w": [[0.0] * cols for _ in range(rows)], "b": [0.0] * rows}
+
+
+def seeded_layer(rows: int, cols: int, seed: int) -> dict:
+    """A layer with a non-degenerate start.
+
+    All-zero weights have zero gradient everywhere, so a trainable layer
+    seeded with zeros cannot move and the check would pass for the wrong
+    reason.
+    """
+    state = seed * 6364136223846793005 + 1
+
+    def nxt() -> float:
+        nonlocal state
+        state = (state * 6364136223846793005 + 1442695040888963407) & ((1 << 64) - 1)
+        return ((state >> 11) / float(1 << 53)) - 0.5
+
+    return {
+        "w": [[nxt() for _ in range(cols)] for _ in range(rows)],
+        "b": [nxt() for _ in range(rows)],
+    }
 
 
 def json_matrix(rows: int, cols: int) -> list[list[float]]:
@@ -69,6 +111,54 @@ def start_worker() -> subprocess.Popen:
     assert hello["type"] == "hello", hello
     assert hello["protocol"] == PROTOCOL, hello
     return process
+
+
+def fingerprint(values) -> str:
+    """A short, stable digest of a nested numeric structure.
+
+    Used instead of comparing arrays directly: a 32x258 float matrix that
+    fails an equality check produces a diff nobody reads, and the diff
+    itself is expensive enough to look like a hang.
+    """
+    import hashlib
+    import struct
+
+    flat: list[float] = []
+
+    def walk(node) -> None:
+        if isinstance(node, (list, tuple)):
+            for item in node:
+                walk(item)
+        elif isinstance(node, (int, float)):
+            flat.append(float(node))
+
+    walk(values)
+    digest = hashlib.sha256()
+    for value in flat:
+        # f32: the worker's tensors are float32, so the seed's f64
+        # decimal is more precise than the value it produced.
+        digest.update(struct.pack("<f", value))
+    return digest.hexdigest()[:16]
+
+
+def stop(process: subprocess.Popen) -> None:
+    """Close a worker's stdin and reap it.
+
+    A worker that has already died would make a bare `stdin.close()`
+    raise or block, so both halves are guarded and the wait is bounded.
+    """
+    try:
+        process.stdin.close()
+    except (BrokenPipeError, ValueError, OSError):
+        pass
+    try:
+        process.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            pass
 
 
 def send(process: subprocess.Popen, frame: dict) -> None:
@@ -205,6 +295,106 @@ class WorkerProtocolTests(unittest.TestCase):
             self.assertNotEqual(saved["params"]["h1"]["w"], json_matrix(2, 24))
         process.stdin.close()
         process.kill()
+
+    def test_a_layer_outside_the_trainable_set_does_not_move(self):
+        """The frozen side of a composite, checked on the real worker.
+
+        Two linear layers, one declared trainable. The frozen layer's
+        weight *and* bias must come out byte-identical to what went in;
+        the trainable layer's must move.
+        """
+        process = start_worker()
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            seed = {"frozen": seeded_layer(32, 258, 7), "active": seeded_layer(2, 32, 3)}
+            weights = tmp / "w.json"
+            weights.write_text(json.dumps(seed))
+            out = tmp / "out.json"
+            send(process, {
+                "v": 1, "type": "train", "request_id": "req-frozen",
+                "run_id": "run-frozen", "attempt_id": "att-frozen",
+                "graph": two_layer_graph_payload(),
+                "weights": str(weights),
+                "data": str(TASK / "data" / "train.bin"),
+                "val_data": str(TASK / "data" / "val.bin"),
+                "out": str(out), "steps": 40, "seed": 1,
+            })
+            result = until(process, "run-frozen")
+            self.assertEqual(result["type"], "done", result)
+            saved = json.loads(out.read_text())["params"]
+            # Digests, not the arrays: a failed assertEqual over 32x258
+            # floats builds a diff string no one will ever read, and the
+            # comparison itself is not what is under test.
+            for part in ("w", "b"):
+                self.assertEqual(
+                    fingerprint(saved["frozen"][part]),
+                    fingerprint(seed["frozen"][part]),
+                    f"the frozen layer's {part} moved even though it is not trainable",
+                )
+            # and the trainable one actually learned
+            self.assertNotEqual(
+                fingerprint(saved["active"]["w"]),
+                fingerprint(seed["active"]["w"]),
+                "the trainable layer did not move at all",
+            )
+        stop(process)
+
+    def test_the_optimiser_trains_biases_and_only_the_trainable_set(self):
+        graph = graph_from_json(two_layer_graph_payload())
+        params = {"frozen": seeded_layer(32, 258, 7), "active": seeded_layer(2, 32, 3)}
+        _forward, _all, linears = build_model(graph, params, 1)
+        trainable = trainable_layers(graph, linears)
+        self.assertEqual(trainable, ["active"])
+        _opt, named = make_optimiser(linears, trainable, 0.02)
+        keys = [name for name, _ in named]
+        self.assertEqual(keys, ["active.weight", "active.bias"],
+                         "a weight-only optimiser would freeze every bias")
+        self.assertFalse(linears["frozen"].weight.requires_grad)
+        self.assertFalse(linears["frozen"].bias.requires_grad)
+
+    def test_a_trainable_name_that_is_not_a_layer_is_refused(self):
+        graph = graph_from_json(two_layer_graph_payload())
+        graph.trainable = ["not-a-layer"]
+        params = {"frozen": seeded_layer(32, 258, 7), "active": seeded_layer(2, 32, 3)}
+        _forward, _all, linears = build_model(graph, params, 1)
+        with self.assertRaises(GraphError) as caught:
+            trainable_layers(graph, linears)
+        self.assertIn("are not linear layers", str(caught.exception))
+
+    def test_an_empty_trainable_list_means_every_layer(self):
+        graph = graph_from_json(linear_graph_payload())
+        graph.trainable = []
+        params = {"h0": json_layer(2, 258)}
+        _forward, _all, linears = build_model(graph, params, 1)
+        self.assertEqual(trainable_layers(graph, linears), ["h0"])
+
+    def test_a_checkpoint_records_the_trainable_set_it_saved(self):
+        """Optimizer moments are keyed per parameter, bias included, so a
+        resume can tell that the artifact describes its own attempt."""
+        process = start_worker()
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            weights = tmp / "w.json"
+            weights.write_text(json.dumps(
+                {"frozen": seeded_layer(32, 258, 7), "active": seeded_layer(2, 32, 3)}))
+            out = tmp / "out.json"
+            state = tmp / "state.json"
+            send(process, {
+                "v": 1, "type": "train", "request_id": "req-ck",
+                "run_id": "run-ck", "attempt_id": "att-ck",
+                "graph": two_layer_graph_payload(),
+                "weights": str(weights),
+                "data": str(TASK / "data" / "train.bin"),
+                "out": str(out), "steps": 20, "seed": 1,
+                "save_at": 10, "state_out": str(state),
+            })
+            until(process, "run-ck")
+            saved = json.loads(state.read_text())
+            self.assertEqual(saved["schema"], 2)
+            keys = set(saved["optimizer"]["adam"])
+            # only the trainable layer, both of its parameters
+            self.assertEqual(keys, {"active.weight", "active.bias"})
+        stop(process)
 
     def test_a_structurally_invalid_graph_fails_before_training(self):
         process = start_worker()

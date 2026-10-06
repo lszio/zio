@@ -120,7 +120,7 @@ fn records_from_different_protocols_are_never_mixed() {
 
     // and publishing against the strict protocol is refused even though an
     // easier protocol said yes
-    let err = evaluation::publish_candidate(&store, &publisher(), &strict, &a, None).unwrap_err();
+    let err = evaluation::publish_snapshot(&store, &publisher(), &strict, &a, None).unwrap_err();
     assert_eq!(err.kind, ErrorKind::IncompatibleState);
     assert!(err.to_string().contains("hard gates"), "{err}");
 }
@@ -131,7 +131,8 @@ fn a_timed_out_repeat_stays_in_the_denominator() {
     let t = snapshots[0].1;
     let p = protocol("accept-v1");
 
-    evaluation::record_evaluation(&store, &operator(), &p, &t, 0, &measured(0.95), 1).unwrap();
+    evaluation::record_evaluation(&store, &operator(), &p, &t, 0, &measured(0.95), 1)
+        .unwrap();
     // the second repeat times out: quality 0.0, still counted
     evaluation::record_evaluation(&store, &operator(), &p, &t, 1, &RepeatOutcome::TimedOut, 2)
         .unwrap();
@@ -198,11 +199,11 @@ fn a_high_mean_cannot_outvote_a_failed_gate() {
 
     // publishing the crashed-candidate is refused even though two repeats
     // were excellent
-    let err = evaluation::publish_candidate(&store, &publisher(), &p, &lucky, None).unwrap_err();
+    let err = evaluation::publish_snapshot(&store, &publisher(), &p, &lucky, None).unwrap_err();
     assert_eq!(err.kind, ErrorKind::IncompatibleState);
     // the eligible one publishes
     assert_eq!(
-        evaluation::publish_candidate(&store, &publisher(), &p, &solid, None).unwrap(),
+        evaluation::publish_snapshot(&store, &publisher(), &p, &solid, None).unwrap().0,
         1
     );
     assert_eq!(store.active_publication().unwrap().unwrap().1, solid);
@@ -219,16 +220,16 @@ fn a_stale_expected_version_does_not_replace_the_active_model() {
     }
 
     assert_eq!(
-        evaluation::publish_candidate(&store, &publisher(), &p, &first, None).unwrap(),
+        evaluation::publish_snapshot(&store, &publisher(), &p, &first, None).unwrap().0,
         1
     );
     assert_eq!(
-        evaluation::publish_candidate(&store, &publisher(), &p, &second, Some(1)).unwrap(),
+        evaluation::publish_snapshot(&store, &publisher(), &p, &second, Some(1)).unwrap().0,
         2
     );
     // a writer that saw version 1 loses
     let err =
-        evaluation::publish_candidate(&store, &publisher(), &p, &first, Some(1)).unwrap_err();
+        evaluation::publish_snapshot(&store, &publisher(), &p, &first, Some(1)).unwrap_err();
     assert_eq!(err.kind, ErrorKind::Conflict);
     assert_eq!(store.active_publication().unwrap().unwrap().1, second);
 }
@@ -238,7 +239,7 @@ fn publishing_without_evaluation_is_refused() {
     let (store, snapshots) = store_with_snapshots("unevaled", &["dark-horse"]);
     let p = protocol("accept-v1");
     let err =
-        evaluation::publish_candidate(&store, &publisher(), &p, &snapshots[0].1, None).unwrap_err();
+        evaluation::publish_snapshot(&store, &publisher(), &p, &snapshots[0].1, None).unwrap_err();
     assert_eq!(err.kind, ErrorKind::IncompatibleState);
     assert!(store.active_publication().unwrap().is_none());
 }
@@ -249,7 +250,7 @@ fn an_operator_cannot_publish() {
     let p = protocol("accept-v1");
     evaluation::record_evaluation(&store, &operator(), &p, &snapshots[0].1, 0, &measured(0.95), 1)
         .unwrap();
-    let err = evaluation::publish_candidate(
+    let err = evaluation::publish_snapshot(
         &store,
         &Actor::new("trainer", ActorRole::Operator),
         &p,

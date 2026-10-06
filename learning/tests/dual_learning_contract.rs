@@ -13,6 +13,7 @@
 //! Offline except for the worker process, which is local torch on CPU.
 
 use std::path::PathBuf;
+use std::time::Duration;
 use std::process::{Command, Stdio};
 use std::sync::Arc;
 
@@ -112,6 +113,7 @@ fn worker_config() -> WorkerConfig {
         working_dir: root.clone(),
         timeout: std::time::Duration::from_secs(240),
         max_address_space: 4 * 1024 * 1024 * 1024,
+        handshake_timeout: Duration::from_secs(180),
     }
 }
 

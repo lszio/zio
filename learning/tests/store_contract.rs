@@ -11,6 +11,7 @@ use std::process::Command;
 
 use grove::artifacts::ArtifactStore;
 use grove::contracts::*;
+use grove::evaluation::EvaluationProtocol;
 use grove::store::{Receipt, Store};
 
 // ── fixtures ───────────────────────────────────────────────────────
@@ -291,12 +292,17 @@ fn a_stale_publication_does_not_replace_the_active_model() {
     let a = seed_snapshot(&store, "trainer");
     let b = seed_snapshot(&store, "trainer");
     let publisher = actor(ActorRole::Publisher);
+    let protocol = publishable_protocol(&store);
 
-    assert_eq!(store.publish(&publisher, &a, None).unwrap(), 1);
-    assert_eq!(store.publish(&publisher, &b, Some(1)).unwrap(), 2);
+    // The write pointer is `pub(crate)`; everything that can move it
+    // goes through the approval boundary, so that is what these tests
+    // drive. The CAS being tested lives below the boundary and is the
+    // same CAS either way.
+    assert_eq!(publish(&store, &publisher, &protocol, &a, None).unwrap(), 1);
+    assert_eq!(publish(&store, &publisher, &protocol, &b, Some(1)).unwrap(), 2);
 
-    let err = store.publish(&publisher, &a, Some(1)).unwrap_err();
-    assert_eq!(err.kind, ErrorKind::Conflict);
+    let err = publish(&store, &publisher, &protocol, &a, Some(1)).unwrap_err();
+    assert_eq!(err.kind, ErrorKind::Conflict, "{err}");
     assert_eq!(store.active_publication().unwrap().unwrap().1, b);
 }
 
@@ -304,10 +310,63 @@ fn a_stale_publication_does_not_replace_the_active_model() {
 fn an_operator_cannot_publish() {
     let (_root, store) = sample_store("publish-role");
     let a = seed_snapshot(&store, "trainer");
-    let err = store
-        .publish(&actor(ActorRole::Operator), &a, None)
-        .unwrap_err();
+    let protocol = publishable_protocol(&store);
+    let err = publish(
+        &store,
+        &actor(ActorRole::Operator),
+        &protocol,
+        &a,
+        None,
+    )
+    .unwrap_err();
     assert_eq!(err.kind, ErrorKind::CapabilityDenied);
+}
+
+/// A protocol with a gate any seed snapshot clears, so a publication test
+/// is about publication and not about gating.
+fn publishable_protocol(store: &Store) -> EvaluationProtocol {
+    let mut protocol = EvaluationProtocol::new("publish-v1", "geometry-sensor-xor@1.0.0", "ds-1");
+    protocol.seeds = vec![1];
+    protocol.gates = vec![("accuracy".to_string(), 0.0)];
+    store
+        .put_protocol(&actor(ActorRole::Operator), &protocol)
+        .unwrap();
+    protocol
+}
+
+/// Record one passing evaluation and go through the approval boundary.
+fn publish(
+    store: &Store,
+    publisher: &Actor,
+    protocol: &EvaluationProtocol,
+    snapshot: &ArtifactRef,
+    expected_version: Option<u32>,
+) -> grove::contracts::Result<u32> {
+    // A monotonic attempt counter, not a clock: two publications in the
+    // same millisecond must still get distinct ids, or the second is
+    // refused for a reason that has nothing to do with what is under
+    // test.
+    static ATTEMPT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let attempt = ATTEMPT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let record = EvaluationRecord {
+        schema: SCHEMA_VERSION,
+        // Per attempt, not per snapshot: publishing the same snapshot
+        // twice is two decisions about it, and an evaluation id that
+        // collided would refuse the second one for the wrong reason.
+        id: format!("eval-{}-{snapshot}-{attempt}", protocol.id),
+        snapshot: *snapshot,
+        protocol_id: protocol.id.clone(),
+        dataset_revision: protocol.dataset_revision.clone(),
+        metrics: vec![("accuracy".to_string(), 1.0)],
+        repeat_index: 0,
+        device: "cpu".to_string(),
+        completed_at_ms: 1,
+    };
+    store
+        .put_evaluation(&actor(ActorRole::Operator), &record)
+        .map_err(|e| grove::contracts::Error::new(e.kind, e.context))?;
+    grove::evaluation::publish_snapshot(store, publisher, protocol, snapshot, expected_version)
+        .map(|(version, _)| version)
 }
 
 // ── durability across abrupt death ─────────────────────────────────

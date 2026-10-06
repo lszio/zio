@@ -412,10 +412,9 @@ pub fn joint_plan(snapshot: &ModelSnapshot) -> Result<JointPlan> {
 }
 
 /// Persist the joint fine-tune's parameters and hand back the snapshot
-/// identity it produced. The composite's modules keep their frozen
-/// members' bytes untouched (the caller passes the merged parameter
-/// artifact, which the worker wrote from the frozen state plus the
-/// updated trainable layers).
+/// identity it produced. The composite's frozen members' bytes are
+/// verified, not assumed: the host reads both sides and refuses a result
+/// whose frozen parameters moved.
 pub fn commit_joint(
     store: &Store,
     actor: &Actor,
@@ -426,8 +425,57 @@ pub fn commit_joint(
 ) -> Result<ArtifactRef> {
     actor.require(ActorRole::Operator, "committing a joint fine-tune")?;
     let parent = load_snapshot(store, actor, &digest_of(store, composite_id)?)?;
-    joint_plan(&parent)?;
+    let plan = joint_plan(&parent)?;
     crate::contracts::require_finite_metrics(&[("accuracy".to_string(), val_accuracy)])?;
+    // The frozen check runs on the proposed bytes, before anything lands.
+    // "The caller says it wrote the frozen state plus the updated layers"
+    // is not evidence: both sides are read back and compared.
+    let proposed: serde_json::Value = serde_json::from_slice(params_bytes).map_err(|e| {
+        Error::new(
+            ErrorKind::ProtocolViolation,
+            format!("joint parameter artifact is not JSON: {e}"),
+        )
+    })?;
+    for name in &plan.frozen {
+        let after = proposed.get(name).ok_or_else(|| {
+            Error::new(
+                ErrorKind::ProtocolViolation,
+                format!(
+                    "the joint result does not carry frozen module {name:?}; \
+                     a composite cannot drop a frozen member"
+                ),
+            )
+        })?;
+        // The parent's frozen bytes are the artifact its ParamRef names.
+        // Both sides are canonicalized to a comparable value first, so a
+        // difference in whitespace or key order is not mistaken for a
+        // change, and a real change is not hidden by reformatting.
+        let Some(before_ref) = parent.params.iter().find(|p| p.module == *name) else {
+            continue;
+        };
+        let before_bytes = store.artifacts().get(&before_ref.artifact)?;
+        let before: serde_json::Value = serde_json::from_slice(&before_bytes).map_err(|e| {
+            Error::new(
+                ErrorKind::ProtocolViolation,
+                format!("frozen module {name:?} is not JSON in the parent: {e}"),
+            )
+        })?;
+        // The artifact may hold one module or a map of them; compare the
+        // slice that names this module.
+        let before_module = before
+            .get(name)
+            .cloned()
+            .unwrap_or_else(|| before.clone());
+        if &before_module != after {
+            return Err(Error::new(
+                ErrorKind::ProtocolViolation,
+                format!(
+                    "frozen module {name:?} changed during a joint fine-tune \
+                     (was {before_module}, now {after}); a frozen member is a promise, not a suggestion"
+                ),
+            ));
+        }
+    }
     let params_digest = store.artifacts().put(params_bytes)?;
     let snapshot = ModelSnapshot {
         schema: SCHEMA_VERSION,

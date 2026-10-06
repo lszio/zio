@@ -3,7 +3,7 @@
 > A Modern Lisp for the Agent Era.
 
 Zio 是一门面向未来的通用 Lisp 语言，用 Rust 实现。当前 workspace
-包含三个 crate：`zio-core`、`zio-cli` 和 `zio-ai`（宿主 AI 能力协议，[ADR-016](docs/adrs.md)）。实时生成的测试、语法和内置
+包含 `zio-core`、`zio-cli`、`loom`（官方独立 harness 库：结构化模型/工具合同、会话、预算、取消与传输，[ADR-019](docs/adrs.md)；原 `ai/` 已按 H00 迁移）、`grove`（学习宿主）与 `grove-app`。实时生成的测试、语法和内置
 绑定数量见 [项目状态](docs/status.md)；能力成熟度以
 [特性矩阵](docs/feature-matrix.md)为准。
 

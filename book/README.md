@@ -9,7 +9,22 @@
 - **不要求** Rust 或 Lisp 经验
 - 有好奇心，不怕读代码
 
-每一章都是**可运行的**。我们会在每个阶段停下来运行代码、观察结果。
+各章保留解释器时代的机制讲解与实验；Rust 片段是教学摘录，不保证与当前 API 逐字一致，历史行数、测试数和阶段编号不是当前验收记录。运行前以源码和 [status](../docs/status.md) 为准；未实现目标标为 Planned。
+
+## 当前架构入口
+
+- [项目概览与目标边界](01-项目概览与哲学.md)：当前五个 crate 与目标职责的区别。
+- [批准的 Zio/Grove 基线](../docs/self-learning-architecture.md)与[语言架构](../docs/zio-architecture.md)：ZOS 留在核心，Zio 编译器自举（Planned）与 Zio 应用开发分别验收。
+- [收敛实施计划](../docs/superpowers/plans/2026-10-05-zio-grove-convergence.md)：Numa（计算）、Rill（CLI 组合）、Loom（Agent harness）官方独立库与独立 Grove APP 的可执行工作包。
+
+Grove 的真实模型调用、隔离执行证据、反馈候选、独立评估和人工发布闭环仍是 Planned；本教程的 REPL、宏与对象示例不代表该闭环已经交付。
+
+三库按需安装、独立版本发布，不是 Zio 语言内置特性；Grove 消费语言与库，
+核心无反向依赖，三库新增能力仍为 Planned。当前 `zio-ai` 是 Loom 的起点，
+`zio-cli` 是未来消费 Rill 的可执行宿主；教程代码、包名和命令不改名。
+正式短名不指定注册包 ID，未来目录/逻辑命名空间见[术语表](../docs/glossary.md)，
+边界以 [ADR-019](../docs/adrs.md#adr-019-grove-独立应用与同像性逻辑演化) 为准。
+
 
 ## 课程地图
 

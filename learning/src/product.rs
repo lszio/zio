@@ -79,4 +79,30 @@ impl Store {
         }
         Ok(out)
     }
+
+    /// The recorded human decisions, newest first. A review board that
+    /// cannot see *who approved what* has no audit, so this is the
+    /// product's own read rather than a query the shell assembles.
+    pub fn approval_log(&self) -> Result<Vec<serde_json::Value>> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT body FROM approvals ORDER BY created_at_ms DESC, id",
+            )
+            .map_err(crate::store::db_err)?;
+        let rows = stmt
+            .query_map([], |row| row.get::<_, String>(0))
+            .map_err(crate::store::db_err)?;
+        let mut out = Vec::new();
+        for row in rows {
+            let body = row.map_err(crate::store::db_err)?;
+            out.push(serde_json::from_str(&body).map_err(|e| {
+                crate::contracts::Error::new(
+                    crate::contracts::ErrorKind::IncompatibleState,
+                    format!("approval record is unreadable: {e}"),
+                )
+            })?);
+        }
+        Ok(out)
+    }
 }

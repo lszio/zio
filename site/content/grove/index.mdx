@@ -1,6 +1,6 @@
 ---
-title: grove — Zio 之上的自学习产品
-description: grove 是基于 Zio 的自学习库与产品：多源反馈、代码与权重联合学习、检查点恢复、群体与模块演化。本页为设计基线与实测数字的静态展示。
+title: Grove — 基于 Zio 的独立自学习 APP
+description: Grove 是独立 APP，不是库优先的产品壳。当前静态页展示历史 CPU 训练 demo；真实 LLM、可见执行证据、反馈修订与人工批准的产品闭环为 Planned。
 order: 1
 ---
 
@@ -9,19 +9,23 @@ import GroveDemos from '../../src/components/GroveDemos.astro';
 
 ## 一句话定位
 
-`grove` 不是一个聊天 Agent，而是 **Zio 自己的学习层**：模型 = 程序结构 + 参数 + 版本绑定的能力库，
-学习同时改写代码与权重，Rust 宿主负责持久化、权限、预算与进程隔离。
+`Grove` 是 **基于 Zio 的独立 APP**：第一产品主线是可执行 Zio Agent 逻辑、真实 LLM 生成代码、可见执行证据和受控修订，不以学习宿主库或产品壳作为产品边界。
 
-- 学习宿主库 `learning/`（crate 名 `grove`）
-- 产品壳 `app/`（crate 名 `grove-app`，二进制 `grove`）
-- 张量后端 `workers/torch/`（PyTorch CPU 参考实现，只执行许可算子图）
-- 策略与模型表示 `lib/zio/learn/*.zio`（纯 Zio）
+当前仓库有 `core / cli / ai / learning / app` 五个 crate，`core` 不依赖 AI 或 Grove。`learning/`（crate `grove`）与 `app/`（crate `grove-app`，二进制 `grove`）是当前实现分布，不是目标分层。`workers/torch/` 提供 CPU 参考训练后端，`lib/zio/learn/*.zio` 保留策略与模型表示。当前 `zio-ai` 尚未改名，`zio-cli` 是语言工具链二进制，不是 Rill 库。
+
+ZOS 的 object/class/GF/method/MOP 方向属于语言核心，不从 core 移出；完整 MOP 为 **Planned**。**Planned**：核心职责收敛，展开、分析与编译器由 Zio 自举；Rust 保留最小运行时、宿主与性能原语。编译器自举不等于用 Zio 编写编辑器或 APP。
+
+## 第一产品验收主线（Planned）
+
+可执行 Zio Agent 逻辑 → 真实 LLM 生成代码 → 解析、能力检查、隔离执行 → 错误与执行证据驱动修订 → Web 展示源码、实际执行路径与 diff → 用户反馈产生逻辑候选 → 独立评估 → 人工批准后成为正式版本。
+
+自动实验、训练与检查点只可在已批准预算和编辑范围内进行。ZOS／编译器可信基线、鉴权、评估器、检查点与发布守卫不可被候选自改。Loom 的 ACP 指 **Agent Client Protocol**：双向目标，先实现 client 与 teacher adapter，server 后置；当前尚未实现。
 
 <GroveMetrics />
 
-## 三个可运行的真实场景
+## 三个历史 CPU demo 场景
 
-不是演示动画：`grove demo --case ...` 会真实训练、真实写制品、真实发布模型。
+以下是历史 `grove demo --case ...` 的真实训练与制品证据，不是当前服务训练调度、代码／权重原子提交或人工批准产品闭环的完成证明。
 
 <GroveDemos />
 
@@ -29,19 +33,27 @@ import GroveDemos from '../../src/components/GroveDemos.astro';
 
 | 能力 | Zio 提供的原语 |
 | --- | --- |
-| 模型即数据 | 同像性使程序描述可被宏、函数、数据库当作普通 Zio 值操作 |
-| 学习策略 | `lib/zio/learn/` 用 Lisp 写策略：候选搜索、配方、群体选择、能力抽象 |
-| 反馈生命周期 | 版本化记录 + 内容寻址制品（`learning/src/store.rs`、`artifacts.rs`） |
-| 并发 | CSP 通道承载多 worker 消息；协调者是纯 Zio 分配策略 |
+| 模型即数据 | 同像性使程序可表示、检查与编辑；不意味着神经模型透明或程序正确性证明 |
+| 学习策略 | `lib/zio/learn/` 保留候选搜索、配方、群体选择、能力抽象的实验表示 |
+| 反馈生命周期 | 当前有版本化记录与内容寻址制品；反馈到可执行逻辑修订闭环为 Planned |
+| 并发 | CSP 是消息传递原语；Loom 的完整模型、工具、会话、预算、取消与 ACP harness 为 Planned |
 
-宿主库不重新实现算法，产品壳不复制学习逻辑，core 不感知学习——依赖保持单向。
+**官方独立库目标（均为 Planned）**：Grove 按需消费 Numa、Rill、Loom；三库独立版本，不是 Zio 内建语言层，也不是已可安装的包。
+
+| 边界 | 职责 |
+| --- | --- |
+| Numa | 数值计算、类型化连续数组、矩阵、向量与后端接口；不负责学习治理 |
+| Rill | 参数、子命令、帮助、命令组合、终端 IO 与退出状态；不是语言求值器 |
+| Loom | 模型、工具、会话、预算、取消、provider 与 ACP；不负责业务学习目标、评估或发布 |
+| Grove | 独立 APP：实验、反馈、检查点、逻辑演化、独立评估、人工批准与产品 Web |
+
+ZOS 与展开／分析／编译器工具链仍属 Zio 语言；core 不反向依赖上述库或 Grove。LLM 自述不作为执行证据。
 
 ## 拒绝优先的产品原则
 
 grove 的多数代码在**拒绝**而不是在**接受**：
 
-- 快照必须自带算子图（`modules` / `ensemble` / `graph` 三字段缺一不可），
-  否则任何 reader 都能给已提交权重配一张自己编的图。
+- **Planned**：可部署快照必须具备可验证执行图与依赖，防止 reader 为已提交权重随意补图；当前 joint 快照缺图尚待修复，`modules` / `ensemble` / `graph` 是可选字段，不宣称三字段强制存在已被执行。
 - 组合检查是**语义**的，不是数值的：同维不同语义空间被拒。
 - `all-agree` 缺一个专家即 abstain——无法建立一致性时不假装一致。
 - 异构输出空间的专家在 bind 阶段被拒，绝不平均。
@@ -50,9 +62,10 @@ grove 的多数代码在**拒绝**而不是在**接受**：
 
 ## 状态
 
-W00–W17 已实现为 **Experimental**，验收以契约测试与实测数字为准
-（`cargo test --workspace --all-features` 364 通过 / 0 失败，torch worker 72 通过）。
-权威能力状态见仓库 `docs/feature-matrix.md`。
+历史 W00–W17 交付记录为 **Experimental**；当时记录 workspace 契约测试 364 通过 / 0 失败、torch worker 72 通过。数字是历史快照，不表示本次重新验证，也不代表目标产品已完成。
 
-未验证项如实列出：商业上游模型的软输出与授权条款、真实业务数据与业务门槛、
-GPU 推理成本。这些不因本地闭环通过而标记为已联调。
+**Current**：CPU torch demo 确有训练；服务 `train/resume` 仅记录队列请求，没有 dispatcher；frozen/trainable 尚未强制约束优化器，也未实现代码与权重联合提交。`learned_into` 表示冻结数据集成员关系，不证明训练消费；progress 是当前记录的合成投影，不是真实训练事件流。`agent.zio` 是预置 echo，站点是静态文档与模拟实验，不是 Grove 产品 Web。
+
+**Planned**：Numa、Rill、Loom 独立库目标、上述第一产品验收主线、真实训练调度与受控发布。商业上游模型授权、真实业务数据／门槛、GPU 成本仍需独立验证。
+
+仓库权威导航：[能力矩阵](https://github.com/lszio/zio/blob/main/docs/feature-matrix.md)、[架构基线](https://github.com/lszio/zio/blob/main/docs/zio-architecture.md)、[执行计划](https://github.com/lszio/zio/blob/main/docs/superpowers/plans/2026-10-05-zio-grove-convergence.md)。

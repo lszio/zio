@@ -30,7 +30,12 @@ use crate::store::Store;
 
 /// The schema the worker's state artifacts carry today.
 pub const STATE_PROTOCOL: &str = "grove.worker.state/1";
-pub const STATE_SCHEMA: u32 = 1;
+/// Schema 2 records the trainable set alongside the optimizer moments, so
+/// a resume can tell that the artifact describes *this* attempt's
+/// parameters. Schema 1 predates that and is history-only.
+pub const STATE_SCHEMA: u32 = 2;
+/// The oldest schema still readable as history.
+pub const LEGACY_STATE_SCHEMA: u32 = 1;
 
 /// The self-description inside a worker state artifact.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -51,23 +56,76 @@ pub struct StateManifest {
     pub rng: serde_json::Value,
 }
 
-/// Read and vet a worker state artifact. This is the compatibility gate:
-/// unknown schema or foreign run lineage means the host refuses instead
+impl StateManifest {
+    /// The optimizer parameter keys this state carries, e.g. `h0.weight`.
+    fn optimizer_keys(&self) -> Vec<String> {
+        self.optimizer
+            .get("adam")
+            .and_then(|a| a.as_object())
+            .map(|m| m.keys().cloned().collect())
+            .unwrap_or_default()
+    }
+
+    fn has(&self, field: &str) -> bool {
+        match field {
+            "params" => !self.params.is_null(),
+            "optimizer" => !self.optimizer.is_null(),
+            "rng" => !self.rng.is_null(),
+            _ => true,
+        }
+    }
+}
+
+/// What a resume level needs the state to actually contain. A level
+/// never silently degrades: asking for more than the artifact carries is
+/// a refusal, not a partial resume.
+pub fn required_fields(level: ResumeLevel) -> &'static [&'static str] {
+    match level {
+        // A fresh ledger starting from committed weights: parameters only.
+        ResumeLevel::ModelInitialization => &["params"],
+        // Continuing the same training: the optimizer moments and the RNG
+        // stream, or the continuation is not the run it claims to be.
+        ResumeLevel::LearningContinuation => &["params", "optimizer", "rng"],
+        // Replay must additionally be able to reconstruct the exact
+        // sampling sequence, which is the RNG stream plus moments.
+        ResumeLevel::ControlledReplay => &["params", "optimizer", "rng"],
+    }
+}
+
+/// Read and vet a worker state artifact against a declared resume level.
+/// This is the compatibility gate: unknown schema, foreign run lineage,
+/// or a level the artifact cannot satisfy means the host refuses instead
 /// of resuming into something it cannot describe.
-pub fn read_state_manifest(path: &Path, expected_run: &str) -> Result<StateManifest> {
+pub fn read_state_manifest(
+    path: &Path,
+    expected_run: &str,
+    level: ResumeLevel,
+) -> Result<StateManifest> {
     let bytes = std::fs::read(path).map_err(|e| {
         Error::new(
             ErrorKind::ArtifactUnavailable,
             format!("state artifact {} is unreadable: {e}", path.display()),
         )
     })?;
-    let manifest: StateManifest = serde_json::from_slice(&bytes).map_err(|e| {
+    let manifest = parse_state_manifest(&bytes, expected_run)?;
+    require_level(&manifest, level)?;
+    Ok(manifest)
+}
+
+/// Parse and lineage-check state bytes. Schema 1 is history-only: it can
+/// be read, but never resumed, because it does not say which parameters
+/// the optimizer moments belong to.
+pub fn parse_state_manifest(bytes: &[u8], expected_run: &str) -> Result<StateManifest> {
+    let manifest: StateManifest = serde_json::from_slice(bytes).map_err(|e| {
         Error::new(
             ErrorKind::IncompatibleState,
             format!("state artifact does not parse as a grove state manifest: {e}"),
         )
     })?;
     if manifest.schema != STATE_SCHEMA || manifest.protocol != STATE_PROTOCOL {
+        if manifest.schema == LEGACY_STATE_SCHEMA && manifest.protocol == STATE_PROTOCOL {
+            return Ok(manifest);
+        }
         return Err(Error::new(
             ErrorKind::IncompatibleState,
             format!(
@@ -88,9 +146,53 @@ pub fn read_state_manifest(path: &Path, expected_run: &str) -> Result<StateManif
     Ok(manifest)
 }
 
+/// Refuse a resume the artifact cannot honestly serve.
+pub fn require_level(manifest: &StateManifest, level: ResumeLevel) -> Result<()> {
+    if manifest.schema < STATE_SCHEMA {
+        return Err(Error::new(
+            ErrorKind::IncompatibleState,
+            format!(
+                "state artifact schema {} predates the recorded trainable set and cannot serve {:?}; \
+                 it stays readable as history, but re-initialize explicitly instead",
+                manifest.schema, level
+            ),
+        ));
+    }
+    for field in required_fields(level) {
+        if !manifest.has(field) {
+            return Err(Error::new(
+                ErrorKind::IncompatibleState,
+                format!("{level:?} requires {field} in the state artifact, which is missing"),
+            ));
+        }
+    }
+    if required_fields(level).contains(&"optimizer") {
+        let keys = manifest.optimizer_keys();
+        if keys.is_empty() {
+            return Err(Error::new(
+                ErrorKind::IncompatibleState,
+                "the state artifact records no optimizer parameters; a learning continuation \
+                 without optimizer state is a new run wearing the old run's name",
+            ));
+        }
+        if !keys.iter().any(|k| k.ends_with(".bias")) {
+            return Err(Error::new(
+                ErrorKind::IncompatibleState,
+                "the state artifact has no bias in its optimizer parameters; \
+                 the attempt that wrote it could not have trained biases",
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Commit a checkpoint: the state artifact becomes a durable, digest-named
 /// object and only then does the checkpoint row appear. The manifest check
 /// runs before the row exists, so an unparsable state never enters history.
+///
+/// The bytes that were validated are the bytes that get committed. The
+/// file is read once: a second read would let a file replaced between
+/// validation and commit slip an unvalidated artifact into history.
 pub fn commit(
     store: &Store,
     actor: &Actor,
@@ -102,18 +204,19 @@ pub fn commit(
     now_ms: i64,
 ) -> Result<Checkpoint> {
     actor.require(ActorRole::Operator, "committing a checkpoint")?;
-    // vet the state BEFORE it becomes part of history
-    let manifest = read_state_manifest(state_path, run_id)?;
-    // the checkpoint continues the run's model: lineage is the base
-    // snapshot, which must be a committed manifest owned by this actor
-    let run = store.get_run(run_id)?;
-    // the artifact goes into the store under its digest
+    // Read once, then validate *these* bytes.
     let bytes = std::fs::read(state_path).map_err(|e| {
         Error::new(
             ErrorKind::ArtifactUnavailable,
-            format!("state artifact vanished before commit: {e}"),
+            format!("state artifact {} is unreadable: {e}", state_path.display()),
         )
     })?;
+    let manifest = parse_state_manifest(&bytes, run_id)?;
+    require_level(&manifest, level)?;
+    // the checkpoint continues the run's model: lineage is the base
+    // snapshot, which must be a committed manifest owned by this actor
+    let run = store.get_run(run_id)?;
+    // the artifact goes into the store under its digest — the same bytes
     let state_artifact = store.artifacts().put(&bytes)?;
 
     let checkpoint = Checkpoint {
@@ -173,14 +276,18 @@ pub fn resume_plan(
         )
     })?;
     if manifest.schema != STATE_SCHEMA || manifest.protocol != STATE_PROTOCOL {
-        return Err(Error::new(
-            ErrorKind::IncompatibleState,
-            format!(
-                "checkpointed state has unsupported schema {} ({}); migrate explicitly",
-                manifest.schema, manifest.protocol
-            ),
-        ));
+        if manifest.schema != LEGACY_STATE_SCHEMA {
+            return Err(Error::new(
+                ErrorKind::IncompatibleState,
+                format!(
+                    "checkpointed state has unsupported schema {} ({}); migrate explicitly",
+                    manifest.schema, manifest.protocol
+                ),
+            ));
+        }
     }
+    // The requested level must be one this artifact can actually serve.
+    require_level(&manifest, level)?;
 
     if level == ResumeLevel::ControlledReplay && !deterministic_host {
         return Err(Error::new(

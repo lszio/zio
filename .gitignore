@@ -12,6 +12,16 @@ target
 __pycache__/
 *.pt
 
+# Local agent/tooling config. `AGENTS.md` and `CLAUDE.md` are anchored to
+# the root so they cannot match a nested module's own copy, and
+# `.agents/skills/*` is ignored *except* the `architect` skill the repo
+# already tracks.
+/AGENTS.md
+/CLAUDE.md
+/.claude/
+/.agents/skills/*
+!/.agents/skills/architect/
+
 # Astro build output and deps. site/public/wasm is deliberately NOT ignored:
 # the committed wasm bundle is what the page loads (tools/build-wasm.sh).
 site/node_modules/

@@ -1,10 +1,10 @@
 # Eval 求值与编译管线
 
-> Version 0.4 — eval/apply 循环、TCO、ZOS 集成、编译器未来规划
+> Version 0.5 — 当前 AST 路径、保留 ZOS 与 Zio 工具链自举（2026-10-05）
 >
-> 当前可执行路径是 AST evaluator；ZOS class/generic dispatch 只有
-> experimental subset。ZIR、bytecode VM 和 JIT 均为
-> [Planned](feature-matrix.md)。仓库数量见[项目状态](status.md)。
+> AST evaluator 为当前执行路径；ZOS class/generic dispatch 为
+> Experimental 子集。完整 Zio 展开/分析/编译器、最小后端和 JIT 为
+> Planned，分别验收。数量见[项目状态](status.md)，状态见[特性矩阵](feature-matrix.md)。
 
 ---
 
@@ -75,6 +75,25 @@ Source text → Reader → Sexp
 ZIR、bytecode VM 与 JIT 尚未实现；其批准设计和状态见
 [特性矩阵](feature-matrix.md)。当前 AST 解释器及 experimental ZOS 子集
 用于验证语言语义。
+
+### 1.4 生成代码与真实 agent 逻辑
+
+`eval` 只执行程序，不等于模型/工具会话循环。Grove 的计划主线复用本执行器，
+由 Zio 程序实际控制任务步骤，再由 Loom 装配模型、工具、会话、预算、
+取消、provider 与 ACP；生成代码的解析、宏/依赖传递权限检查与隔离执行
+是另一明确边界。Loom 不持 Grove 的学习目标、独立评价或发布治理。
+当前 `macroexpand` 只展开外层形式，不是完整编译前端；Sexp 转 Value 再返回
+会丢失原来源，不能用打印后的 AST 声称已经保留可审计的执行位置。
+计划增加可关闭的执行观测：开启时关联程序版本、源码/表达式、分支与能力
+调用；关闭时不构造轨迹对象，不把学习策略或模型协议放入核心。
+
+Numa（数值计算）、Rill（CLI 组合）、Loom（Agent harness）是按需安装、
+独立版本发布的官方库，均不属于 Zio/ZOS 或编译工具链的语言语义。
+Grove 消费语言与库，核心没有反向依赖。当前 `zio-ai` 是 Loom 的起点，
+`zio-cli` 是未来消费 Rill 的可执行宿主，包名、路径与示例保持现状；
+正式短名不是已注册包 ID，新增能力仍为 Planned。职责依据
+[ADR-019](adrs.md#adr-019-grove-独立应用与同像性逻辑演化)，依赖见
+[统一实现计划](superpowers/plans/2026-10-05-zio-grove-convergence.md)。
 
 ---
 
@@ -199,12 +218,18 @@ zio-core/src/zos/
 能力 trait 表达，`EvalEngine` 是组合二者的 marker supertrait：
 
 ```rust
-/// 最小编译/求值能力。不含模块和 ZOS。
+/// 最小求值、源码定位与宿主 I/O 能力。不含模块注册和 ZOS。
 pub trait EvalRuntime {
     fn eval_expr(&self, expr: &Sexp, env: &Arc<Env>, tail: bool)
         -> Result<TailResult, EvalError>;
     fn env(&self) -> &Arc<Env>;
+    fn source_map(&self) -> &Arc<crate::span::SourceMap>;
+    fn io(&self) -> &dyn crate::io::IoHost {
+        &DEFAULT_STD_IO
+    }
 }
+
+static DEFAULT_STD_IO: crate::io::StdIoHost = crate::io::StdIoHost;
 
 /// 模块注册表。独立于求值。
 pub trait ModuleRegistry {
@@ -215,12 +240,16 @@ pub trait ModuleRegistry {
         -> Option<Result<Module, EvalError>>;
     fn begin_loading(&self, path: &Path) -> Result<(), EvalError>;
     fn end_loading(&self, path: &Path);
+    fn push_module_exports(&self);
+    fn add_module_export(&self, name: String);
+    fn take_module_exports(&self) -> Vec<String>;
 }
 
 pub trait EvalEngine: EvalRuntime + ModuleRegistry {}
 ```
 
-`EvalContext` 持有根环境、`ModuleTable` 和可选 loader，并分别实现
+`EvalContext` 持有根环境、`ModuleTable`、可选 loader、源码注册表、宿主 I/O
+与模块导出栈，并分别实现
 `EvalRuntime` 与 `ModuleRegistry`，最后实现 `EvalEngine`。只需要最小求值能力
 的嵌入边界可以依赖 `EvalRuntime`；当前完整 AST evaluator 和 CLI 路径使用
 `EvalEngine`。单独的 `ZosRuntime`/VM 能力边界不在当前 `context.rs` API 中；
@@ -230,25 +259,26 @@ ZIR、bytecode VM 与 JIT 仍是下节所述的规划范围。
 
 ## 4 编译管线（Planned）
 
-### 4.1 ZIR 设计要点
+### 4.1 自举交付顺序
 
-ZIR 分以下阶段引入：
+| 步骤 | 状态 | 管线与验收 |
+|------|------|------------|
+| 当前语义参考 | Stable / Experimental ZOS | Reader → Sexp → AST eval；固定首轮语言与 ZOS 合同 |
+| Zio 前端 | Planned | Zio 完整展开 → 分析；递归展开、词法绑定与来源保留分别验证 |
+| 最小编译器与后端 | Planned | Zio 编译器生成版本化字节码；Rust 最小后端复用核心值、宿主和 ZOS 分派 |
+| 工具链自举 | Planned | 引导编译器 → 自编译 → 重复构建；规范化产物与 AST/编译执行行为对照 |
+| 后续性能路线 | Planned | 热点测量后再增加优化 ZIR/JIT，不作为 Grove G1 或第一轮自举的前置任务 |
 
-| Phase | 状态 | 管线 |
-|-------|------|------|
-| 1-4 | ✅ 纯 AST 解释器 | Reader → Sexp → Eval → Value |
-| 5 | 📋 评估阶段 | 分析解释器热点，验证 ZIR 可行性 |
-| 6 | 📋 字节码编译器（如验证通过） | 单通道、显式尾调用指令、Span 嵌入 |
-| 7 | 📋 Cranelift JIT | 编译热函数到机器码 |
+### 4.2 引导执行与编译器的区别
 
-### 4.2 编译器层可选性
+AST evaluator 保留为引导环境和语义对照，普通解释执行不依赖新编译器。
+编译器不是语言语义的替代品，但**完成工具链自举必须实际有 Zio 编译器
+并编译自身**；不能以编辑器、`eval` 或宏 demo 代替。ZOS 语义仍属于核心，
+编译后路径通过同一对象分派入口，不能把 ZOS 拆成可选领域插件。
 
-`compiler` 和 `vm` 层始终是**可选的**。所有语言特性（包括 ZOS）都在 AST 解释器层定义。编译器层只是渐进加速器，不是硬依赖。
-
-```
-基础模式（Phase 1-4）：Reader → AST eval
-加速模式（Phase 6+）： Reader → ZIR → bytecode → eval 或 JIT
-```
+最小后端的数据格式与完整指令合同在实施计划 T02 固定，不能在多个计划
+分别建立 ZIR/VM。现有完整 VM 性能设计是后续参考，开工顺序以
+[统一实现计划](superpowers/plans/2026-10-05-zio-grove-convergence.md)为准。
 
 ---
 
@@ -262,3 +292,4 @@ ZIR 分以下阶段引入：
 | [zos-spec.md](zos-spec.md) | ZOS 完整规范 |
 | [zio-philosophy.md](zio-philosophy.md) | 语言哲学和设计定理 |
 | [adrs.md](adrs.md) | 架构决策记录（特别是 ADR-005, 006, 008） |
+| [superpowers/plans/2026-10-05-zio-grove-convergence.md](superpowers/plans/2026-10-05-zio-grove-convergence.md) | 当前实现依赖与真实验收；工具链独立于 Grove 主线 |

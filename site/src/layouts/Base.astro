@@ -18,15 +18,16 @@ const links = [
   { href: `${base}/#philosophy`, label: '设计哲学' },
   { href: `${base}/#architecture`, label: '分层架构' },
   { href: `${base}/#features`, label: '核心特性' },
-  { href: `${base}/agent/`, label: 'Agent & LLM' },
-  { href: `${base}/grove/`, label: 'grove 自学习' },
+  { href: `${base}/agent/`, label: 'Agent 模拟' },
+  { href: `${base}/grove/`, label: 'Grove APP 方向' },
 ];
 const docs = [
-  { href: '/docs/status.md', label: 'Status' },
-  { href: '/docs/feature-matrix.md', label: 'Feature Matrix' },
-  { href: '/docs/zos-spec.md', label: 'ZOS Spec' },
-  { href: '/docs/zio-architecture.md', label: 'Architecture' },
-  { href: '/docs/adrs.md', label: 'ADRs' },
+  { href: 'https://github.com/lszio/zio/blob/main/docs/status.md', label: 'Status' },
+  { href: 'https://github.com/lszio/zio/blob/main/docs/feature-matrix.md', label: 'Feature Matrix' },
+  { href: 'https://github.com/lszio/zio/blob/main/docs/zos-spec.md', label: 'ZOS Spec' },
+  { href: 'https://github.com/lszio/zio/blob/main/docs/zio-architecture.md', label: 'Architecture' },
+  { href: 'https://github.com/lszio/zio/blob/main/docs/superpowers/plans/2026-10-05-zio-grove-convergence.md', label: 'Implementation Plan' },
+  { href: 'https://github.com/lszio/zio/blob/main/docs/adrs.md', label: 'ADRs' },
 ];
 const current = Astro.url.pathname;
 // Hash links stay on the landing page; only the real subpages get aria-current.

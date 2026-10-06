@@ -413,6 +413,38 @@ fn is_unique_violation(e: &rusqlite::Error) -> bool {
         if ffi.code == rusqlite::ErrorCode::ConstraintViolation)
 }
 
+/// Check a coordinator epoch against the store's, from inside a caller's
+/// transaction.
+///
+/// The comparison lives here so the store's own commit path and this
+/// module's attempt path cannot disagree about what a superseded owner
+/// is. A receipt stamped with an older epoch is a process that was
+/// mid-flight across a restart: its result is not the record of what
+/// happened, because a new owner has been working since.
+pub fn check_epoch(tx: &rusqlite::Transaction<'_>, epoch: u64) -> Result<()> {
+    let current: Option<String> = tx
+        .query_row(
+            "SELECT value FROM meta WHERE key = 'coordinator.owner'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(crate::store::db_err)?;
+    let current_epoch = current
+        .and_then(|raw| serde_json::from_str::<OwnershipRecord>(&raw).ok())
+        .map_or(0, |r| r.epoch);
+    if epoch != current_epoch {
+        return Err(Error::new(
+            ErrorKind::Conflict,
+            format!(
+                "this work was stamped with ownership epoch {epoch}, the store is now at \
+                 epoch {current_epoch}; a superseded coordinator's result is not a result"
+            ),
+        ));
+    }
+    Ok(())
+}
+
 /// The population record the Zio policy proposes and the coordinator
 /// enforces. Re-exported for the shell's inspect surface.
 pub fn population_summary(population: &Population) -> String {

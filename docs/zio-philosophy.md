@@ -1,11 +1,11 @@
 # Zio 语言哲学
 
-> Version 1.0 — 核心设计原则与语言哲学
+> Version 1.1 — 保留 ZOS 的核心收敛与独立应用边界（2026-10-05）
 >
-> 本文讨论设计原则时也会提到未来能力。当前执行引擎与能力成熟度以
-> [特性矩阵](feature-matrix.md)为准：AST evaluator 为 Stable，ZOS
-> class/generic dispatch 子集为 Experimental，VM/JIT、领域扩展库和
-> homoiconic learner 均为 Planned。
+> 原则、目标与当前能力分开：AST evaluator 为 Stable，ZOS 子集、程序
+> 合成及 Grove CPU 组件为 Experimental；完整编译工具链、Loom/ACP
+> 与 Grove 可审查 agent 演化主线为 Planned。状态与证据见
+> [特性矩阵](feature-matrix.md)，定位以 [ADR-019](adrs.md#adr-019-grove-独立应用与同像性逻辑演化) 为准。
 
 ---
 
@@ -23,9 +23,9 @@ Zio = Stable Lisp 核心（Reader + Sexp + AST eval/apply + 宏 + stdlib）
     + Rust 宿主（EvalContext + NativeFn）
 ```
 
-领域能力被设计为未来通过宏 + MOP 构建的 `.zio` 扩展库，不进入核心。
-Datalog、Agent、persistent collection 与 homoiconic learner 当前均为
-[Planned](feature-matrix.md)，不是可加载的实现。
+Numa（数值计算）、Rill（CLI 组合）、Loom（Agent harness）是官方独立库，
+不是语言内置特性；按需安装、独立版本发布，Grove 是消费这些库的独立应用。
+现有 `.zio` 库与 Rust 宿主是复用起点，不表示三库已经交付。具体状态见[特性矩阵](feature-matrix.md)。
 
 ### 1.2 核心命题
 
@@ -34,22 +34,32 @@ Datalog、Agent、persistent collection 与 homoiconic learner 当前均为
 ```text
 同像性 → 宏系统 → 用户拥有与语言实现者相同的扩展能力
        → 代码可被程序读取、变换、生成
-       → eval/apply 是元循环求值器
-       → eval(env, expr) = agent(state, action)
+       → eval/apply 执行显式程序逻辑
+       → 可编码 agent 逻辑需要另外装配模型、工具、权限与会话
 ```
 
-Zio 的规划扩充分解（不是当前组件清单）：
+Zio 语言与生态的规划分解（不是当前组件清单）：
 
 ```text
-Zio = 当前 AST Lisp 核心
-    + Experimental ZOS 子集
-    + Planned ZIR / bytecode VM / JIT
-    + Planned 扩展库（Datalog · Agent · persistent collections）
-    + Planned homoiconic learner
-    + Planned 自举工具链（编辑器 · LSP · Debugger）
+Zio 语言 = 当前 AST Lisp 核心 + 保留在核心的 Experimental ZOS 子集
+         + Planned Zio 展开 / 分析 / 编译器与最小执行后端
+         + Planned 后续 ZIR / JIT / 编辑器 / LSP / Debugger
+官方独立库 = Numa（计算） / Rill（CLI 组合） / Loom（Agent harness）
+独立应用 = Grove（消费语言与库，治理学习、评价、检查点与发布）
+依赖方向 = 库与 Grove → 语言；语言核心不反向依赖库或 Grove
 ```
 
-所有 Planned 项的批准设计和状态见[特性矩阵](feature-matrix.md)。
+三库的正式短名不等于已注册包 ID。未来规范目录与逻辑命名空间分别为
+`numa/`、`rill/`、`loom/` 与 `numa/*`、`rill/*`、`loom/*`，不是语言组件
+`zio/compute` 或 `zio/command`；包注册 ID 未定，不能把命名空间占位当安装命令。
+当前 `zio-ai`/`ai/` 是 Loom 的复用起点，`zio-cli`/`cli/` 是未来消费 Rill
+的可执行宿主，本次不重命名 crate、目录、命令或已有 API。
+迁移计划为 `ai/` → `loom/`，新建独立 `rill/` 库（不把 `cli/src/lib.rs`
+当公共命令库），新建 `numa/` 与 `numa/zio/compute.zio`，并把当前
+`lib/zio/vector.zio` 迁到 `numa/zio/vector.zio`。这些是后续
+实施目标，不是当前文件；普通语言 CLI 不要求 Loom，ACP 服务由 Grove
+向 Loom 注入执行回调并通过未来 `grove acp serve` 装配。
+所有新增能力仍为 Planned；批准依赖与验收见[统一实现计划](superpowers/plans/2026-10-05-zio-grove-convergence.md)。
 
 ---
 
@@ -76,13 +86,14 @@ Zio = 当前 AST Lisp 核心
 
 **原理**: 同像性的核心价值在于「用户拥有跟语言实现者相同的扩展能力」。宏使 DSL 无需修改核心即可嵌入。
 
-### 定理 4: 核心最小，其余是库
+### 定理 4: 核心收敛，库与应用独立
 
-**推论**: 任何领域能力（Datalog、Agent、自学习、Clojure 风格集合）都不
-进入 Zio 核心。这些领域能力仍为 [Planned](feature-matrix.md)；当前核心
-状态由矩阵中的 Stable 与 Experimental 行定义。
+**推论**：核心收敛职责，但不移除 ZOS。Numa 承担计算，Rill 承担命令行
+应用组织，Loom 承担模型与工具会话；学习目标、独立评价和发布治理属于
+Grove。三库独立演进，公共能力有真实复用需求才抽取，不先建设通用框架。
 
-**原理**: 核心的稳定性取决于它不做多少事。领域能力通过宏 + MOP + 库来构建，可以独立迭代、版本、替换。
+**原理**：稳定的语言语义与可独立演进的产品策略分开。Grove 可以在内部
+采用库结构，但第一身份是独立应用，不是“通用学习库 + 可选产品壳”。
 
 ### 定理 5: 协议比实现重要
 
@@ -126,41 +137,42 @@ ZOS 只提供机制，不提供策略。Multiple Dispatch 是机制；Protocol �
 
 Zio 的核心特性构成一个自洽的整体，不是其他语言特性的组合：
 
-| 特性 | 归属 | 说明 |
-|------|------|------|
-| **同像性** | 核心语言 | 代码即数据，宏在 Sexp 域变换 |
-| **AMOP / MOP** | ZOS | 统一运行时对象模型 + 元对象协议 |
-| **Generic Function / 多分派** | ZOS | 基于全部参数类型的行为分派 |
-| **Condition / Restart** | ZOS | 带恢复选项的错误处理系统 |
-| **Package** | ZOS | 符号命名空间管理 |
-| **卫生宏（模式匹配）** | 核心语言 | 自动重命名的模式匹配宏 |
-| **尾调用优化** | 核心语言 | 所有尾位置不建帧 |
-| **持久化数据结构** | 核心语言 | 不可变 + 结构共享（im crate） |
-| **零开销嵌入** | Rust 宿主 | 任意 Rust 程序可嵌入 Zio |
+| 特性 | 归属 | 当前与目标边界 |
+|------|------|----------------|
+| **同像性** | 核心语言 | 代码可读取、变换与生成；不等于安全或神经模型透明 |
+| **AMOP / MOP** | 核心 ZOS | 统一对象方向保留；完整 MOP 为 Planned |
+| **Generic Function / 多分派** | 核心 ZOS | 当前子集 Experimental；更广语义按规范逐项验收 |
+| **Condition / Restart、Package** | 核心 ZOS | 现有子集与完整规范分开，见特性矩阵 |
+| **宏** | 核心语言 | 当前 `defmacro`；完整卫生宏为 Planned |
+| **尾调用优化** | 核心语言 | 普通函数 trampoline 与 `loop/recur` 已实现 |
+| **持久化数据结构** | 核心值与库 | 当前 `im` 集合；完整扩展集合库另行验收 |
+| **Rust 嵌入** | 宿主 | 可嵌入；不作零分配或零开销保证 |
 
 ### 4.1 规划中的扩展库
 
-领域能力按设计将通过宏 + MOP 构建为 `.zio` 库，不进入核心。下列路径
-是 placeholder 或规划位置，不代表库可加载；状态以
-[特性矩阵](feature-matrix.md)为准：
+扩展的归属按职责决定，不要求所有性能或协议代码都写成宏/MOP：
 
-| 规划能力 | 规划或 placeholder 路径 | 状态 |
-|----------|-------------------------|------|
-| Persistent collection library | `lib/zio/persistent.zio` | Planned；API 未实现 |
-| Datalog evaluator | `lib/zio/datalog.zio` | Planned；API 未实现 |
-| Agent / Entity / Protocol libraries | 规划中的 `lib/zio/` modules | Planned；尚不可加载 |
+| 能力 | 起点与落点 | 状态 |
+|------|------------|------|
+| Numa：数值数组/矩阵/向量与后端接口 | 复用 `lib/zio/vector.zio`、`workers/torch/` 的计算边界；连续 typed array 与公共计算接口按需求扩展，不持训练或发布治理 | 当前组件 Experimental；Numa Planned |
+| Rill：CLI 应用组织 | 参数、子命令、帮助、命令组合、终端 I/O 与退出状态；`zio-cli` 当前为脚本/REPL 可执行入口，未来消费 Rill；不承担语言求值 | Rill Planned |
+| Loom：模型与工具 harness | 复用当前 `zio-ai`；模型、工具、会话、预算、取消、provider 与 ACP，不进入 eval 特殊形式，不持 Grove 学习目标/评价/发布 | Loom Planned |
+| Grove 独立应用 | `learning/`、`app/` 和 Zio 策略；首条主线为真实 agent 逻辑与受控演化 | 当前组件 Experimental；新主线 Planned |
+| Datalog / Entity / Protocol / 集合 | 保留已有数据表达与占位模块；领域执行不因能加载文件而成立 | 各项状态见特性矩阵 |
 
 ### 4.2 自举
-Zio 的自举路径是**工具链自举**，不是「编译器用 Zio 写」：
+目标是 **Zio 编写自己的展开器、分析器和编译器**，Rust 保留最小运行时、
+宿主边界及必要性能原语。采用现有 AST evaluator 引导，明确首轮语言与
+ZOS 语义集合，再通过最小后端运行编译器并编译自身。
 
-```
-Phase 1-2: Rust 实现核心语言 + REPL
-Phase 3-4: Zio 语言成熟 → 能写实质性程序
-Phase 5+:  用 Zio 编写编辑器（语法高亮 + REPL 集成）
-Phase 7+:  编辑器具备 LSP 能力（用 Zio 写）
+```text
+Rust AST 引导 → Zio 展开/分析/编译器 → 编译器产物运行并编译自身
+             → 第二/第三代规范化产物与行为对照 → 工具链自举验收
 ```
 
-当一个用 Zio 写的 Zio 编辑器成为主要开发界面时，语言就完成了工具链自举。
+Zio 编写编辑器、LSP 或 Grove agent 是应用自托管，不等同编译器自举。
+Grove 产品主线与工具链分别验收、互不作为完成前提；执行顺序见
+[统一实现计划](superpowers/plans/2026-10-05-zio-grove-convergence.md)。
 ---
 
 ## 5 什么是 ZOS
@@ -188,35 +200,30 @@ ZOS（Zio Object System）是 Zio 的统一运行时对象模型。它不是传�
 - Actor / 并发模型（→ 库: `zio-actor`）
 - Graph / 图分析（→ 库: `zio-graph`）
 
-这些名称描述未来职责边界；persistent collection、Datalog 与应用库仍为
-[Planned](feature-matrix.md)。
+这些是职责名称，不是全部已实现的库名。AI/harness 与独立 Grove 应用
+可复用 ZOS，但会话、训练、持久化和发布规则不属于对象语义。
 
 ---
 
 ## 6 架构分层
 
 ```text
-Current
-┌──────────────────────────────────────────────────┐
-│ zio-cli: CLI + REPL                              │
-├──────────────────────────────────────────────────┤
-│ zio-core: Stable AST evaluator, closures,        │
-│           core macros and stdlib                  │
-│           Experimental ZOS Class/GF subset        │
-├──────────────────────────────────────────────────┤
-│ Reader + Sexp + EvalContext + NativeFn            │
-└──────────────────────────────────────────────────┘
+当前：zio-cli / zio-ai / grove-app
+                  ↓
+      Grove 内部宿主 + CPU 后端 / Zio 标准库与领域组件
+                  ↓
+      zio-core：AST eval/apply、宏、核心值、Experimental ZOS 子集
 
-Planned (not current runtime components)
-┌──────────────────────────────────────────────────┐
-│ ZIR + bytecode VM + JIT                          │
-│ persistent/Datalog/application libraries         │
-│ homoiconic learner + landing site                │
-└──────────────────────────────────────────────────┘
+目标：独立 Grove 应用、其他 CLI / 嵌入 / 工具链入口
+                  ↓
+      计算 / CLI 组织 / harness（模型、工具、ACP）公共基础设施
+                  ↓
+      Zio 标准库与自举工具链
+                  ↓
+      Zio + ZOS 核心、最小运行时与可信宿主边界
 ```
 
-The current/planned boundary above follows the
-[authoritative feature matrix](feature-matrix.md).
+职责不等于必须新增 crate；运行时依赖方向见[架构总览](zio-architecture.md)。
 
 ---
 
@@ -260,10 +267,9 @@ The current/planned boundary above follows the
 
 ### 7.3 规划中的扩展库
 
-Persistent collection library、Datalog evaluator 与应用库尚不可加载，
-因此本页不提供 `require` 或调用示例。`examples/datalog-concept.zio` 只证明
-查询可以作为普通数据读取，不执行查询。所有这些能力均为
-[Planned](feature-matrix.md)。
+`persistent.zio`、`datalog.zio` 等文件存在不代表规划 API 均可用；
+查询数据、集合基础操作、AI 宿主、数值合成与完整领域执行必须分开。
+本页不把规划 API 写成可运行示例，具体入口和状态见[特性矩阵](feature-matrix.md)。
 
 ---
 
@@ -271,8 +277,8 @@ Persistent collection library、Datalog evaluator 与应用库尚不可加载，
 
 ### 8.1 我们承诺
 
-1. **向后兼容**：新版本不破坏已发布的 ZOS 协议和 `EvalEngine` trait
-2. **正交独立**：无需加载 ZOS 即可使用核心 Lisp（嵌入场景）
+1. **显式合同演进**：公开语言语义和宿主接口改变时迁移全部消费者，记录不兼容变更，不作尚未发布协议永久冻结承诺
+2. **核心保留 ZOS**：普通 Lisp 程序不必使用对象 API；对象语义仍属于核心，不拆成可选领域插件
 3. **嵌入优先**：任何 Rust 程序都可以嵌入 Zio，无需异步运行时
 4. **宏优先**：新语言特性首选宏方案，特殊形式为最后手段
 5. **渐进用户**：从简单脚本到复杂系统编程，体验平滑

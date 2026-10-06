@@ -1,0 +1,5 @@
+{
+  "id": "agent-code/even-sum-negative-count",
+  "prompt": "Write a function in the Zio language named agent-entry. Zio is a Lisp with parentheses, not Lua: there is no `use`, no `length`, no `reduce`, and no `filter` with those names.\n\nZio facts you need:\n- bindings are `(defn name [args] body)`\n- a `let*` binds sequentially: `(let* [a 1 b (+ a 1)] ...)`\n- `count` is the length of a list or vector\n- `filter`, `reduce`, `even?` and the arithmetic operators are available\n- to turn a number into text for printing use `(str n)`, e.g. `(println (str \"even-sum=\" even-sum))`\n\nThe function takes no arguments and must COMPUTE, not hardcode. Given the list [1 -2 3 -4 5 -6], print exactly two lines: `even-sum=-12` and `negative-count=3`, where even-sum is the sum of the even numbers and negative-count is the count of negative numbers. Both numbers must come from your computed variables via `str`; printing the literal strings \"-12\" and \"3\" is wrong, because then the program computes nothing.\n\nYou may not use eval, load, or require. Reply with JSON only: {\"source\": \"<zio source>\"}.",
+  "inputs": []
+}

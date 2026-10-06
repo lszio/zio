@@ -44,7 +44,15 @@ pub fn do_defn(args: &[Sexp], env: &Arc<Env>, _engine: &dyn EvalEngine) -> Resul
     let body = if args.len() == 3 {
         args[2].clone()
     } else {
-        Sexp::List(args[2..].iter().cloned().collect(), None)
+        // A body with several forms is a *sequence*, and it has to say
+        // so. A bare list reads as a call whose head is the first
+        // expression, so `(defn f [] (println "a") (println "b"))`
+        // evaluated `(println "a")` as an application. `do` takes the
+        // forms as its own arguments, not wrapped in a list.
+        let mut do_form = im::Vector::new();
+        do_form.push_back(Sexp::Symbol("do".into(), None));
+        do_form.extend(args[2..].iter().cloned());
+        Sexp::List(do_form, None)
     };
 
     let fn_val = Value::Function(Arc::new(Function {
@@ -70,7 +78,12 @@ pub fn do_fn(args: &[Sexp], env: &Arc<Env>) -> Result<TailResult, EvalError> {
     } else if args.len() == 2 {
         args[1].clone()
     } else {
-        Sexp::List(args[1..].iter().cloned().collect(), None)
+        // Same as `defn`: a multi-expression body is a `do` sequence,
+        // with the forms as `do`'s own arguments.
+        let mut do_form = im::Vector::new();
+        do_form.push_back(Sexp::Symbol("do".into(), None));
+        do_form.extend(args[1..].iter().cloned());
+        Sexp::List(do_form, None)
     };
     Ok(TailResult::Value(Value::Function(Arc::new(Function {
         params,

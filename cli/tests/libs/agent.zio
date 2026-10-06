@@ -1,4 +1,9 @@
-;; lib/zio/agent.zio contract — data-model demo behavior.
+;; lib/zio/agent.zio contract — the agent's own decision logic.
+;;
+;; The host bindings are stubbed here, because what is under test is
+;; the *logic*: that it asks, checks the outcome, retries on a failure,
+;; and stops at the ceiling. A stub that answers a fixed script is the
+;; only honest way to test that without a provider.
 (load "lib/zio/agent.zio")
 
 (defn check [label actual expected]
@@ -6,18 +11,55 @@
     (println "PASS" label)
     (println "FAIL" label "got:" actual "want:" expected)))
 
-(def a (make-agent "bot" "sys" {}))
+;; The turn counter, so the contract can prove a second turn happened.
+(def turns-taken 0)
+(def replies ["first" "second" "third"])
+(def executed [])
 
-(check "make-agent-name" (get a :agent/name) "bot")
-(check "make-agent-status" (get a :agent/status) :idle)
-(check "make-agent-empty-history" (count (get a :agent/history)) 0)
+;; A scripted harness. The first call returns a program that fails, the
+;; second one that works; the agent should stop after the second.
+(defn harness-complete [task feedback]
+  (set! turns-taken (+ turns-taken 1))
+  (if (= turns-taken 1)
+    {:source "(defn agent-entry [] (error \"boom\"))"}
+    {:source "(defn agent-entry [] (println \"ok\"))"}))
 
-(def a2 (register-tool a "echo" (fn [x] x)))
-(check "register-tool-count" (count (keys (get a2 :agent/tools))) 1)
+(defn harness-execute-zio [source]
+  (set! executed (vector-conj executed source))
+  (if (= turns-taken 1)
+    {:status "failed" :error "boom" :output ""}
+    {:status "completed" :error "" :output "\"ok\"\n"}))
 
-(def stepped (step a "hi"))
-(check "step-status" (get stepped :agent/status) :active)
-(check "step-history-count" (count (get stepped :agent/history)) 2)
-(check "step-history-role" (get (get (get stepped :agent/history) 0) :role) "user")
+;; 1. A failing first attempt is retried, and the second one is a
+;;    candidate. The turn count is the evidence: the logic asked again.
+(def r1 (agent-run "task" 3))
+(check "retry-status" (get r1 :status) "candidate")
+(check "retry-turns" (get r1 :turns) 2)
+(check "retry-calls" turns-taken 2)
+(check "retry-ran-twice" (count executed) 2)
 
-(check "run" (run a "task") "Agent [bot] executed: task")
+;; 2. A ceiling the program cannot argue with: with one turn allowed
+;;    and a first attempt that fails, the run ends exhausted and
+;;    reports the failure rather than a candidate.
+(set! turns-taken 0)
+(set! executed [])
+(def r2 (agent-run "task" 1))
+(check "ceiling-status" (get r2 :status) "exhausted")
+(check "ceiling-turns" (get r2 :turns) 1)
+(check "ceiling-calls" turns-taken 1)
+(check "ceiling-reports-failure"
+       (get (get r2 :last) :error)
+       "boom")
+
+;; 3. A reply with no source is a failed turn, not a program. The
+;;    stub returns a real source here, so this checks the shape the
+;;    host would have handed over: an outcome that is not "completed"
+;;    keeps the loop going rather than becoming a candidate.
+(check "source-of-empty" (source-of {}) nil)
+(check "source-of-present" (source-of {:source "(print 1)"}) "(print 1)")
+(check "feedback-keeps-error"
+       (get (feedback-of {:status "failed" :error "why" :turns 1}) :error)
+       "why")
+(check "feedback-defaults"
+       (get (feedback-of {:status "failed"}) :error)
+       "no error detail was reported")

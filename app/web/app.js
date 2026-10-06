@@ -296,29 +296,52 @@ async function compare(event) {
   }
 }
 
-// ── publish ──────────────────────────────────────────────────────
+// ── approve and publish ──────────────────────────────────────────
 
 async function publish(event) {
   event.preventDefault();
-  // A publication flips what every reader sees. It gets a confirmation
+  // Publication flips what every reader sees, so it gets a confirmation
   // like any other irreversible action on a control surface.
   const snapshot = $('pub-snapshot').value.trim();
   if (!window.confirm(
-    `Point the deployment at ${snapshot.slice(0, 12)}?\n\n` +
-    'This replaces the active model for every reader.',
+    `Approve ${snapshot.slice(0, 12)} and point the deployment at it?\n\n` +
+    'This replaces the active model for every reader, and the decision is\n' +
+    'recorded against your publisher token.',
   )) return;
   const expected = $('pub-version').value.trim();
   try {
-    const receipt = await api('POST', '/api/publish', {
-      operation_id: opId('publish'),
+    const receipt = await api('POST', '/api/approve', {
+      operation_id: opId('approve'),
       snapshot,
       protocol: $('pub-protocol').value.trim(),
       expected_version: expected === '' ? null : Number(expected),
     });
-    say('publish-out', `published: v${receipt.version} is active`, false);
+    say('publish-out', `approved ${receipt.id}: v${receipt.version} is active`, false);
     await loadLineage();
+    await loadApprovals();
   } catch (e) {
     say('publish-out', `${e.class}: ${e.message}`, true);
+  }
+}
+
+/// The recorded decisions. A version number with nobody behind it is
+/// not an audit trail, so the approvals are on screen too.
+async function loadApprovals() {
+  const list = $('approvals');
+  if (!list) return;
+  try {
+    const data = await api('GET', '/api/logic/candidates');
+    const rows = data.approvals || [];
+    if (rows.length === 0) {
+      list.innerHTML = '<li>No approvals recorded yet.</li>';
+      return;
+    }
+    list.innerHTML = rows
+      .map((a) => `<li>${a.id} — ${a.authenticated_actor} approved ` +
+        `${a.subject_id.slice(0, 20)} at v${a.expected_publication_version ?? 'any'}</li>`)
+      .join('');
+  } catch (e) {
+    list.innerHTML = `<li>${e.class}: ${e.message}</li>`;
   }
 }
 
@@ -444,4 +467,5 @@ $('select-form').addEventListener('submit', compare);
 $('publish-form').addEventListener('submit', publish);
 $('refresh').addEventListener('click', () => {
   loadPredictions(); loadSignals(); loadRuns(); loadLineage(); loadModules();
+  loadApprovals();
 });

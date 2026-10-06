@@ -1,10 +1,21 @@
-# grove Implementation Plan
+# Grove 历史组件交付记录 — P1–P4 / W00–W17
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use `subagent-driven-development` or `executing-plans` to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-> 命名以整体设计为准：产品/命令 `grove`，学习宿主库 crate `grove`，产品 crate `grove-app`。保留现有文档路径和按职责命名的目录，不重命名既有 Zio 组件。
+> 历史基线：初始计划 2026-10-02；定位与开工顺序由 2026-10-05 的
+> [统一实现计划](2026-10-05-zio-grove-convergence.md)和 [ADR-019](../../adrs.md#adr-019-grove-独立应用与同像性逻辑演化) 更新。
+> `grove` 是独立应用，`learning/` 与 `app/` 是内部宿主/应用组织，不再以学习库优先交付。
+>
+> **2026-10-05 命名同步**：Numa（计算）、Rill（CLI 组合）、Loom（Agent
+> harness）为按需安装、独立版本发布的官方库，不是语言内置特性；
+> Grove 消费 Zio 与三库，持学习目标、实验、反馈、检查点、独立评价、
+> 人工批准、逻辑演化和 Web，语言核心无反向依赖。三库新增能力仍 Planned。
+> 当前 `zio-ai`/`ai/` 是 Loom 的起点，`zio-cli`/`cli/` 是未来消费 Rill
+> 的可执行宿主；本页保留历史源码路径、包名、命令、合同和交付证据。
+> 未来目录/逻辑命名空间见[术语表](../../glossary.md)，正式短名不是已确认注册包 ID，
+> 不替换为尚不存在的安装或 Cargo 命令，也不另起 agent/学习框架。
 
-**Goal:** 交付可嵌入的 Zio 自学习库及本地产品，实现多模态与多源反馈、代码/权重联合学习、检查点历史、分支群体和模块协同演化。
+**Goal（历史范围）:** 交付 Zio 自学习组件及本地 CPU demo，实现多源反馈、代码/权重联合学习、检查点、群体和模块协作。下面保留原组件证据，不代表新 agent 产品主线已实现。
 
 **Architecture:** Zio 持有模型程序与学习策略；Rust 宿主提供合同校验、持久化、资源与权限边界；PyTorch 工作进程执行真实张量训练。产品通过同一库接口提供 CLI、HTTP 与可视界面，不复制学习逻辑。
 
@@ -14,9 +25,9 @@
 
 ## 1. 状态与使用方式
 
-- 本计划为待执行的整体工作包计划，不是已实现代码，也不是已完成实验报告。
-- 唯一架构依据：[整体设计](../../self-learning-architecture.md)。既有数值学习状态仍以 [特性矩阵](../../feature-matrix.md) 为准。
-- 范围涵盖全部已讨论的用户能力；P1–P4 是交付顺序，不是只交付 P1 的范围缩减。
+- 本文件保留历史任务、原证据与后续审核修正；不再作为新的开工计划。
+- 当前架构依据[整体设计](../../self-learning-architecture.md)及 ADR-019，状态见[特性矩阵](../../feature-matrix.md)。
+- 历史通过的 demo/组件检查仍有效；未完成的强制隔离、真实服务 runner、冻结保护与截图验收在本页明确取消完成标记，并映射到新计划。
 - 每个工作包提供目标文件、合同、行为测试和实际运行证据。文中的新命令、新文件和测试名是实施目标，不能在文件尚未建立时当作可执行现状。
 - 不在规划阶段预写整套实现。执行每个工作包时先读取受影响代码与宿主合同；修改现有符号前完成仓库要求的影响分析，使用可用 LSP 查引用；提交前执行影响范围检测。
 - 每个包按“建立关键失败行为检查 → 最小实现 → 定向检查 → 实际路径 smoke → 更新状态文档”执行。测试只保护消费者可见的行为和安全不变量，不建立字符串/私有实现锁定测试。
@@ -26,7 +37,7 @@
 
 | 现有文件 | 可复用事实 | 实施约束 |
 |---|---|---|
-| `Cargo.toml` | 当前 workspace 为 core、cli、ai | 新增宿主/产品时同步 workspace 与状态生成脚本 |
+| `Cargo.toml` | 当前 workspace 为 core、cli、ai、learning、app | 历史新增已完成；今后数量从 manifest 生成 |
 | `ai/src/lib.rs` | `LlmHost`、`EmbedHost`、外部 `install` | 复用 attach 方式；多模态与训练不是已有能力 |
 | `ai/src/http.rs` | opt-in HTTP、阻塞请求、超时与响应大小上限 | 教师适配复用传输边界，不破坏无网络默认构建 |
 | `cli/src/main.rs` | 私有 context 装配、脚本执行、`--llm-replay` | 不向 REPL 塞产品状态；现有 CLI 保留回归验证 |
@@ -146,7 +157,7 @@ W03 与 W04、W11 与 W12、W14 与 W15 在共享合同稳定后可分工并行�
 - [x] 定义协议版本、请求/运行/尝试 ID、能力握手、制品输入输出、进度、完成与失败消息。限制帧大小；stdout 不写日志，stderr 限量；取消回收整个进程树。
 - [x] 实现许可图算子：输入/缺失 mask、归一化、拼接、线性、ReLU、softmax 与分类损失；形状/dtype/语义空间检查在执行前完成。图来自 Zio 模型描述，不接受任意 Python 源码。
 - [x] 先检查：参数更新使保留样本损失下降且预测有实际变化；非法算子、损坏权重和不兼容形状拒绝；超时进程被终止；随机训练在声明容差内可重复。
-- [x] 宿主执行 Linux 受限工作进程、只读/受控写入制品根、网络禁止和资源上限；不支持隔离能力的环境 fail closed，不降级到无限制执行。不可信张量制品采用非执行式格式，不加载任意 pickle 对象。
+- [ ] 只读/受控写入制品根仍未强制落实：当前有命名空间、网络隔离与资源上限，但宿主文件系统可写，`scratch` 未形成 jail。新计划 G00 补齐挂载/权限边界；缺隔离必须 fail closed。不可信制品仍禁止任意 pickle。
 - [x] 执行 `python -m unittest discover -s workers/torch/tests -p test_training.py` 与 `cargo test -p grove --test worker_contract`；实际 CPU 训练 W00 数据，保存模型并在新进程载入预测。CPU 是必验平台，GPU 实测另记设备与结果。
 
 ### W05 — 代码与权重联合学习 driver
@@ -203,19 +214,19 @@ W03 与 W04、W11 与 W12、W14 与 W15 在共享合同稳定后可分工并行�
 **文件：** 新增 `app/src/api.rs`、`app/tests/api_contract.rs`；修改 app 装配和依赖。
 
 - [x] 增加 `serve --bind 127.0.0.1:PORT --root PATH`，同源 API 映射 observe/predict/signal/teacher/learning/checkpoint/fork/resume/pause/cancel/compare/select/population/compose/promote；耗时返回运行引用。
-- [x] 先检查 reader 无法纠正、annotator 无法训练或发布、operator 无法绕过 publisher、错误来源/令牌被拒绝、重复修改请求幂等、冲突 head 明确报错。
-- [x] 提供状态查询与带关联 ID 的事件读取，敏感原始内容与密钥不进入普通日志。默认拒绝无鉴权的非 loopback 绑定，不默认承担多租户公网托管。
-- [x] 执行 `cargo test -p grove-app --test api_contract`；启动实际服务，使用真实 HTTP 完成一次观察、预测、局部纠正、启动学习、查看结果、授权发布；验证未授权同样操作确实被拒绝。
+- [x] 角色/来源/令牌拒绝、顺序修改重放与 head 冲突有历史合同；这不建立并发或重启幂等。持久化原子回执和 runner 生命周期转由新计划 G03 实施。
+- [x] 当前有状态与关联 ID 查询、非 loopback 未配置认证拒绝；事件是当前记录投影，不是持久运行进度。密钥不得进入普通日志。
+- [ ] HTTP train/resume 只记录 queued run，`serve` 没有执行器。需按新计划 G03 启动真实运行、保存实际进度/终态，并经 HTTP 完成“反馈 → 运行 → 评价”；历史 API 测试不构成此路径证据。
 
 ### W11 — 产品界面：纠错、谱系、比较与模块视图
 
 **文件：** 新增 `app/web/index.html`、`app.js`、`styles.css`；由 `app/src/api.rs` 提供同源静态资源。
 
-- [x] 实现任务/观察与反馈页，展示具体预测版本、字段/区域纠正范围、冲突和裁决；反馈提交与模型已学习分开显示。
+- [ ] 当前反馈界面可提交纠正，但 `learned_into` 是冻结数据成员关系，不是 run 消费或产生版本的证明。新计划 G04/G05 分开显示接受、资格、冻结、消费、候选和发布状态。
 - [x] 实现运行及谱系历史、检查点恢复级别、从节点分裂、暂停/恢复、同协议比较、候选选择和发布确认。清理或撤回的节点标为不可恢复/失效。
 - [x] 实现模块依赖与差异表，展示参数/结构改变、共享参数约束和组合状态；P4 组合能力未到位时不能展示成功按钮假装功能存在。
 - [x] 保留键盘操作、表单标签、状态文本和危险操作确认。先做可读列表与展开树，不引入图形编辑器或拖拽网络编排依赖。
-- [x] 启动真实服务，用浏览器完成“预测 → 人工纠正 → 新分支 → 训练 → 比较 → 授权发布/拒绝”。截图记录谱系、比较和最终运行状态；浏览器验收是必须证据，不以 DOM 源码检查替代。
+- [ ] 完整浏览器“反馈 → 实际训练 → 比较 → 批准发布”的截图验收未完成。历史第 12 节保留 DOM/HTTP 交互证据；新计划 G05 必须观察真实运行和版本切换，不能以源码或 DOM 断言代替视觉证据。
 
 ### W12 — 撤回、保留与故障恢复
 
@@ -236,6 +247,7 @@ W03 与 W04、W11 与 W12、W14 与 W15 在共享合同稳定后可分工并行�
 - [x] 先检查：同维不同语义空间不可直接连接；共享参数不能各自恢复为两个冲突版本；模块权限闭包不因组合丢失；组合后性能退化不能借局部高分晋升。
 - [x] 实现局部替换、权重兼容迁移、重初始化和联合微调。组合生成新快照及多父谱系，不修改原分支；不提供任意权重平均。
 - [x] 执行 `cargo test -p grove --test composition_contract`；分别演化视觉与融合模块，再将组合体进行整体训练/评价，比较原模型、两个局部候选和组合体，保留真实退化结果。
+- [ ] `joint_plan` 的 frozen 声明没有强制约束通用 optimizer 或 `commit_joint`；后者还没有保留执行图。新计划 G00 验证冻结参数逐项不变、共享组一致、组合快照自带图；不以该声明或历史组合评分作为已经安全的证明。
 
 ### W14 — 三索引经验、函数抽象与复用
 
@@ -268,17 +280,17 @@ W03 与 W04、W11 与 W12、W14 与 W15 在共享合同稳定后可分工并行�
 
 **文件：** 扩展 `app/tests/learning_e2e.rs`、demo 的 `modular` 场景；更新 `README.md`、`docs/feature-matrix.md`、`docs/roadmap.md`、`docs/adrs.md`、`tools/project-status.sh` 和本计划状态。
 
-- [x] 固定 Rust 锁文件和 Python 依赖安装方式，提供库嵌入、本地 CLI、产品启动及数据目录说明；不自动下载来源不明的权重，不把网络凭据写入模型或演示制品。
-- [x] 分别验证无训练后端的普通 Zio CLI、具备 CPU 后端的完整产品、权限受限运行；缺能力必须明确失败。已有数值 demo 与 AI 合同不退化。
-- [x] 执行完整消费者回归：`cargo test --workspace --all-features`、`python -m unittest discover -s workers/torch/tests`；运行 dual、population、modular 三个实际 demo 场景，再以浏览器走通纠正与发布路径。
-- [x] 对照第 10 节逐项归档制品摘要、预测/评价记录、进程运行证据、截图和未验证外部环境。只将通过真实验收的能力从 Planned 改为 Experimental；不得批量标 Stable。
+- [x] 已有 Rust 锁文件、Python 安装说明、CLI 与数据目录用法；不自动下载不明权重，不将凭据写入制品。
+- [ ] 独立安装尚需移除 `Paths::from_repo_root`、构建机 `.venv` 和源码相对资源依赖，转由新计划 G08 验收；当前 CPU demo 不等于独立可安装产品。
+- [x] 历史回归、dual/population/modular 的运行结果见第 12 节；不能把三组 demo 泛化为服务训练 runner 或新的 agent 主线。
+- [ ] 完整产品浏览器截图与真实训练队列路径未交付，按新计划 G03/G05 归档；已验证能力维持 Experimental，不批量提升为 Stable。
 - [x] 最终报告区分技术验收结果、真实业务结果、CPU/GPU、上游商业服务/本地教师。未提供业务数据或外部凭据不会被伪造为已经完成联调。
 
 ## 10. 需求—工作包—证据映射
 
 | 需求/架构合同 | 工作包 | 必须看见的证据 |
 |---|---|---|
-| 作为 Zio 库与独立产品、core 最小 | W01/W05/W08/W10/W17 | 脚本与产品调用同一逻辑；core 不依赖学习/产品 |
+| 独立应用、内部复用、core 最小且保留 ZOS | W01/W05/W08/W10/W17（历史组件）；新 G00–G08 | 应用复用同一语言与宿主；core 不依赖学习/产品；新版须通过真实 agent 与人工发布验收 |
 | 多模态统一输入及模态缺失 | W00/W03/W04/W08 | 图像和数值真实进入学生；缺失 mask 与 abstain 正确 |
 | 上游模型硬/软蒸馏 | W03/W08/W15 | 真实教师响应、来源/许可、真实学生训练；软输出条件明确 |
 | 人类纠正、偏好、冲突和撤回 | W02/W11/W12/W15 | 版本关联、局部纠正、冲突隔离、实际 UI 操作和失效传播 |
@@ -300,12 +312,12 @@ W03 与 W04、W11 与 W12、W14 与 W15 在共享合同稳定后可分工并行�
 - 模型质量达不到 W00 门槛时分析数据/表达能力/优化预算，使用训练和验证集改进；独立验收集不能成为调参接口。
 - 上游调用许可、真实业务数据和业务门槛是业务验证前提；缺失时明确列为未验证，不阻断可自行验证的工程交付。
 - 性能优化依测量推进；不预先引入分布式队列、向量数据库、通用张量差分或复杂前端框架。
-- 学习器自我改写与自动晋升属于后续独立授权范围；本计划完成策略/提议器/recipe 版本化与人工受控更新，不将它描述成已经实现的元学习。
+- 原计划不包含新版 agent 自我改写；新计划允许预先批准范围与预算内自动候选/实验，正式发布需要候选绑定的人工批准。ZOS、可信编译器与治理边界受保护。
 - 每个阶段结束更新实际状态与证据，不重复维护另一份架构，也不把本计划中的复选框当作测试通过证据。
 
 ## 12. 执行状态
 
-本节随实施更新，记录实际已执行并验证的工作包；勾选框以实际运行结果为准。
+以下是历史实际运行记录，不是本次重跑结果。✅ 只表示该列描述的组件/demo；上文取消勾选的合同未被这些结果证明，当前限制以特性矩阵和新计划为准。
 
 | 工作包 | 状态 | 验证 |
 |---|---|---|
@@ -319,15 +331,15 @@ W03 与 W04、W11 与 W12、W14 与 W15 在共享合同稳定后可分工并行�
 | W07 历史重评与发布资格 | ✅ | `cargo test -p grove --test evaluation_contract`（11） |
 | W08 库调用与本地端到端 | ✅ | `cargo test -p grove-app`（6）；`grove demo --case dual` 实测发布 v1 |
 | W09 多 worker 群体协调 | ✅ | `cargo test -p grove --test population_contract`（8，两 worker 窗口重叠实测 >500ms）；`grove demo --case population --workers 2` |
-| W10 产品 API 与授权发布 | ✅ | `cargo test -p grove-app --features http --test api_contract`（6）；`grove serve` 真实进程 |
-| W11 产品界面 | ✅ | `cargo test -p grove-app --features http --test ui_contract`（5）+ 浏览器实测走通「观察 → 真实 worker 预测 → 纠正 → 比较 → 发布」；预测由隔离 torch worker 真实产生（`class 0, snapshot e4cc7052fdd6`），纠正显示 accepted/in force/**尚未学习**；过期发布版本被拒（`conflict: publication is at version 1, caller expected 99`）。截图取证因浏览器宿主在本会话中失联未完成，交互证据以 DOM 断言与真实 HTTP 响应为准 |
+| W10 产品 API 与授权发布 | ✅ 组件；runner 未交付 | 历史 `api_contract`（6）与真实 `grove serve` 启动；train/resume 仅入队，无持久执行事件；回执不保证并发/重启幂等 |
+| W11 产品界面 | ✅ 交互组件；完整路径/截图未交付 | 历史 `ui_contract`（5）、隔离 torch 真实预测（`class 0, snapshot e4cc7052fdd6`）、HTTP/DOM 纠正/比较/发布冲突拒绝（version 1 对 expected 99）。`learned_into` 不证明训练消费；截图因浏览器宿主失联未完成 |
 | W12 撤回、保留与恢复 | ✅ | `cargo test -p grove --test lifecycle_contract`（10）：GC 在 7 天保留期下删除 0 个、置 0 后删除 4 个不可达制品并拒绝 4 个可达制品；撤回信号使相关快照不可发布（`incompatible-state`）而无关快照仍可发布 v1；状态制品被删/被改字节均返回 `artifact-unavailable`；重启后过期租约被回收、旧 epoch 回执被拒（`conflict`） |
 | W13 模块组合与联合微调 | ✅ | `cargo test -p grove --test composition_contract`（9）：同维不同语义空间被拒（`protocol-violation`）、共享参数不可为两个版本、组合不得弱化权限闭包、局部替换产生新身份且不改动原分支、联合计划强制整体评估；`grove demo --case modular` 真实演化并组合，异构空间组合被拒并给出原因，合成体联合训练 val accuracy 1.000 并以该整体分数发布 v1 |
 | W14 三索引经验与复用 | ✅ | `cargo test -p grove --test memory_contract`（12，含四项硬拒绝）+ `cargo test -p zio-cli --test lib_contract`（10，含 28+23 标记）。**复用测量结果为负且如实记录**：未参与发现的任务上，总描述长度 18 → 22（一次调用改两次），抽象行为正确但在 3 叶规模下不划算 |
 | W15 扩展 recipe | ✅ | `python -m unittest discover -s workers/torch/tests`（72，OK）；`cargo test -p grove --test recipe_contract`（15）。实测：软蒸馏 val KL 0.6918→0.1264；偏好排序 0.5469→0.9531 且弃答不进目标（加/不加 12 组弃答损失完全相同）；演示 0.9297，25% 非法动作被 mask 后 0.8932；自监督表征移动（cosine 0.7700）而任务指标单列 0.5117 仍不过门槛；延迟奖励 64/64 结算、未结算时参数变化恰为 0.0；策略梯度回报 −1.0000→0.7500。**外部供应商未提供软输出，仅本地教师的硬蒸馏已联调** |
 | W16 专家集成与多教师蒸馏 | ✅ | `cargo test -p grove --test ensemble_contract`（12）：异构输出空间拒绝绑定、无可用专家 abstain、投票平局无胜者、`all-agree` 缺一专家即 abstain、单次调用按全部专家计费且受每调用预算约束、群体一致只作为带一致度的蒸馏目标；`demo --case modular` 现场对比 vote（存活专家可答）与 all-agree（同样输入 abstain） |
-| W17 全链路交付 | ✅ | `cargo test --workspace --all-features` **364 通过 / 0 失败**；`python -m unittest discover -s workers/torch/tests` **72 通过**；三个实际场景全部可运行：dual（0.539→0.996，发布真实训练权重 v1）、population（两分支并行窗口重叠 966ms，账本 1000/1000，僵尸回执被拒）、modular（模块分离演化→组合→整体 1.000 发布 v1） |
+| W17 历史回归与三个 demo | ✅ demo；独立安装/新版产品未交付 | 历史 Rust **364 通过 / 0 失败**、Python **72 通过**；dual（0.539→0.996）、population（重叠 966ms，账本 1000/1000）、modular（整体 1.000）真实运行并发布演示权重 |
 
-已执行部分证明的是工程闭环（真实存储、真实信号生命周期、真实教师调用、真实张量训练、真实隔离与并发、真实 UI 交互与真实发布），不含任何业务收益声明。W00 的门槛是待达成门槛的冻结值，其达标情况以 W05/W08 的实测为准。
+已有记录证明限定任务下的存储、教师、CPU 训练、检查点、并发、界面组件与 demo 发布，不证明冻结/文件系统强制保护、服务消费队列、反馈被实际训练、独立安装或 G1–G3 agent 演化验收；没有业务收益声明。W00 的技术阈值未因后续改定位而修改。
 
 **未验证的外部环境**：商业上游模型的软输出与授权条款、真实业务数据与业务门槛、GPU 推理成本、截图证据（浏览器宿主在本会话失联）。以上一律不因本地闭环通过而标记为已联调。

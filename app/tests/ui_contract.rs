@@ -308,8 +308,19 @@ fn the_lineage_view_marks_unrecoverable_and_invalidated_nodes() {
     };
     store.put_run(&operator, &run).unwrap();
 
-    // commit a checkpoint, then delete the object it points at
-    let state_bytes = br#"{"schema":1,"protocol":"grove.worker.state/1","run_id":"run-ui-1","step":10}"#;
+    // commit a checkpoint, then delete the object it points at.
+    // The state carries the *current* schema: a schema-1 artifact predates
+    // the recorded trainable set and cannot serve a LearningContinuation,
+    // which is a refusal rather than a stale-but-usable checkpoint.
+    let state_bytes = format!(
+        r#"{{"schema":{},"protocol":"grove.worker.state/1","run_id":"run-ui-1","step":10,
+             "params":{{"h0":{{"w":[0.0],"b":[0.0]}}}},
+             "optimizer":{{"adam":{{
+                "h0.weight":{{"m":[0.0],"v":[0.0]}},
+                "h0.bias":{{"m":[0.0],"v":[0.0]}}}}}},
+             "rng":{{"torch":1}}}}"#,
+        grove::checkpoint::STATE_SCHEMA
+    );
     let scratch = std::env::temp_dir().join(format!("grove-w11-state-{}", nonce_of()));
     std::fs::create_dir_all(&scratch).unwrap();
     let state_path = scratch.join("state.json");

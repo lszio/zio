@@ -136,6 +136,27 @@ CREATE TABLE IF NOT EXISTS attempts (
     billed     INTEGER NOT NULL    -- steps already billed through this attempt
 );
 
+-- Operation receipts (G03). A replayed request must get the answer the
+-- first one got, and it must get it *after a restart* — which is why
+-- this is a table and not the API's memory. `body` is the exact
+-- response, so the replay is the original rather than a re-derivation.
+CREATE TABLE IF NOT EXISTS receipts (
+    operation_id TEXT PRIMARY KEY,
+    status       INTEGER NOT NULL,
+    body         TEXT NOT NULL,
+    created_at_ms INTEGER NOT NULL
+);
+
+-- What a queued run is for (G03). The queue stores the *request*, not
+-- an inference rule: a run that says what to build, so an owner that
+-- restarts can pick the work up without the original caller in memory.
+CREATE TABLE IF NOT EXISTS queued_work (
+    run      TEXT PRIMARY KEY,
+    kind     TEXT NOT NULL,      -- zio | training
+    payload  TEXT NOT NULL,
+    schema   INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS billing (
     message_id TEXT PRIMARY KEY,    -- idempotency: a replayed receipt bills once
     steps      INTEGER NOT NULL,
@@ -172,6 +193,55 @@ CREATE TABLE IF NOT EXISTS invalidations (
 );
 
 CREATE INDEX IF NOT EXISTS invalidations_by_signal ON invalidations (signal);
+
+-- Logic candidates (G04). A candidate is immutable; only `state` moves,
+-- and only through this crate's governance functions. The evaluation
+-- lives in `evaluations`, bound to the candidate's *source* digest — so
+-- a qualification cannot be talked about without naming bytes.
+CREATE TABLE IF NOT EXISTS candidates (
+    id     TEXT PRIMARY KEY,
+    owner  TEXT NOT NULL,
+    state  TEXT NOT NULL,      -- proposed|qualified|active|rejected|declined
+    source TEXT NOT NULL,      -- the proposed source artifact
+    schema INTEGER NOT NULL,
+    body   TEXT NOT NULL,
+    updated_at_ms INTEGER NOT NULL
+);
+
+-- Human approvals (G04). Written only for an authenticated publisher,
+-- and only after the evaluation it names is checked against the
+-- artifact being published. There is deliberately no boolean here:
+-- an approval IS this row.
+CREATE TABLE IF NOT EXISTS approvals (
+    id                 TEXT PRIMARY KEY,
+    subject            TEXT NOT NULL,
+    candidate          TEXT NOT NULL,   -- the artifact to be published
+    actor              TEXT NOT NULL,
+    expected_version   INTEGER,         -- NULL = no version was claimed
+    decision           TEXT NOT NULL,
+    schema             INTEGER NOT NULL,
+    body               TEXT NOT NULL,
+    created_at_ms      INTEGER NOT NULL
+);
+
+-- Every evaluation an approval rests on. Kept as its own rows rather
+-- than a blob inside the approval, because "is this approval still
+-- backed by real records?" is a question this store must be able to
+-- answer without trusting the approval's own summary of itself.
+CREATE TABLE IF NOT EXISTS approval_evaluations (
+    approval  TEXT NOT NULL,
+    candidate TEXT NOT NULL,
+    PRIMARY KEY (approval, candidate)
+);
+
+-- Declines and refusals (G04). Kept, not deleted: "we looked at this
+-- and said no" is the fact that stops the same proposal returning.
+CREATE TABLE IF NOT EXISTS rejections (
+    subject TEXT PRIMARY KEY,
+    actor   TEXT NOT NULL,
+    reason  TEXT NOT NULL,
+    at_ms   INTEGER NOT NULL
+);
 "#;
 
 /// The receipt returned when a signal is submitted. `duplicate` means the
@@ -241,6 +311,16 @@ pub struct CleanupReport {
     pub retained_young: Vec<ArtifactRef>,
 }
 
+/// What a successful claim took. Enough for the owner to run the work
+/// and to know what it may still say about it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClaimedRun {
+    pub run_id: String,
+    pub attempt_id: String,
+    pub reserved_steps: u32,
+    pub lease_expires_ms: i64,
+}
+
 /// The trusted host handle.
 #[derive(Debug)]
 pub struct Store {
@@ -249,6 +329,15 @@ pub struct Store {
 }
 
 impl Store {
+    /// The connection, for the modules that own their own tables.
+    ///
+    /// Not a general escape hatch: it is here so a table's owner is the
+    /// only code that writes it, rather than every writer reaching into
+    /// one shared pool of SQL.
+    pub(crate) fn connection(&self) -> &Connection {
+        &self.conn
+    }
+
     /// Open (or create) a store rooted at `root`, with artifacts under
     /// `root/artifacts`. An existing database written by an unknown schema
     /// version is refused rather than migrated on the fly.
@@ -263,6 +352,8 @@ impl Store {
         })?;
         conn.execute_batch(SCHEMA)
             .map_err(|e| Error::new(ErrorKind::BackendFailed, format!("init schema: {e}")))?;
+        crate::events::install_schema(&conn)
+            .map_err(|e| Error::new(ErrorKind::BackendFailed, format!("init events schema: {e}")))?;
 
         let existing: Option<String> = conn
             .query_row("SELECT value FROM meta WHERE key = 'schema'", [], |row| row.get(0))
@@ -1086,6 +1177,353 @@ impl Store {
         decode(&body, require_schema(schema)?)
     }
 
+    // ── the run queue ──────────────────────────────────────────────
+
+    /// Runs waiting to be claimed, oldest first.
+    ///
+    /// Reading a list and then claiming one is a race, so this is only
+    /// for inspection; claiming goes through [`Store::claim_queued_run`],
+    /// which does the selection and the write in one transaction.
+    pub fn queued_runs(&self) -> Result<Vec<String>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id FROM runs WHERE state = 'queued' ORDER BY id")
+            .map_err(db_err)?;
+        let rows = stmt
+            .query_map([], |row| row.get::<_, String>(0))
+            .map_err(db_err)?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row.map_err(db_err)?);
+        }
+        Ok(out)
+    }
+
+    /// Take one queued run, reserving its steps and opening an attempt —
+    /// in a single transaction.
+    ///
+    /// The three writes belong together: if the state moved but the
+    /// steps did not, a crash would hand the same budget out twice; if
+    /// the steps moved but the state did not, the run would look queued
+    /// forever with its grant already spent. The conditional UPDATE on
+    /// `state = 'queued'` is what makes two owners resolve: SQLite
+    /// serialises the writes, so exactly one sees a row it changed.
+    pub fn claim_queued_run(
+        &self,
+        actor: &Actor,
+        run_id: &str,
+        attempt_id: &str,
+        reserve_steps: u32,
+        lease_ms: i64,
+        now_ms: i64,
+    ) -> Result<ClaimedRun> {
+        actor.require(ActorRole::Operator, "claiming a queued run")?;
+        let tx = self.conn.unchecked_transaction().map_err(db_err)?;
+
+        // `runs` indexes the state but keeps the budget in the record
+        // body, so the budget is read from the decoded run rather than
+        // from a column that does not exist.
+        let (state, body): (String, String) = tx
+            .query_row(
+                "SELECT state, body FROM runs WHERE id = ?1",
+                params![run_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
+            .map_err(db_err)?
+            .ok_or_else(|| {
+                Error::new(ErrorKind::ArtifactUnavailable, format!("no run {run_id}"))
+            })?;
+        if state != "queued" {
+            // Another owner got here first. That is a lost race, not a
+            // broken queue, and the caller treats it as "nothing to do".
+            return Err(Error::new(
+                ErrorKind::Conflict,
+                format!("run {run_id} is {state}, not queued"),
+            ));
+        }
+        let mut record: Run = serde_json::from_str(&body).map_err(|e| {
+            Error::new(
+                ErrorKind::IncompatibleState,
+                format!("run {run_id} is unreadable: {e}"),
+            )
+        })?;
+        let consumed = record.steps_consumed as u64;
+        if record.steps_budget as u64 - consumed < reserve_steps as u64 {
+            // Refused, not truncated: a run that cannot afford its own
+            // work needs a decision, and a quietly smaller run is a
+            // result nobody asked for.
+            return Err(Error::new(
+                ErrorKind::BudgetExhausted,
+                format!(
+                    "run {run_id} has {} steps left, the claim needs {reserve_steps}",
+                    record.steps_budget as i64 - consumed as i64
+                ),
+            ));
+        }
+
+        record.steps_consumed = consumed as u32 + reserve_steps;
+        record.state = RunState::Running;
+        let updated = tx
+            .execute(
+                "UPDATE runs SET state = 'running', body = ?1 WHERE id = ?2 AND state = 'queued'",
+                params![String::from_utf8_lossy(&record.canonical_bytes()?), run_id],
+            )
+            .map_err(db_err)?;
+        if updated != 1 {
+            return Err(Error::new(
+                ErrorKind::Conflict,
+                format!("run {run_id} was claimed by another owner"),
+            ));
+        }
+
+        tx.execute(
+            "INSERT INTO attempts (id, branch, run, lease_ms, active, billed)
+             VALUES (?1, '', ?2, ?3, 1, ?4)",
+            params![attempt_id, run_id, now_ms + lease_ms, reserve_steps],
+        )
+        .map_err(|e| {
+            if matches!(&e, rusqlite::Error::SqliteFailure(ffi, _)
+                if ffi.code == rusqlite::ErrorCode::ConstraintViolation)
+            {
+                Error::new(
+                    ErrorKind::Conflict,
+                    format!("attempt {attempt_id} already exists"),
+                )
+            } else {
+                db_err(e)
+            }
+        })?;
+
+        tx.commit().map_err(db_err)?;
+        Ok(ClaimedRun {
+            run_id: run_id.to_string(),
+            attempt_id: attempt_id.to_string(),
+            reserved_steps: reserve_steps,
+            lease_expires_ms: now_ms + lease_ms,
+        })
+    }
+
+    /// Finish a claimed run, if the caller still may speak for it.
+    ///
+    /// The epoch is checked here, in the same transaction that writes
+    /// the terminal state: a worker that was mid-flight when the process
+    /// restarted holds an epoch the store has moved past, and its result
+    /// must not become the record of what happened.
+    pub fn finish_claimed_run(
+        &self,
+        actor: &Actor,
+        run_id: &str,
+        attempt_id: &str,
+        epoch: u64,
+        final_state: RunState,
+        now_ms: i64,
+    ) -> Result<()> {
+        actor.require(ActorRole::Operator, "completing a run")?;
+        let tx = self.conn.unchecked_transaction().map_err(db_err)?;
+        let lease: Option<(i64, i64)> = tx
+            .query_row(
+                "SELECT lease_ms, active FROM attempts WHERE id = ?1",
+                params![attempt_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
+            .map_err(db_err)?;
+        let (lease_ms, active) = lease.ok_or_else(|| {
+            Error::new(
+                ErrorKind::ArtifactUnavailable,
+                format!("no attempt {attempt_id}"),
+            )
+        })?;
+        if active == 0 {
+            return Err(Error::new(
+                ErrorKind::Conflict,
+                format!("attempt {attempt_id} is no longer active; it was reclaimed or completed"),
+            ));
+        }
+        if lease_ms <= now_ms {
+            return Err(Error::new(
+                ErrorKind::Conflict,
+                format!("attempt {attempt_id} lease expired at {lease_ms}"),
+            ));
+        }
+        let current: Option<String> = tx
+            .query_row("SELECT body FROM runs WHERE id = ?1", params![run_id], |row| {
+                row.get(0)
+            })
+            .optional()
+            .map_err(db_err)?;
+        let body = current.ok_or_else(|| {
+            Error::new(ErrorKind::ArtifactUnavailable, format!("no run {run_id}"))
+        })?;
+        let mut record: Run = serde_json::from_str(&body).map_err(|e| {
+            Error::new(
+                ErrorKind::IncompatibleState,
+                format!("run {run_id} is unreadable: {e}"),
+            )
+        })?;
+        crate::coordinator::check_epoch(&tx, epoch)?;
+        crate::runner_machine::check_transition(record.state, final_state)?;
+        record.state = final_state;
+        tx.execute(
+            "UPDATE runs SET state = ?1, body = ?2 WHERE id = ?3",
+            params![
+                state_str(final_state),
+                String::from_utf8_lossy(&record.canonical_bytes()?),
+                run_id
+            ],
+        )
+        .map_err(db_err)?;
+        // The attempt is spent before the state is visible as final, so a
+        // replayed receipt finds a closed attempt rather than a live one.
+        tx.execute("UPDATE attempts SET active = 0 WHERE id = ?1", params![attempt_id])
+            .map_err(db_err)?;
+        tx.commit().map_err(db_err)?;
+        Ok(())
+    }
+
+    /// Claim an operation id, recording the answer it produced.
+    ///
+    /// `INSERT` and not `INSERT OR REPLACE`: an id that already exists
+    /// is a replay, and the second caller must be *told* so rather than
+    /// overwriting the first answer. A re-run whose result differs from
+    /// what the id already stands for is a contradiction between two
+    /// claims about the same operation, and the ledger says so.
+    pub fn put_receipt(
+        &self,
+        actor: &Actor,
+        operation_id: &str,
+        status: u16,
+        body: &str,
+    ) -> Result<()> {
+        actor.require(ActorRole::Operator, "recording an operation receipt")?;
+        let existing: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT body FROM receipts WHERE operation_id = ?1",
+                params![operation_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(db_err)?;
+        if let Some(previous) = existing {
+            if previous == body {
+                // The same answer twice is the same operation twice:
+                // idempotent, and not an error.
+                return Ok(());
+            }
+            return Err(Error::new(
+                ErrorKind::Conflict,
+                format!(
+                    "operation {operation_id} already produced a different answer; \
+                     one id cannot mean two things"
+                ),
+            ));
+        }
+        self.conn
+            .execute(
+                "INSERT INTO receipts (operation_id, status, body, created_at_ms)
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![operation_id, status as i64, body, crate::api_time_ms()],
+            )
+            .map_err(|e| {
+                if is_constraint(&e) {
+                    // Lost a race with another writer between the read
+                    // and the write. The other one owns the id now.
+                    Error::new(
+                        ErrorKind::Conflict,
+                        format!("operation {operation_id} was claimed by another writer"),
+                    )
+                } else {
+                    db_err(e)
+                }
+            })?;
+        Ok(())
+    }
+
+    /// The answer an operation id produced, if it produced one.
+    pub fn get_receipt(&self, operation_id: &str) -> Result<Option<(u16, String)>> {
+        self.conn
+            .query_row(
+                "SELECT status, body FROM receipts WHERE operation_id = ?1",
+                params![operation_id],
+                |row| Ok((row.get::<_, i64>(0)? as u16, row.get(1)?)),
+            )
+            .optional()
+            .map_err(db_err)
+    }
+
+    /// Record what a queued run is for.
+    ///
+    /// Durable because the owner that runs it may be a different
+    /// process from the one that queued it — including after a restart.
+    /// Re-queueing the same run with different work is refused: a run id
+    /// that meant two things is an ambiguity nobody can resolve later.
+    pub fn put_queued_work(&self, actor: &Actor, run_id: &str, kind: &str, payload: &str) -> Result<()> {
+        actor.require(ActorRole::Operator, "queuing work for a run")?;
+        let existing: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT payload FROM queued_work WHERE run = ?1",
+                params![run_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(db_err)?;
+        if let Some(previous) = existing {
+            if previous != payload {
+                return Err(Error::new(
+                    ErrorKind::Conflict,
+                    format!("run {run_id} is already queued for different work; one run id cannot mean two things"),
+                ));
+            }
+            return Ok(());
+        }
+        self.conn
+            .execute(
+                "INSERT INTO queued_work (run, kind, payload, schema) VALUES (?1, ?2, ?3, ?4)",
+                params![run_id, kind, payload, SCHEMA_VERSION],
+            )
+            .map_err(db_err)?;
+        Ok(())
+    }
+
+    /// What a run is for, if anything was recorded.
+    pub fn queued_work(&self, run_id: &str) -> Result<Option<(String, String)>> {
+        self.conn
+            .query_row(
+                "SELECT kind, payload FROM queued_work WHERE run = ?1",
+                params![run_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
+            .map_err(db_err)
+    }
+
+    /// Record a cancel intent. A run cancelled while queued is never
+    /// claimed; one cancelled while running is torn down by the owner
+    /// that holds its attempt.
+    pub fn request_cancel(&self, actor: &Actor, run_id: &str, now_ms: i64) -> Result<()> {
+        actor.require(ActorRole::Operator, "cancelling a run")?;
+        let current = self.get_run(run_id)?;
+        if current.state.is_terminal() {
+            return Err(Error::new(
+                ErrorKind::Conflict,
+                format!("run {run_id} is already {}", state_str(current.state)),
+            ));
+        }
+        let mut next = current;
+        next.state = RunState::Cancelled;
+        self.conn
+            .execute(
+                "UPDATE runs SET state = 'cancelled', body = ?1 WHERE id = ?2",
+                params![String::from_utf8_lossy(&next.canonical_bytes()?), run_id],
+            )
+            .map_err(db_err)?;
+        let _ = now_ms;
+        Ok(())
+    }
+
     // ── populations, evaluations, publication ──────────────────────
 
     pub fn put_population(&self, actor: &Actor, population: &Population) -> Result<()> {
@@ -1273,7 +1711,15 @@ impl Store {
 
     /// Atomically point the deployment at a snapshot. The publisher role is
     /// required, and a stale expected-version is refused.
-    pub fn publish(
+    ///
+    /// `pub(crate)` on purpose (G04). This is the lowest write pointer in
+    /// the system, and the *only* thing it lacks is the human decision:
+    /// the role check is not an approval. The public paths are
+    /// `grove::logic::approve_and_publish` and the API handler, both of
+    /// which arrive here through `logic::publish_approved` having checked
+    /// a recorded approval. A caller that can reach this function
+    /// directly can deploy without anyone having looked.
+    pub(crate) fn publish(
         &self,
         actor: &Actor,
         snapshot: &ArtifactRef,
@@ -1331,6 +1777,346 @@ impl Store {
             None => Ok(None),
             Some((version, hex)) => Ok(Some((version, ArtifactRef::parse_hex(&hex)?))),
         }
+    }
+
+    // ── G04: logic candidates and human approval ────────────────────
+
+    /// Record a proposed candidate. `INSERT` and not `INSERT OR REPLACE`:
+    /// a candidate is immutable once written, so a second proposal under
+    /// the same id is a contradiction somebody must resolve, not a
+    /// quiet overwrite of the first one's record.
+    pub(crate) fn insert_candidate(
+        &self,
+        actor: &Actor,
+        candidate: &crate::logic::LogicCandidate,
+        digest: ArtifactRef,
+    ) -> Result<()> {
+        let body = candidate.canonical_bytes()?;
+        // `INSERT OR IGNORE`, not `INSERT`: a plain insert *raises* on a
+        // duplicate id, and the exception is not distinguishable from any
+        // other constraint failure. Every column here is a non-optional
+        // Rust field, so the primary key is the only constraint this can
+        // hit — which makes a row count of zero an answer, not a guess.
+        // (Same reasoning as the receipts table.)
+        let inserted = self
+            .conn
+            .execute(
+                "INSERT OR IGNORE INTO candidates (id, owner, state, source, schema, body, updated_at_ms)
+                 VALUES (?1, ?2, 'proposed', ?3, ?4, ?5, ?6)",
+                params![
+                    candidate.id,
+                    actor.id,
+                    candidate.source_ref.to_hex(),
+                    candidate.schema,
+                    String::from_utf8_lossy(&body),
+                    candidate.created_at_ms
+                ],
+            )
+            .map_err(db_err)?;
+        if inserted == 0 {
+            // A candidate is immutable, so a second proposal under one id
+            // is a claim that contradicts the first, not a revision.
+            return Err(Error::new(
+                ErrorKind::Conflict,
+                format!(
+                    "candidate {} already exists; a candidate is immutable, so a changed \
+                     proposal is a new candidate",
+                    candidate.id
+                ),
+            ));
+        }
+        let _ = digest;
+        Ok(())
+    }
+
+    pub fn get_candidate(&self, id: &str) -> Result<crate::logic::LogicCandidate> {
+        let body: Option<String> = self
+            .conn
+            .query_row("SELECT body FROM candidates WHERE id = ?1", params![id], |row| {
+                row.get(0)
+            })
+            .optional()
+            .map_err(db_err)?;
+        let body = body.ok_or_else(|| {
+            Error::new(
+                ErrorKind::ArtifactUnavailable,
+                format!("no logic candidate {id}"),
+            )
+        })?;
+        decode(&body, SCHEMA_VERSION)
+    }
+
+    pub fn candidate_state(&self, id: &str) -> Result<crate::logic::CandidateState> {
+        let state: Option<String> = self
+            .conn
+            .query_row("SELECT state FROM candidates WHERE id = ?1", params![id], |row| {
+                row.get(0)
+            })
+            .optional()
+            .map_err(db_err)?;
+        let state = state.ok_or_else(|| {
+            Error::new(
+                ErrorKind::ArtifactUnavailable,
+                format!("no logic candidate {id}"),
+            )
+        })?;
+        crate::logic::CandidateState::parse(&state)
+    }
+
+    /// Move a candidate's state. Candidates are immutable; the state is
+    /// the one field that legitimately changes, and it only ever moves
+    /// through this function.
+    pub(crate) fn set_candidate_state(
+        &self,
+        actor: &Actor,
+        id: &str,
+        state: crate::logic::CandidateState,
+        now_ms: i64,
+    ) -> Result<()> {
+        actor.require(ActorRole::Operator, "moving a candidate's state")?;
+        let changed = self
+            .conn
+            .execute(
+                "UPDATE candidates SET state = ?1, updated_at_ms = ?2 WHERE id = ?3",
+                params![state.as_str(), now_ms, id],
+            )
+            .map_err(db_err)?;
+        if changed == 0 {
+            return Err(Error::new(
+                ErrorKind::ArtifactUnavailable,
+                format!("no logic candidate {id}"),
+            ));
+        }
+        Ok(())
+    }
+
+    /// The candidate id behind the active pointer, when the pointer
+    /// names one. `None` for a model publication, which is not a logic
+    /// candidate — and is exactly why the answer is an `Option`.
+    pub fn active_candidate_id(&self) -> Result<Option<String>> {
+        let id: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT id FROM candidates
+                 WHERE state = 'active' AND source = (
+                   SELECT snapshot FROM publications WHERE state = 'active' LIMIT 1)
+                 LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(db_err)?;
+        Ok(id)
+    }
+
+    /// Write the human decision, and bind it to the evaluations it rests
+    /// on.
+    ///
+    /// One transaction, because an approval row whose evidence is
+    /// missing is the exact shape of "somebody clicked approve" — the
+    /// approval and what justified it land together or not at all.
+    pub(crate) fn put_approval(
+        &self,
+        actor: &Actor,
+        approval: &crate::logic::HumanApproval,
+    ) -> Result<()> {
+        actor.require(ActorRole::Publisher, "recording an approval")?;
+        let body = approval.canonical_bytes()?;
+        let tx = self.conn.unchecked_transaction().map_err(db_err)?;
+        // `INSERT OR IGNORE` so a repeated id is a row count of zero and
+        // therefore a *decision* the caller can be told about, rather
+        // than an exception indistinguishable from any other constraint
+        // failure. The same artifact approved twice at the same version
+        // produces the same id, and that is a genuine conflict.
+        let inserted = tx
+            .execute(
+                "INSERT OR IGNORE INTO approvals
+                   (id, subject, candidate, actor, expected_version, decision, schema, body, created_at_ms)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                params![
+                    approval.id,
+                    approval.subject_id,
+                    approval.candidate_ref.to_hex(),
+                    approval.authenticated_actor,
+                    approval.expected_publication_version,
+                    approval.decision,
+                    approval.schema,
+                    String::from_utf8_lossy(&body),
+                    approval.created_at_ms
+                ],
+            )
+            .map_err(db_err)?;
+        if inserted == 0 {
+            return Err(Error::new(
+                ErrorKind::Conflict,
+                format!(
+                    "approval {} already exists; a second decision about the same \
+                     candidate is a different approval, not an update",
+                    approval.id
+                ),
+            ));
+        }
+        for evaluation in &approval.evaluation_refs {
+            tx.execute(
+                "INSERT INTO approval_evaluations (approval, candidate) VALUES (?1, ?2)",
+                params![approval.id, evaluation.to_hex()],
+            )
+            .map_err(db_err)?;
+        }
+        tx.commit().map_err(db_err)?;
+        Ok(())
+    }
+
+    pub fn get_approval(&self, id: &str) -> Result<crate::logic::HumanApproval> {
+        let body: Option<String> = self
+            .conn
+            .query_row("SELECT body FROM approvals WHERE id = ?1", params![id], |row| {
+                row.get(0)
+            })
+            .optional()
+            .map_err(db_err)?;
+        let body = body.ok_or_else(|| {
+            Error::new(
+                ErrorKind::ArtifactUnavailable,
+                format!("no approval {id}"),
+            )
+        })?;
+        decode(&body, SCHEMA_VERSION)
+    }
+
+    /// Is this approval still one that may be applied?
+    ///
+    /// Four checks, and each of them is a way a recorded approval can be
+    /// true while being wrong now:
+    ///
+    /// * it names at least one evaluation, and every evaluation it names
+    ///   is a real `EvaluationRecord` whose bytes still hash to that
+    ///   digest — an approval resting on a record that was never
+    ///   written rests on nothing;
+    /// * those records are for the artifact being published, so
+    ///   approving one candidate's numbers does not approve another's
+    ///   bytes;
+    /// * the recorded subject is the subject being published;
+    /// * if it committed to a publication version, the pointer is still
+    ///   there.
+    ///
+    /// The version check is a *separate* function on purpose: a stale
+    /// pointer is a lost race between two publishers, which is a
+    /// `Conflict`, and folding it into this boolean would report a
+    /// concurrency loss as a malformed approval.
+    pub(crate) fn approval_is_current(
+        &self,
+        approval: &crate::logic::HumanApproval,
+    ) -> Result<bool> {
+        if approval.decision != "approved" {
+            return Ok(false);
+        }
+        let named = self.approval_evaluation_refs(&approval.id)?;
+        if named.is_empty() {
+            return Ok(false);
+        }
+        // Re-derive each named digest from the record's stored bytes.
+        // The digest is over `canonical_json(record)`, which is exactly
+        // what the `body` column holds, so this is a real check rather
+        // than a match against a string the row happens to contain.
+        let mut stmt = self
+            .conn
+            .prepare("SELECT body FROM evaluations WHERE snapshot = ?1")
+            .map_err(db_err)?;
+        let bodies = stmt
+            .query_map(params![approval.candidate_ref.to_hex()], |row| {
+                row.get::<_, String>(0)
+            })
+            .map_err(db_err)?;
+        let mut present = Vec::new();
+        for body in bodies {
+            let body = body.map_err(db_err)?;
+            present.push(crate::contracts::digest_bytes(body.as_bytes()));
+        }
+        if !named.iter().all(|e| present.contains(e)) {
+            return Ok(false);
+        }
+        let subject: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT subject FROM approvals WHERE id = ?1",
+                params![approval.id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(db_err)?;
+        Ok(subject.as_deref() == Some(approval.subject_id.as_str()))
+    }
+
+    /// The version race, as its own check. `None` on either side means
+    /// "no version was claimed", and then there is nothing to race
+    /// against.
+    pub(crate) fn approval_version_is_current(
+        &self,
+        approval: &crate::logic::HumanApproval,
+    ) -> Result<bool> {
+        let (Some(expected), Some((current, _))) =
+            (approval.expected_publication_version, self.active_publication()?)
+        else {
+            return Ok(true);
+        };
+        Ok(expected == current)
+    }
+
+    /// The evaluation digests an approval names.
+    pub(crate) fn approval_evaluation_refs(
+        &self,
+        approval_id: &str,
+    ) -> Result<Vec<ArtifactRef>> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT candidate FROM approval_evaluations WHERE approval = ?1 ORDER BY candidate",
+            )
+            .map_err(db_err)?;
+        let rows = stmt
+            .query_map(params![approval_id], |row| row.get::<_, String>(0))
+            .map_err(db_err)?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(ArtifactRef::parse_hex(&row.map_err(db_err)?)?);
+        }
+        Ok(out)
+    }
+
+    /// Record a human refusal, keeping the reason. A second refusal is
+    /// refused rather than replacing the first: two people declining the
+    /// same candidate with different reasons is two facts, and the store
+    /// keeps the first by refusing the second rather than pretending it
+    /// never happened.
+    pub(crate) fn note_rejection(
+        &self,
+        actor: &Actor,
+        subject_id: &str,
+        reason: &str,
+        now_ms: i64,
+    ) -> Result<()> {
+        actor.require(ActorRole::Publisher, "declining a deployment change")?;
+        self.conn
+            .execute(
+                "INSERT INTO rejections (subject, actor, reason, at_ms) VALUES (?1, ?2, ?3, ?4)",
+                params![subject_id, actor.id, reason, now_ms],
+            )
+            .map_err(db_err)?;
+        Ok(())
+    }
+
+    pub fn rejection(&self, subject_id: &str) -> Result<Option<(String, String, i64)>> {
+        let row: Option<(String, String, i64)> = self
+            .conn
+            .query_row(
+                "SELECT actor, reason, at_ms FROM rejections WHERE subject = ?1",
+                params![subject_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .optional()
+            .map_err(db_err)?;
+        Ok(row)
     }
 
     // ── W12: retraction propagation ───────────────────────────────
@@ -1718,6 +2504,13 @@ impl Store {
 
 pub(crate) fn db_err(error: rusqlite::Error) -> Error {
     Error::new(ErrorKind::BackendFailed, format!("sqlite: {error}"))
+}
+
+/// A uniqueness violation, which for a claim means "someone else got
+/// there first" rather than "the database is broken".
+fn is_constraint(error: &rusqlite::Error) -> bool {
+    matches!(error, rusqlite::Error::SqliteFailure(ffi, _)
+        if ffi.code == rusqlite::ErrorCode::ConstraintViolation)
 }
 
 /// Wall-clock milliseconds. Used by the retention horizon, which is a real

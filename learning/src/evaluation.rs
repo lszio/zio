@@ -139,6 +139,38 @@ pub struct Comparison {
     pub gate_failures: Vec<String>,
 }
 
+/// The gates a set of records under one protocol fails.
+///
+/// Shared with `grove::logic`, so the logic candidate's qualification and
+/// a model's publication cannot disagree about what "meets the gates"
+/// means. A hard gate is a minimum on the *mean over every recorded
+/// repeat* — and a timed-out or crashed repeat is already recorded as a
+/// zero rather than dropped, so it drags the mean down instead of
+/// quietly shrinking the denominator.
+pub fn gate_failures(
+    records: &[&EvaluationRecord],
+    protocol: &EvaluationProtocol,
+) -> Vec<String> {
+    let mut failures = Vec::new();
+    for (gate, threshold) in &protocol.gates {
+        let mean: f64 = records
+            .iter()
+            .map(|r| {
+                r.metrics
+                    .iter()
+                    .find(|(n, _)| n == gate)
+                    .map(|(_, v)| *v)
+                    .unwrap_or(0.0)
+            })
+            .sum::<f64>()
+            / records.len() as f64;
+        if mean < *threshold {
+            failures.push(format!("{gate} {mean:.4} < {threshold:.4}"));
+        }
+    }
+    failures
+}
+
 /// Compare snapshots under exactly one protocol. Records from other
 /// protocols are excluded here and would corrupt any average — mixing is
 /// refused upstream, not blended silently.
@@ -172,17 +204,7 @@ pub fn compare(
                 .sum();
             mean.push((gate.clone(), sum / mine.len() as f64));
         }
-        let mut gate_failures = Vec::new();
-        for (gate, threshold) in &protocol.gates {
-            let value = mean
-                .iter()
-                .find(|(n, _)| n == gate)
-                .map(|(_, v)| *v)
-                .unwrap_or(0.0);
-            if value < *threshold {
-                gate_failures.push(format!("{gate} {value} < {threshold}"));
-            }
-        }
+        let gate_failures = gate_failures(&mine, protocol);
         out.push(Comparison {
             snapshot: *snapshot,
             repeats: mine.len() as u32,
@@ -225,20 +247,25 @@ pub fn non_dominated(candidates: &[Candidate]) -> Vec<&Candidate> {
         .collect()
 }
 
-/// Publish the snapshot that earned it. Eligibility is checked here (the
-/// comparison must exist, meet every gate, and be under THIS protocol);
-/// the version-checked pointer flip stays in the store.
-pub fn publish_candidate(
+/// Publish a *model* snapshot that earned it.
+///
+/// The gate check lives here (the comparison must exist, meet every
+/// gate, and be under THIS protocol), and the pointer flip happens
+/// inside `grove::logic`'s approval boundary — so this function cannot
+/// be called by anything that did not first record an authenticated
+/// human approval bound to those very evaluations.
+///
+/// A retracted snapshot is not a weaker candidate, it is not a
+/// candidate: the gate check below would happily pass it, and deployment
+/// is the last chance to notice.
+pub fn publish_snapshot(
     store: &Store,
     actor: &Actor,
     protocol: &EvaluationProtocol,
     snapshot: &ArtifactRef,
     expected_version: Option<u32>,
-) -> Result<u32> {
+) -> Result<(u32, crate::logic::HumanApproval)> {
     actor.require(ActorRole::Publisher, "publishing a model")?;
-    // A snapshot whose training data was retracted is not a weaker
-    // candidate, it is not a candidate: the gate check below would happily
-    // pass it, and deployment is the last chance to notice.
     store.require_deployable(snapshot)?;
     let comparison = compare(store, protocol, std::slice::from_ref(snapshot))?;
     let row = comparison.first().ok_or_else(|| {
@@ -254,5 +281,12 @@ pub fn publish_candidate(
             format!("hard gates not met: {:?}", row.gate_failures),
         ));
     }
-    store.publish(actor, snapshot, expected_version)
+    crate::logic::publish_snapshot_approved(
+        store,
+        actor,
+        protocol,
+        snapshot,
+        expected_version,
+        crate::api_time_ms(),
+    )
 }
