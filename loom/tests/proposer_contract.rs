@@ -5,9 +5,9 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use zio_ai::mock::test_support::parse_answer_lines;
-use zio_ai::mock::{RecordingLlmHost, ScriptedLlmHost};
-use zio_ai::install;
+use loom::mock::test_support::parse_answer_lines;
+use loom::mock::{RecordingLlmHost, ScriptedLlmHost};
+use loom::install;
 use zio_core::context::{EvalContext, EvalRuntime};
 use zio_core::env::Env;
 use zio_core::error::EvalError;
@@ -140,7 +140,7 @@ fn proposer_is_deterministic_across_calls() {
     assert_eq!(a, b);
     // the two prompts were the plain rendered prompt (no correction
     // block, which always starts with ";; correction:")
-    assert!(!handle.last_prompt.borrow().contains(";; correction:"));
+    assert!(!handle.last_prompt.lock().contains(";; correction:"));
 }
 
 #[test]
@@ -148,7 +148,7 @@ fn history_and_task_render_into_the_prompt() {
     let (ctx, _, handle) =
         proposer_ctx(ScriptedLlmHost::new(["(+ x 1)".into(), "(* x 2)".into()]));
     let _ = propose(&ctx, "[]").unwrap();
-    let without_history = handle.last_prompt.borrow().clone();
+    let without_history = handle.last_prompt.lock().clone();
     assert!(!without_history.contains("generation 0"));
 
     let _ = propose(
@@ -156,7 +156,7 @@ fn history_and_task_render_into_the_prompt() {
         r#"'({:generation 0 :candidates ["(+ x 1)"] :scores [1002]})"#,
     )
     .unwrap();
-    let with_history = handle.last_prompt.borrow().clone();
+    let with_history = handle.last_prompt.lock().clone();
     assert!(with_history.contains("generation 0"), "{with_history}");
     assert!(with_history.contains("(+ x 1)"), "{with_history}");
     assert!(with_history.contains("(allowed-ops"), "{with_history}");

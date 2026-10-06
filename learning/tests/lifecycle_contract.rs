@@ -135,6 +135,11 @@ fn run(id: &str, task: &str, dataset: &str, base: ArtifactRef) -> Run {
 }
 
 /// A worker state file that the checkpoint boundary accepts.
+///
+/// `optimizer.adam` is keyed `layer.weight` / `layer.bias`: a resume
+/// checks that the artifact's moments describe the parameters this
+/// attempt actually trains, and a bias that is absent is a state no
+/// continuation could honestly restore.
 fn write_state(dir: &PathBuf, name: &str, run_id: &str, step: u32) -> PathBuf {
     let path = dir.join(name);
     let manifest = serde_json::json!({
@@ -142,9 +147,12 @@ fn write_state(dir: &PathBuf, name: &str, run_id: &str, step: u32) -> PathBuf {
         "protocol": checkpoint::STATE_PROTOCOL,
         "run_id": run_id,
         "step": step,
-        "params": {"w": [0.1, 0.2]},
-        "optimizer": {"m": [0.0, 0.0]},
-        "rng": "base64:AAAA",
+        "params": {"h0": {"w": [[0.1, 0.2]], "b": [0.0]}},
+        "optimizer": {"adam": {
+            "h0.weight": {"step": step, "exp_avg": [0.0], "exp_avg_sq": [0.0]},
+            "h0.bias":   {"step": step, "exp_avg": [0.0], "exp_avg_sq": [0.0]},
+        }},
+        "rng": {"cpu": "AAAA"},
     });
     std::fs::write(&path, serde_json::to_vec(&manifest).unwrap()).unwrap();
     path
@@ -245,7 +253,7 @@ fn cleanup_deletes_only_unreachable_objects_past_the_retention_horizon() {
         .unwrap();
     let p = protocol("proto-1", "ds-1");
     passing(&store, &p, &deployed);
-    evaluation::publish_candidate(&store, &publisher(), &p, &deployed, None).unwrap();
+    evaluation::publish_snapshot(&store, &publisher(), &p, &deployed, None).unwrap().0;
 
     // garbage: a crashed writer's committed-then-abandoned object, and one
     // orphaned parameter that no record names any more
@@ -309,7 +317,7 @@ fn a_snapshot_parameter_is_live_while_its_snapshot_is_the_deployment() {
     let weights = snapshot.params[0].artifact;
     let p = protocol("proto-params", "ds-none");
     passing(&store, &p, &deployed);
-    evaluation::publish_candidate(&store, &publisher(), &p, &deployed, None).unwrap();
+    evaluation::publish_snapshot(&store, &publisher(), &p, &deployed, None).unwrap().0;
     // a second parameter nobody names, left over from an abandoned fork
     let orphan = store.artifacts().put(b"unreferenced-weights").unwrap();
     age(&store, &orphan, Duration::from_secs(1));
@@ -374,7 +382,7 @@ fn retracting_a_signal_invalidates_the_lineage_that_consumed_it() {
     assert_eq!(store.get_dataset("ds-bad").unwrap().signal_ids, vec!["sig-bad".to_string()]);
 
     // deployment eligibility follows
-    let err = evaluation::publish_candidate(&store, &publisher(), &p, &tainted, None).unwrap_err();
+    let err = evaluation::publish_snapshot(&store, &publisher(), &p, &tainted, None).unwrap_err();
     assert_eq!(err.kind, ErrorKind::IncompatibleState);
     assert!(err.to_string().contains("retract"), "{err}");
     assert_eq!(store.active_publication().unwrap(), None);
@@ -395,7 +403,7 @@ fn retracting_a_signal_invalidates_the_lineage_that_consumed_it() {
 
     // the unrelated snapshot still publishes
     assert_eq!(
-        evaluation::publish_candidate(&store, &publisher(), &p_good, &clean, None).unwrap(),
+        evaluation::publish_snapshot(&store, &publisher(), &p_good, &clean, None).unwrap().0,
         1
     );
 }
@@ -470,7 +478,11 @@ fn a_corrupted_state_object_cannot_resume() {
     let state = ArtifactRef::parse_hex(&state_hex).unwrap();
     let path = store.artifacts().object_path(&state);
     let good = std::fs::read(&path).unwrap();
-    std::fs::write(&path, b"{\"schema\":1,\"protocol\":\"grove.worker.state/1\",\"run_id\":\"other\",\"step\":9}").unwrap();
+    std::fs::write(
+        &path,
+        br#"{"schema":1,"protocol":"grove.worker.state/1","run_id":"other","step":9}"#,
+    )
+    .unwrap();
 
     // the corruption is visible as corruption, not as a foreign lineage
     let err = store.artifacts().get(&state).unwrap_err();

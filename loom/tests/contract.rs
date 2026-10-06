@@ -1,19 +1,20 @@
-//! Contract tests for zio-ai (ADR-016). Everything runs offline: the only
+//! Contract tests for loom (ADR-016). Everything runs offline: the only
 //! hosts involved are scripted, replay, synthetic, and recording mocks.
 
 use std::sync::Arc;
 
-use zio_ai::mock::{
+use loom::mock::{
     MockEmbedHost, MockLlmHost, RecordingEmbedHost, RecordingLlmHost, ScriptedEmbedHost,
     ScriptedLlmHost, SyntheticEmbedHost,
 };
-use zio_ai::{EmbedHost, HostErrorKind, LlmHost, install};
+use loom::harness::ModelHost;
+use loom::{EmbedHost, HostErrorKind, LlmHost, install};
 use zio_core::context::{EvalContext, EvalRuntime};
 use zio_core::env::Env;
 use zio_core::error::EvalError;
 use zio_core::value::Value;
 
-fn test_ctx(llm: Option<Arc<dyn LlmHost>>, embed: Option<Arc<dyn EmbedHost>>) -> EvalContext {
+fn test_ctx(llm: Option<Arc<dyn ModelHost>>, embed: Option<Arc<dyn EmbedHost>>) -> EvalContext {
     let env = Arc::new(Env::new(None));
     zio_core::builtins::setup_env(&env);
     let ctx = EvalContext::new(env);
@@ -35,7 +36,7 @@ fn eval_str(ctx: &EvalContext, src: &str) -> Result<Value, EvalError> {
 }
 
 fn temp_file(name: &str) -> std::path::PathBuf {
-    std::env::temp_dir().join(format!("zio-ai-contract-{}-{}", std::process::id(), name))
+    std::env::temp_dir().join(format!("loom-contract-{}-{}", std::process::id(), name))
 }
 
 // ── capability-denied ───────────────────────────────────────────
@@ -54,8 +55,8 @@ fn no_host_calls_fail_with_capability_denied_prefix() {
 
 #[test]
 fn partial_install_denies_only_the_missing_capability() {
-    let scripted: Arc<dyn LlmHost> = Arc::new(ScriptedLlmHost::new(["ok".into()]));
-    let ctx = test_ctx(Some(scripted), None);
+    let scripted = Arc::new(ScriptedLlmHost::new(["ok".into()]));
+    let ctx = test_ctx(Some(scripted as Arc<dyn ModelHost>), None);
     let value = eval_str(&ctx, r#"(llm-complete "hi")"#).unwrap();
     assert_eq!(value, Value::String("ok".into()));
     let err = eval_str(&ctx, r#"(embed "x")"#).unwrap_err();
@@ -68,25 +69,32 @@ fn partial_install_denies_only_the_missing_capability() {
 fn llm_complete_passes_prompt_and_options_to_the_host() {
     let scripted = Arc::new(ScriptedLlmHost::new(["done".into()]));
     let handle = scripted.clone();
-    let host: Arc<dyn LlmHost> = Arc::new(RecordingLlmHost::new(scripted));
-    let ctx = test_ctx(Some(host), None);
+    let host = Arc::new(RecordingLlmHost::new(scripted));
+    let ctx = test_ctx(Some(host as Arc<dyn ModelHost>), None);
     let value = eval_str(
         &ctx,
         r#"(llm-complete "2+2?" :temperature 0.5 :max-tokens 32 :stop "\n")"#,
     )
     .unwrap();
     assert_eq!(value, Value::String("done".into()));
-    assert_eq!(handle.last_prompt.borrow().as_str(), "2+2?");
-    let opts = handle.last_opts.borrow();
-    assert_eq!(opts.temperature, Some(0.5));
-    assert_eq!(opts.max_tokens, Some(32));
+    // The text binding is a view over a session, so what reaches the
+    // host is the canonical conversation rather than the bare prompt:
+    // the prompt is in it, and the options travel with the request
+    // instead of being dropped at the boundary.
+    let seen = handle.last_prompt.lock().clone();
+    assert!(
+        seen.contains("2+2?"),
+        "the prompt must reach the host inside the conversation: {seen:?}"
+    );
+    let opts = handle.last_opts.lock();
+    assert_eq!(opts.temperature, Some(0.5), "the temperature must not be dropped");
     assert_eq!(opts.stop, vec!["\n".to_string()]);
 }
 
 #[test]
 fn llm_complete_rejects_bad_arguments() {
-    let scripted: Arc<dyn LlmHost> = Arc::new(ScriptedLlmHost::new(["x".into()]));
-    let ctx = test_ctx(Some(scripted), None);
+    let scripted = Arc::new(ScriptedLlmHost::new(["x".into()]));
+    let ctx = test_ctx(Some(scripted as Arc<dyn ModelHost>), None);
     let err = eval_str(&ctx, "(llm-complete 42)").unwrap_err();
     assert!(err.to_string().contains("prompt must be a string"), "{err}");
     let err = eval_str(&ctx, r#"(llm-complete "p" :bogus 1)"#).unwrap_err();
@@ -99,8 +107,7 @@ fn llm_complete_rejects_bad_arguments() {
 fn record_then_replay_is_deterministic_for_llm() {
     let scripted = Arc::new(ScriptedLlmHost::new(["4".into()]));
     let recorder = Arc::new(RecordingLlmHost::new(scripted));
-    let host: Arc<dyn LlmHost> = recorder.clone();
-    let ctx = test_ctx(Some(host), None);
+    let ctx = test_ctx(Some(recorder.clone() as Arc<dyn ModelHost>), None);
     let first = eval_str(&ctx, r#"(llm-complete "2+2?")"#).unwrap();
 
     let path = temp_file("llm-recording.zio");
@@ -143,7 +150,7 @@ fn record_then_replay_is_deterministic_for_embeddings() {
 fn recordings_survive_escapes_and_utf8() {
     let prompt = "quote \" backslash \\ newline \n tab \t 中文 ✓";
     let response = "line1\nline2";
-    let text = zio_ai::mock::test_support::llm_recording_text(&[(
+    let text = loom::mock::test_support::llm_recording_text(&[(
         prompt.to_string(),
         response.to_string(),
     )]);

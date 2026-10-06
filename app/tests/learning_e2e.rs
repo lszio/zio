@@ -61,10 +61,20 @@ fn the_dual_demo_clears_the_frozen_gates_end_to_end() {
     assert!(report.contains("baseline (linear fusion)"), "{report}");
     assert!(report.contains("candidate (nonlinear, paused+resumed)"), "{report}");
     assert!(report.contains("paused at step 150"), "{report}");
-    assert!(report.contains("publication: candidate cleared every gate"), "{report}");
+    // The demo produced a candidate and stopped. It did not publish:
+    // reaching the publisher role by calling a function is not a human
+    // decision, and G04 removed exactly that shortcut.
+    assert!(
+        report.contains("publication: none"),
+        "the demo must not promote its own candidate: {report}"
+    );
+    assert!(
+        report.contains("awaits human approval"),
+        "and it must say the candidate is waiting for one: {report}"
+    );
 
     // and the store agrees: the lineage ledger is continuous (150 + 150),
-    // the paused run stayed paused, the candidate is the active publication
+    // the paused run stayed paused, and NOTHING is deployed
     let store = open_store(&root).unwrap();
     let runs = store.runs();
     let baseline = runs.iter().find(|r| r.id == "run-baseline").unwrap();
@@ -81,19 +91,49 @@ fn the_dual_demo_clears_the_frozen_gates_end_to_end() {
     // the inherited part — the latest record IS the ledger.
     assert_eq!(resumed.steps_consumed, 300, "150 inherited + 150 leg two");
     assert_eq!(joint.steps_consumed, 150, "the paused run keeps its own ledger");
+    assert!(
+        store.active_publication().unwrap().is_none(),
+        "the demo left the deployment alone"
+    );
+
+    // The candidate the demo produced is a real trained model, not the
+    // run's placeholder contract: `run-joint`'s `base_snapshot` only
+    // ever held a seed, and approving that would point the deployment at
+    // bytes nobody trained.
+    let joint_run = runs.iter().find(|r| r.id == "run-joint").unwrap();
+    let hex = report
+        .lines()
+        .filter(|l| l.contains("--snapshot"))
+        .last()
+        .and_then(|l| l.rsplit(' ').next())
+        .expect("the demo names the candidate it produced");
+    let candidate = grove::contracts::ArtifactRef::parse_hex(hex).unwrap();
+    assert_ne!(
+        candidate,
+        joint_run.base_snapshot,
+        "the candidate must be the trained weights, not the run's placeholder"
+    );
+    assert!(
+        !store.evaluations_for(&candidate).unwrap().is_empty(),
+        "the demo must score the weights it actually trained"
+    );
+
+    // NOW a human approves it, through the CLI, with the real weights.
+    let (out, err, ok) = grove(&[
+        "approve",
+        "--root",
+        root.to_str().unwrap(),
+        "--protocol",
+        "accept-v1",
+        "--snapshot",
+        hex,
+    ]);
+    assert!(ok, "approve failed: {out}{err}");
+    assert!(out.contains("approved by"), "{out}");
 
     let active = store.active_publication().unwrap().unwrap();
     assert_eq!(active.0, 1);
-    // The published identity is the CANDIDATE'S TRAINED WEIGHTS, not the
-    // placeholder contract the run was opened with. `run-joint`'s
-    // `base_snapshot` only ever held a seed; publishing it would point
-    // the deployment at bytes nobody trained, so the demo commits the
-    // worker's real output as its own snapshot and publishes that.
-    let joint_run = runs.iter().find(|r| r.id == "run-joint").unwrap();
-    assert_ne!(
-        active.1, joint_run.base_snapshot,
-        "publication must not point at the run's placeholder base snapshot"
-    );
+    assert_eq!(active.1, candidate, "the pointer names the trained weights");
     // the published snapshot carries real parameters, and its graph
     let published = store.load_snapshot(&active.1).unwrap();
     assert!(
@@ -124,26 +164,33 @@ fn the_dual_demo_clears_the_frozen_gates_end_to_end() {
         "the published snapshot has no passing evaluation under the frozen \
          protocol: {records:?}"
     );
+    // and the decision is on the record, naming who made it
+    let approvals = store.approval_log().unwrap();
+    assert_eq!(approvals.len(), 1, "one approval, one publication: {approvals:?}");
+    assert_eq!(approvals[0]["authenticated_actor"], "grove-cli");
 }
 
 #[test]
-fn an_underfit_model_cannot_be_published() {
+fn an_underfit_model_cannot_be_approved() {
     if !venv_ready() || !isolation_available() {
         eprintln!("skipping: no torch venv or no namespace isolation");
         return;
     }
     let root = std::env::temp_dir().join(format!("grove-w08-underfit-{}", std::process::id()));
     let report = demo::run_dual(&root, &paths(), "cpu").unwrap();
-    assert!(report.contains("publication:"), "{report}");
+    assert!(
+        report.contains("publication: none"),
+        "the demo publishes nothing: {report}"
+    );
 
-    // the BASELINE (0.53 on the XOR) has an evaluation record but fails the
-    // 0.90 gate: publishing it must be refused, loudly
+    // The BASELINE (0.53 on the XOR) has an evaluation record but fails
+    // the 0.90 gate: approving it must be refused, loudly.
     let store = open_store(&root).unwrap();
     let runs = store.runs();
     let baseline = runs.iter().find(|r| r.id == "run-baseline").unwrap();
     let hex = baseline.base_snapshot.to_hex();
     let (out, err, ok) = grove(&[
-        "publish",
+        "approve",
         "--root",
         root.to_str().unwrap(),
         "--protocol",
@@ -151,8 +198,12 @@ fn an_underfit_model_cannot_be_published() {
         "--snapshot",
         &hex,
     ]);
-    assert!(!ok, "an underfit model must not publish: {out}");
+    assert!(!ok, "an underfit model must not be approved: {out}");
     assert!(err.contains("hard gates"), "{err}");
+    assert!(
+        store.active_publication().unwrap().is_none(),
+        "a refused approval leaves nothing deployed"
+    );
 }
 
 #[test]
@@ -162,7 +213,7 @@ fn inspect_reports_the_history_the_store_holds() {
         return;
     }
     let root = std::env::temp_dir().join(format!("grove-w08-inspect-{}", std::process::id()));
-    demo::run_dual(&root, &paths(), "cpu").unwrap();
+    let demo_report = demo::run_dual(&root, &paths(), "cpu").unwrap();
 
     let store = open_store(&root).unwrap();
     let report = inspect(&store).unwrap();
@@ -170,7 +221,36 @@ fn inspect_reports_the_history_the_store_holds() {
     assert!(report.contains("run-baseline"), "{report}");
     assert!(report.contains("run-joint-resumed"), "{report}");
     assert!(report.contains("checkpoints (1)"), "the pause checkpoint: {report}");
-    assert!(report.contains("publication: v1"), "{report}");
+    // the demo alone published nothing, and `inspect` says so
+    assert!(
+        report.contains("publication: none"),
+        "nothing is deployed before a human approves: {report}"
+    );
+
+    // approve the candidate the demo named, then the history records the
+    // decision. The candidate is the *trained* snapshot the demo
+    // committed, not the run's `base_snapshot` — that one only ever
+    // held a seed.
+    let hex = demo_report
+        .lines()
+        .filter(|l| l.contains("--snapshot"))
+        .last()
+        .and_then(|l| l.rsplit(' ').next())
+        .expect("the demo names the candidate it produced");
+    let (approve_out, err, ok) = grove(&[
+        "approve",
+        "--root",
+        root.to_str().unwrap(),
+        "--protocol",
+        "accept-v1",
+        "--snapshot",
+        hex,
+    ]);
+    assert!(ok, "{approve_out}{err}");
+
+    let after = inspect(&store).unwrap();
+    assert!(after.contains("publication: v1"), "{after}");
+    assert!(after.contains("approvals (1)"), "the decision is on the record: {after}");
 
     // and through the binary, same story
     let (out, _, ok) = grove(&["inspect", "--root", root.to_str().unwrap()]);

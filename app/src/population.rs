@@ -10,7 +10,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use grove::contracts::{
-    require_finite_metrics, Actor, ArtifactRef, Error, ErrorKind, EvaluationRecord, Population,
+    require_finite_metrics, Error, ErrorKind, EvaluationRecord, Population,
     Result, Run, RunState, SCHEMA_VERSION,
 };
 use grove::coordinator::{Attempt, Coordinator};
@@ -18,7 +18,7 @@ use grove::evaluation::{self, EvaluationProtocol};
 use grove::store::Store;
 use grove::worker::{Frame, Isolation, Worker, WorkerConfig};
 
-use crate::{operator, publisher, Paths};
+use crate::{operator, Paths};
 
 /// Both branches train the same nonlinear candidate with different seeds:
 /// the point is the coordination, so the graph is fixed and the seeds
@@ -333,11 +333,11 @@ pub fn run_population(root: &Path, paths: &Paths, device: &str, workers: usize) 
         rows.len()
     ));
 
-    // publish whichever branch cleared the gates — both are the same
-    // architecture here, so the joint candidate's identity is what the
-    // run actually produced
-    let publisher = publisher();
-    let candidate = crate::demo::seed_snapshot(&store, &publisher, "population-candidate")?;
+    // The branch that cleared the gates becomes a *pending* candidate. The
+    // population demo reports which branch that is; it does not promote
+    // it, because promotion is a human decision and reaching the
+    // publisher role by calling a function is not one.
+    let candidate = crate::demo::seed_snapshot(&store, &operator, "population-candidate")?;
     let candidate_record = EvaluationRecord {
         schema: SCHEMA_VERSION,
         id: format!("eval-{}-{}", protocol.id, &candidate.to_hex()[..12]),
@@ -349,19 +349,22 @@ pub fn run_population(root: &Path, paths: &Paths, device: &str, workers: usize) 
         device: "cpu".to_string(),
         completed_at_ms: now(),
     };
-    store.put_evaluation(&publisher, &candidate_record)?;
-    match evaluation::publish_candidate(&store, &publisher, &protocol, &candidate, None) {
-        Ok(version) => report.push_str(&format!(
-            "publication: branch accuracy {:.3} cleared the gates → v{version} active\n",
+    store.put_evaluation(&operator, &candidate_record)?;
+    let rows = evaluation::compare(&store, &protocol, std::slice::from_ref(&candidate))?;
+    let pending = match rows.first() {
+        Some(row) if row.meets_gates => format!(
+            "branch accuracy {:.3} cleared the gates; awaiting human approval",
             result_b.accuracy
-        )),
-        Err(e) => {
-            return Err(Error::new(
-                e.kind,
-                format!("no branch cleared the frozen gates — refusing to promote\n  {e}"),
-            ));
-        }
-    }
+        ),
+        Some(row) => format!("no branch cleared the frozen gates: {:?}", row.gate_failures),
+        None => "no evaluation under this protocol; it cannot be approved".to_string(),
+    };
+    report.push_str(&format!(
+        "publication: none — {pending}\n  approve by hand: grove approve --root <root> \
+         --protocol {} --snapshot {}\n",
+        protocol.id,
+        candidate.to_hex()
+    ));
     Ok(report)
 }
 
@@ -380,6 +383,7 @@ fn worker_config(paths: &Paths) -> Result<WorkerConfig> {
         working_dir: paths.root.clone(),
         timeout: Duration::from_secs(300),
         max_address_space: 4 * 1024 * 1024 * 1024,
+        handshake_timeout: std::time::Duration::from_secs(300),
     })
 }
 

@@ -4,6 +4,16 @@
 
 ---
 
+> 历史重构记录：本文 trait 与结构体是当时的教学摘录，“重构后”结论只指
+> 该次解释器状态改造，不是全部宿主/训练/产品状态集中于 EvalContext 的承诺。
+> Numa（计算）、Rill（CLI 组合）、Loom（Agent harness）是按需安装、独立
+> 版本发布的官方库，不是语言内置特性；Grove 消费语言与三库，负责学习、
+> 评价、检查点与发布治理，核心无反向依赖。三库新增能力仍 Planned。
+> 当前 `zio-ai` 是 Loom 的起点，`zio-cli` 是未来消费 Rill 的可执行宿主；
+> 历史代码、函数和命令不改名，正式短名不是已注册包 ID。现行职责见
+> [ADR-019](../docs/adrs.md#adr-019-grove-独立应用与同像性逻辑演化)及
+> [统一实现计划](../docs/superpowers/plans/2026-10-05-zio-grove-convergence.md)。
+
 ## 问题
 
 `eval` 函数需要状态。很多状态：
@@ -198,11 +208,10 @@ ADR-002: EvalContext + EvalEngine trait 收容所有 mutable 状态
 - 打开 [`core/src/builtins/collections.rs`](../core/src/builtins/collections.rs) 搜索 `engine` 看高阶函数如何使用它
 
 ```bash
-# 确认 0 个 thread_local
-grep -r "thread_local" core/src/ reader/src/ tools/src/
-# → 无输出
+# 当前解释器路径；是否匹配以实际命令输出为准
+grep -r "thread_local" core/src/
 ```
 
 ---
 
-**下一篇：[04: 持久化数据结构为什么是默认选择](04-persistent-data.md)** — im::Vector 和 im::HashMap 如何让结构共享成为默认行为。
+**计划文章：04: 持久化数据结构为什么是默认选择（Planned，尚无文章文件）** — im::Vector 和 im::HashMap 如何让结构共享成为默认行为。

@@ -19,7 +19,20 @@ pub fn do_if(
         return Err(EvalError::wrong_arg_count(2, args.len()));
     }
     let test = engine.eval_expr(&args[0], env, false)?;
-    if is_truthy(&test.into_value()) {
+    let taken = is_truthy(&test.into_value());
+    // The branch is reported because it was *taken*, not because the
+    // source mentions an `if`. The arm that did not run produces
+    // nothing, which is the whole reason a trace is evidence.
+    let observation = engine.observation();
+    if observation.is_active() {
+        let taken = taken;
+        observation.report(
+            crate::observer::EventKind::Branch,
+            || if taken { "then".to_string() } else { "else".to_string() },
+            args[0].span(),
+        );
+    }
+    if taken {
         engine.eval_expr(&args[1], env, tail)
     } else if args.len() == 3 {
         engine.eval_expr(&args[2], env, tail)

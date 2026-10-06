@@ -18,11 +18,16 @@ pub mod contracts;
 pub mod coordinator;
 pub mod ensemble;
 pub mod evaluation;
+pub mod events;
+pub mod execution;
+pub mod isolation;
 pub mod checkpoint;
 pub mod lineage;
+pub mod logic;
 pub mod memory;
 pub mod product;
 pub mod recipes;
+pub mod runner_machine;
 pub mod store;
 pub mod worker;
 
@@ -33,6 +38,7 @@ pub use contracts::{
     SchemaVersion, SignalKind,
 };
 pub use store::Store;
+pub use isolation::{IsolationProfile, MountSpec, ReadOnlyRoot};
 pub use worker::{Frame, Isolation, Worker, WorkerConfig};
 
 /// Wall-clock milliseconds. Every record that needs a timestamp calls
@@ -49,7 +55,7 @@ pub fn api_time_ms() -> i64 {
 ///
 /// The bindings are the Zio-visible surface of the host; capabilities that
 /// are not provisioned fail with `capability-denied:` rather than a missing
-/// symbol, matching the zio-ai attach convention (ADR-016).
+/// symbol, matching the Loom attach convention (ADR-016/ADR-019).
 pub fn install(
     ctx: &zio_core::context::EvalContext,
     store: Option<std::sync::Arc<Store>>,

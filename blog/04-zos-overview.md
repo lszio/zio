@@ -1,8 +1,22 @@
 # 11: ZOS — 统一运行时对象模型
 
-> 从 `defclass` 到 MOP——Zio 的 AMOP 实现。
+> 从 `defclass` 到 MOP——历史 ZOS 设计稿，不是完整 AMOP 已交付声明。
 
 ---
+
+## 阅读范围
+
+本文保留早期 Phase 1/2/3 的设计推演；下文布局、缓存、条件系统代码及阶段“交付”描述均是当时的方案/目标，不是当前实现验收。当前对象/Class/GF/Method 路径与 MOP 目标请以[语言架构](../docs/zio-architecture.md)、[批准基线](../docs/self-learning-architecture.md)和[实施计划](../docs/superpowers/plans/2026-10-05-zio-grove-convergence.md)为准；未实现能力为 Planned。ZOS 留在语言核心，不因 Grove 产品化或编译器自举而被移成可选业务库。
+
+> **2026-10-05 命名同步**：Numa（计算）、Rill（CLI 组合）、Loom（Agent
+> harness）是按需安装、独立版本发布的官方库，不是 Zio/ZOS 内置特性。
+> Grove 是消费语言与三库的独立应用，持学习目标、实验、反馈、检查点、
+> 独立评价、人工批准、逻辑演化与 Web；核心无反向依赖。三库新增能力仍 Planned。
+> 当前 `zio-ai` 是 Loom 的起点，`zio-cli` 是未来消费 Rill 的可执行宿主；
+> 下文历史包名、代码与阶段记录不改名。正式短名不指定注册包 ID，
+> 未来目录/逻辑命名空间见[术语表](../docs/glossary.md)，边界见
+> [ADR-019](../docs/adrs.md#adr-019-grove-独立应用与同像性逻辑演化)。
+
 
 ## 问题
 
@@ -16,7 +30,7 @@ Common Lisp 的 CLOS 有一个著名特性：**它不仅是对象系统，它本
 
 ### Object 不是所有东西
 
-在 CLOS 中，一切都是 `standard-object` 的实例。Integer 也是。但在 ZOS 中不同：
+Common Lisp 的数字也是对象且有对应类，但不是 `standard-object` 实例；内联值与堆对象的实现布局不等于语言层面“是否有类”。这里讨论历史 ZOS 的表示选择：
 
 ```
 ZOS 运行时对象模型
@@ -28,7 +42,7 @@ ZOS 运行时对象模型
     Package, Condition, Symbol
 ```
 
-为什么 Integer 不是 ZOS Object？因为在 Rust 中，`Value::Integer(42)` 是一个 8 字节的 enum 变体，不需要堆分配、不需要 GC、不需要 `class-of` 查找。如果我们把所有值都装箱，一个整数加法就需要：
+`Value::Integer(42)` 的整数载荷是 8 字节，不等于整个 enum 只有 8 字节。内联表示可避免每个整数独立装箱，但仍有求值、动态类型检查与调用开销；若把所有值装箱，概念流程会是：
 
 1. 解引用 GcHandle → 读取 ObjectHeader → 读到 class 是 `BUILTIN_CLASS_INTEGER`
 2. 从 Object 的 data 区域读取实际整数值
@@ -41,7 +55,7 @@ ZOS 运行时对象模型
 2. 加法
 3. 构造新的 Value::Integer
 
-**10 行 Rust 代码 vs 50 行。30ns vs 300ns。**
+这是减少装箱和间接访问的设计动机，不是已经测得的耗时对比；性能须使用相同工作负载与环境的[基准记录](../benchmarks/README.md)验证。
 
 所以 ZOS 的分类是务实的：**Immediate 类型保持性能，Heap Object 获得扩展性。**
 
@@ -129,7 +143,7 @@ pub struct Instance {
 
 当 `apply()` 遇到 `Value::Object` 时，它尝试 `downcast_ref::<GenericFunction>()`。如果成功，执行 GF 分派。否则，检查是否是可调用的 Function 子类型。
 
-这引入了一个 vtable 调用开销（~5ns），但考虑到 GF 分派本身的成本（~500ns-1µs），这是可以接受的。
+这个方案增加 vtable 间接调用，是否值得应以实测 GF 分派成本与扩展需求判断；原设计没有提供可复现测量，因此不保留纳秒级估算为性能证据。
 
 ## 4-参数缓存
 
@@ -219,4 +233,4 @@ cargo test --test zos  # ZOS 测试套件
 
 ---
 
-**下一篇：[12: 条件系统](12-condition-system.md)** — 从 try/catch 到 condition/restart。
+**计划文章：12: 条件系统（Planned，尚无文章文件）** — 从 try/catch 到 condition/restart。

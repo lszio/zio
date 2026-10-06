@@ -28,6 +28,10 @@ impl EvalRuntime for EvalContext {
     fn io(&self) -> &dyn crate::io::IoHost {
         &*self.io
     }
+
+    fn observation(&self) -> &crate::observer::Observation {
+        &self.observation
+    }
 }
 
 // ── ModuleRegistry implementation for EvalContext ─────────────────
@@ -108,7 +112,38 @@ pub fn eval_bare(expr: &Sexp, env: &Arc<Env>) -> Result<Value, EvalError> {
 }
 
 /// Internal evaluator with tail-position tracking.
+///
+/// Errors are reported here rather than at each raising form: a raise is
+/// a fact about the expression that raised it, and one place means no
+/// form can forget to report.
 fn eval_inner(expr: &Sexp, env: &Arc<Env>, tail: bool, engine: &dyn EvalEngine) -> Result<TailResult, EvalError> {
+    let observation = engine.observation();
+    // Every evaluated node passes here, so this is the one place a
+    // runaway program can be stopped. A host that did not ask for a
+    // bound gets no bound: the cost is one relaxed atomic add.
+    if !observation.spend_fuel() {
+        return Err(EvalError::step_limit_exhausted(observation.fuel_spent()));
+    }
+    if observation.is_active() {
+        // The span is known here, so the event can name *where* — but the
+        // message is only built if the result turns out to be an error.
+        match eval_inner_observed(expr, env, tail, engine) {
+            Ok(result) => return Ok(result),
+            Err(error) => {
+                let message = error.to_string();
+                observation.report(
+                    crate::observer::EventKind::Error,
+                    || message,
+                    expr.span(),
+                );
+                return Err(error);
+            }
+        }
+    }
+    eval_inner_observed(expr, env, tail, engine)
+}
+
+fn eval_inner_observed(expr: &Sexp, env: &Arc<Env>, tail: bool, engine: &dyn EvalEngine) -> Result<TailResult, EvalError> {
     match expr {
         // Self-evaluating types
         Sexp::Nil => Ok(TailResult::Value(Value::Nil)),
@@ -153,6 +188,19 @@ fn eval_inner(expr: &Sexp, env: &Arc<Env>, tail: bool, engine: &dyn EvalEngine) 
 
             // Check if it's a macro — expand and re-evaluate
             if let Value::Macro(m) = &func_val {
+                // The expansion is reported at the *call site*, not at the
+                // generated code: the generated node is a fact about this
+                // call, and attributing it to the source would be a lie
+                // about where it came from.
+                let observation = engine.observation();
+                if observation.is_active() {
+                    let name = m.name.clone();
+                    observation.report(
+                        crate::observer::EventKind::MacroExpansion,
+                        || name,
+                        first.span(),
+                    );
+                }
                 // Try symbol-based expansion (fast path)
                 if let Sexp::Symbol(name, _) = first {
                     if let Some(expanded) = macros::try_expand_by_name(name, &args, env, engine)? {
@@ -169,6 +217,19 @@ fn eval_inner(expr: &Sexp, env: &Arc<Env>, tail: bool, engine: &dyn EvalEngine) 
             let mut evaled_args = Vector::new();
             for item in &args {
                 evaled_args.push_back(eval_inner(item, env, false, engine)?.into_value());
+            }
+
+            // The call is reported with the callee's name when the head
+            // is a symbol, and the head's own text otherwise. This is
+            // "who was called", not "what it returned": a trace that
+            // carried values would grow with the data and leak it.
+            let observation = engine.observation();
+            if observation.is_active() {
+                let name = match first {
+                    Sexp::Symbol(name, _) => name.clone(),
+                    other => other.to_string(),
+                };
+                observation.report(crate::observer::EventKind::Call, || name, first.span());
             }
 
             // In tail position: defer to outer trampoline for proper TCO.

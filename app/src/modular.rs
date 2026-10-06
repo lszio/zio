@@ -33,7 +33,7 @@ use grove::contracts::Result;
 use grove::worker::Frame;
 
 use crate::demo::{acceptance_protocol, ensure_data, provision_protocol, spawn_worker};
-use crate::{operator, publisher, Paths};
+use crate::{operator, Paths};
 
 /// The fusion module alone: image + numeric → hidden. No head, so this
 /// is genuinely a partial model rather than a smaller whole one.
@@ -336,21 +336,24 @@ pub fn run_modular(root: &Path, paths: &Paths, device: &str) -> Result<String> {
         ));
     }
 
-    // ── 6. the composite is only publishable on its own whole score ──
+    // ── 6. the composite's verdict is reported, and publication is left
+    //       to a human ──
+    //
+    // A local module's score still does not promote the composite, and
+    // neither does this demo's own judgement: what it can say is
+    // whether the composite *would* qualify. `grove approve` is the
+    // separate, authenticated decision.
     if composite_meets {
-        let version = evaluation::publish_candidate(
-            &store,
-            &publisher(),
-            &protocol,
-            &composite_snapshot,
-            None,
-        )?;
         report.push_str(&format!(
-            "\ncomposite cleared every gate as a whole → v{version} active\n"
+            "\ncomposite cleared every gate as a whole ({composite_mean:.3}); \
+             awaiting human approval — nothing is published yet.\n  \
+             approve by hand: grove approve --protocol {} --snapshot {}\n",
+            protocol.id,
+            composite_snapshot.to_hex()
         ));
     } else {
         report.push_str(
-            "\ncomposite did not clear the gate as a whole; refusing to publish it. \
+            "\ncomposite did not clear the gate as a whole; it cannot be approved. \
              A local module's score does not promote the composite.\n",
         );
     }

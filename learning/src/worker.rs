@@ -13,7 +13,7 @@
 //! `capability-denied:` — it does **not** fall back to running the
 //! worker unrestricted.
 
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc::{self, Receiver};
@@ -29,6 +29,7 @@ pub const PROTOCOL: &str = "grove.worker/1";
 pub const PROTOCOL_VERSION: u32 = 1;
 /// A control frame larger than this is a protocol error, not a big frame.
 pub const MAX_FRAME_BYTES: usize = 1 << 20;
+
 
 // ── frames ─────────────────────────────────────────────────────────
 
@@ -120,6 +121,17 @@ impl Frame {
         }
     }
 
+    pub fn attempt_id(&self) -> &str {
+        match self {
+            Self::Train { attempt_id, .. }
+            | Self::Predict { attempt_id, .. }
+            | Self::Progress { attempt_id, .. }
+            | Self::Done { attempt_id, .. }
+            | Self::Failed { attempt_id, .. } => attempt_id,
+            _ => "",
+        }
+    }
+
     pub fn decode(line: &str) -> Result<Frame> {
         if line.len() > MAX_FRAME_BYTES {
             return Err(Error::new(
@@ -136,6 +148,75 @@ impl Frame {
 // The plan's error vocabulary has no separate protocol class: an unparsable
 // or oversized frame is a backend that broke its contract, so it maps to
 // backend-failed.
+
+/// The outcome of one bounded stdout read.
+enum FrameRead {
+    Line,
+    Eof,
+    TooLong(usize),
+    Err(std::io::Error),
+}
+
+/// Read one newline-terminated frame, refusing before the allocation
+/// happens: bytes past `MAX_FRAME_BYTES` are counted and dropped, never
+/// buffered. A frame that never terminates is a protocol violation, not
+/// an allocation the host has to survive.
+fn read_frame_line<R: std::io::Read>(reader: &mut R, out: &mut Vec<u8>) -> FrameRead {
+    let mut seen = 0usize;
+    let mut byte = [0u8; 1];
+    loop {
+        match reader.read(&mut byte) {
+            Ok(0) => {
+                return if out.is_empty() && seen == 0 {
+                    FrameRead::Eof
+                } else {
+                    FrameRead::Line
+                };
+            }
+            Ok(_) => {
+                seen += 1;
+                if byte[0] == b'\n' {
+                    return FrameRead::Line;
+                }
+                if seen > MAX_FRAME_BYTES {
+                    return FrameRead::TooLong(seen);
+                }
+                out.push(byte[0]);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(e) => return FrameRead::Err(e),
+        }
+    }
+}
+
+/// The (run, attempt) a request is answered under.
+fn identity_of(frame: &Frame) -> (String, String) {
+    (frame.run_id().to_string(), frame.attempt_id().to_string())
+}
+
+/// A frame that names a different run or attempt than the request it
+/// arrived during is refused. A worker's own claim about *whose* result
+/// this is is not evidence — the request is.
+fn verify_identity(frame: &Frame, run_id: &str, attempt_id: &str) -> Result<()> {
+    let seen_run = frame.run_id();
+    if !run_id.is_empty() && !seen_run.is_empty() && seen_run != run_id {
+        return Err(Error::new(
+            ErrorKind::ProtocolViolation,
+            format!("worker answered run {seen_run:?} while run {run_id:?} was requested"),
+        ));
+    }
+    let seen_attempt = frame.attempt_id();
+    if !attempt_id.is_empty() && !seen_attempt.is_empty() && seen_attempt != attempt_id {
+        return Err(Error::new(
+            ErrorKind::ProtocolViolation,
+            format!(
+                "worker answered attempt {seen_attempt:?} while attempt {attempt_id:?} was requested; \
+                 a foreign attempt's result is never committed"
+            ),
+        ));
+    }
+    Ok(())
+}
 
 // ── isolation ──────────────────────────────────────────────────────
 
@@ -200,6 +281,10 @@ pub struct WorkerConfig {
     pub timeout: Duration,
     /// Address-space ceiling in bytes.
     pub max_address_space: u64,
+    /// Seconds the worker has to open the protocol. A jailed worker
+    /// assembles a mount root and imports its backend first, so this is
+    /// larger than an unjailed worker's startup.
+    pub handshake_timeout: Duration,
 }
 
 impl Default for WorkerConfig {
@@ -212,6 +297,7 @@ impl Default for WorkerConfig {
             working_dir: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
             timeout: Duration::from_secs(300),
             max_address_space: 2 * 1024 * 1024 * 1024,
+            handshake_timeout: Duration::from_secs(60),
         }
     }
 }
@@ -244,7 +330,43 @@ impl Worker {
             .stderr(Stdio::piped())
             .current_dir(&config.working_dir);
         apply_limits(&mut command, config.max_address_space);
+        Self::start(command, config.handshake_timeout)
+    }
 
+    /// Spawn a worker inside an explicit G00 profile: a minimal mount
+    /// root, one writable scratch, and privileges dropped before exec.
+    /// The profile is validated first — a profile that cannot be
+    /// enforced never reaches a process.
+    pub fn spawn_under(
+        config: &WorkerConfig,
+        isolation: &Isolation,
+        profile: &crate::isolation::IsolationProfile,
+    ) -> Result<Worker> {
+        isolation.enforce()?;
+        profile.validate()?;
+        // The worker's script is mounted at a jail-local path; the host
+        // path it was configured with is not part of the worker's root.
+        let script = profile
+            .read_only
+            .declared_worker_script()
+            .ok_or_else(|| {
+                Error::denied("the profile does not declare the worker script")
+            })?;
+        let shell = crate::isolation::worker_shell(profile, &config.python, &script)?;
+        let mut command = Command::new(&config.unshare);
+        command
+            .args(["-Urnm", "--pid", "--fork", "--"])
+            .arg("/bin/sh")
+            .arg("-c")
+            .arg(shell)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        apply_limits(&mut command, config.max_address_space);
+        Self::start(command, config.handshake_timeout)
+    }
+
+    fn start(mut command: Command, handshake_timeout: Duration) -> Result<Worker> {
         let mut child = command.spawn().map_err(|e| {
             Error::new(
                 ErrorKind::BackendFailed,
@@ -260,25 +382,46 @@ impl Worker {
         // One reader thread owns stdout for the worker's lifetime.
         let (tx, rx) = mpsc::channel();
         let reader = thread::spawn(move || {
+            // Bounded reads: `read_line` grows its buffer until it sees a
+            // newline, so a worker that emits one gigabyte without one
+            // would allocate it all. `read_until` with a pre-sized buffer
+            // and an explicit cap turns that into a protocol error.
+            let mut raw = Vec::with_capacity(MAX_FRAME_BYTES);
             let mut lines = BufReader::new(stdout);
             loop {
-                let mut buf = String::new();
-                match lines.read_line(&mut buf) {
-                    Ok(0) => break, // stream closed
-                    Ok(_) => {
-                        // Terminal frames end a request, not the stream: one
-                        // worker process serves many requests in sequence.
-                        let frame = Frame::decode(buf.trim_end());
-                        if tx.send(frame).is_err() {
-                            break;
-                        }
+                raw.clear();
+                match read_frame_line(&mut lines, &mut raw) {
+                    FrameRead::Eof => break,
+                    FrameRead::TooLong(n) => {
+                        let _ = tx.send(Err(Error::new(
+                            ErrorKind::ProtocolViolation,
+                            format!(
+                                "worker frame is {n} bytes before a newline, over the {MAX_FRAME_BYTES} cap"
+                            ),
+                        )));
+                        break;
                     }
-                    Err(e) => {
+                    FrameRead::Err(e) => {
                         let _ = tx.send(Err(Error::new(
                             ErrorKind::BackendFailed,
                             format!("worker output read failed: {e}"),
                         )));
                         break;
+                    }
+                    FrameRead::Line => {
+                        // Terminal frames end a request, not the stream: one
+                        // worker process serves many requests in sequence.
+                        let Ok(text) = std::str::from_utf8(&raw) else {
+                            let _ = tx.send(Err(Error::new(
+                                ErrorKind::ProtocolViolation,
+                                "worker frame is not valid UTF-8",
+                            )));
+                            break;
+                        };
+                        let frame = Frame::decode(text.trim_end());
+                        if tx.send(frame).is_err() {
+                            break;
+                        }
                     }
                 }
             }
@@ -291,7 +434,7 @@ impl Worker {
             stderr,
         };
         // handshake: a worker that cannot speak the protocol is refused now
-        let hello = worker.next_frame(Duration::from_secs(60))?;
+        let hello = worker.next_frame(handshake_timeout)?;
         match hello {
             Frame::Hello { v, protocol, .. } => {
                 if v != PROTOCOL_VERSION || protocol != PROTOCOL {
@@ -315,6 +458,9 @@ impl Worker {
     /// happen on a dedicated thread and are pulled through a channel, so a
     /// silent worker cannot wedge the host — the wait is bounded by the
     /// caller's deadline.
+    /// Override the handshake budget. A jailed worker assembles a mount
+    /// root and imports torch before it can say hello, so the default 60s
+    /// is tight for that path.
     pub fn next_frame(&mut self, timeout: Duration) -> Result<Frame> {
         match self.rx.recv_timeout(timeout) {
             Ok(result) => result,
@@ -330,7 +476,14 @@ impl Worker {
     }
 
     /// Send a request and wait for its terminal frame, collecting progress.
+    ///
+    /// Every frame the worker produces is checked against the identity of
+    /// the request it is answering. A worker that answers a *different*
+    /// run or attempt — a leftover from a cancelled request, a stale
+    /// process after a restart — is a protocol violation, not a result:
+    /// its bytes never reach the ledger.
     pub fn request(&mut self, frame: Frame, timeout: Duration) -> Result<Frame> {
+        let (run_id, attempt_id) = identity_of(&frame);
         self.send(&frame)?;
         let deadline = Instant::now() + timeout;
         loop {
@@ -355,6 +508,7 @@ impl Worker {
                     return Err(e);
                 }
             };
+            verify_identity(&next, &run_id, &attempt_id)?;
             match &next {
                 Frame::Progress { step, loss, .. } => self.progress.push((*step, *loss)),
                 Frame::Done { .. } | Frame::Failed { .. } => return Ok(next),
@@ -390,7 +544,12 @@ impl Worker {
 
     /// Reap the whole process group. The direct child is `unshare`; its
     /// python grandchild would otherwise survive as an orphan holding the
-    /// stdout pipe open (and a reader join in Drop would block forever).
+    /// stdout pipe open, and the reader join in Drop would block forever.
+    ///
+    /// Closing the read end first is what actually unblocks the reader:
+    /// the signal is asynchronous, so a join that runs immediately after
+    /// it can still see an open pipe and wait for a writer that is on its
+    /// way out.
     pub fn kill(&mut self) {
         // Negative pid = signal the group; the child was put in its own
         // group by `apply_limits`'s setpgid(0, 0) before exec.
@@ -399,7 +558,34 @@ impl Worker {
         // Fall back to the direct child (rc != 0 means no group existed).
         let _ = self.child.kill();
         let _ = self.child.wait();
+        // Drop our read end so the reader thread sees EOF even if a
+        // grandchild in another namespace still holds the write end.
+        drop(self.child.stdout.take());
+        // The reader thread must not be able to block a shutdown. A
+        // jailed worker's python grandchild lives in its own PID
+        // namespace, where a signal from here does not reach it: the
+        // unshare parent dies, the pipe write end survives on the orphan,
+        // and an unbounded join waits forever. Bounding the join is the
+        // only way out; the process group is dead either way.
+        self.join_reader_bounded();
         let _ = rc;
+    }
+
+    /// Join the stdout reader, giving up after a short grace period.
+    fn join_reader_bounded(&mut self) {
+        let Some(handle) = self.reader.take() else {
+            return;
+        };
+        let (tx, rx) = std::sync::mpsc::channel::<()>();
+        let joined = std::thread::spawn(move || {
+            let _ = handle.join();
+            let _ = tx.send(());
+        });
+        if rx.recv_timeout(Duration::from_millis(500)).is_err() {
+            // The thread is parked on a pipe an orphan holds; detach it
+            // rather than block the host on a dead namespace.
+            std::mem::forget(joined);
+        }
     }
 
     /// Block until the worker exits on its own (e.g. after a
@@ -423,37 +609,65 @@ impl Worker {
     }
 
     /// A bounded read of the worker's diagnostics, for failure reports.
+    ///
+    /// Strictly bounded: the wait ends on the *cap* or the *deadline*,
+    /// whichever comes first. The previous shape joined a reader that
+    /// blocks until EOF, so a worker still alive with its pipe open made
+    /// a failure report block forever — the report is the last thing a
+    /// host can afford to wait on.
     pub fn drain_stderr(&mut self, cap: usize) -> String {
-        thread::scope(|scope| {
-            let handle = scope.spawn(|| {
-                use std::io::Read as _;
-                let mut text = String::new();
-                let _ = self.stderr.read_to_string(&mut text);
-                text
-            });
-            let mut collected = String::new();
-            while !handle.is_finished() && collected.len() < cap {
-                thread::sleep(Duration::from_millis(5));
+        use std::io::Read as _;
+        let mut collected = String::new();
+        let deadline = Instant::now() + Duration::from_millis(500);
+        let mut chunk = [0u8; 4096];
+        while collected.len() < cap && Instant::now() < deadline {
+            match self.stderr.read(&mut chunk) {
+                Ok(0) => break, // the worker closed its stderr
+                Ok(n) => collected.push_str(&String::from_utf8_lossy(&chunk[..n])),
+                Err(ref e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(_) => break,
             }
-            if handle.is_finished() {
-                collected = handle.join().unwrap_or_default();
-            }
-            collected.chars().take(cap).collect()
-        })
+        }
+        collected.chars().take(cap).collect()
     }
 }
 
 impl Drop for Worker {
     fn drop(&mut self) {
-        // Kill the process GROUP first: that closes the stdout pipe, so the
-        // reader thread below unblocks. Killing only the direct child
-        // (unshare) would leave the python grandchild running as an orphan
-        // holding the pipe, and the join would never return.
+        // `kill` already signals the process group, drops the read end,
+        // and bounds the reader join. Re-joining here would reintroduce
+        // the unbounded wait.
         self.kill();
-        if let Some(handle) = self.reader.take() {
-            let _ = handle.join();
-        }
     }
+}
+
+/// Contract-test surface for the bounded reader. Same code path the
+/// reader thread uses; exposed so a test can drive it without spawning a
+/// worker that misbehaves.
+#[derive(Debug)]
+pub enum FrameReadProbe {
+    Line,
+    Eof,
+    TooLong(usize),
+    Err(std::io::Error),
+}
+
+pub fn probe_frame_read<R: std::io::Read>(reader: &mut R, out: &mut Vec<u8>) -> FrameReadProbe {
+    match read_frame_line(reader, out) {
+        FrameRead::Line => FrameReadProbe::Line,
+        FrameRead::Eof => FrameReadProbe::Eof,
+        FrameRead::TooLong(n) => FrameReadProbe::TooLong(n),
+        FrameRead::Err(e) => FrameReadProbe::Err(e),
+    }
+}
+
+/// Contract-test surface for the receipt identity check.
+pub fn probe_identity(frame: &Frame, run_id: &str, attempt_id: &str) -> Result<()> {
+    verify_identity(frame, run_id, attempt_id)
+}
+
+pub fn probe_identity_of(frame: &Frame) -> (String, String) {
+    identity_of(frame)
 }
 
 /// Set `RLIMIT_AS` (address space) and `RLIMIT_CPU` before exec via a

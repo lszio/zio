@@ -17,12 +17,12 @@ const base = import.meta.env.BASE_URL.replace(/\/$/, '');
         <h1>A Modern General-Purpose Lisp.</h1>
         <p>
           Zio 是一门以同像性（Homoiconicity）为基石的现代通用脚本语言：一门语言覆盖从自动化脚本、服务编排到 Agent 应用的完整光谱。
-          基于 Rust 实现，编译为原生 WebAssembly，具备 Common Lisp CLOS/AMOP 对象系统、syntax-rules 卫生宏与 JS / DOM 深度互操作。
+          当前由 Rust 实现并提供 WebAssembly，具备 CLOS/AMOP 方向的 ZOS 子集、syntax-rules 卫生子集与 JS / DOM 互操作；完整 MOP 为 Planned。
         </p>
         <div class="hero-cta">
           <a href="#terminal" class="btn btn-primary">体验浏览器真实 WASM REPL</a>
-          <a href={`${base}/agent/`} class="btn btn-secondary">Agent &amp; LLM 实战 →</a>
-          <a href={`${base}/grove/`} class="btn btn-secondary">grove 自学习产品 →</a>
+          <a href={`${base}/agent/`} class="btn btn-secondary">Agent / LLM 模拟实验 →</a>
+          <a href={`${base}/grove/`} class="btn btn-secondary">Grove 独立 APP 方向 →</a>
         </div>
       </div>
       <Repl />
@@ -62,7 +62,7 @@ const base = import.meta.env.BASE_URL.replace(/\/$/, '');
     <div class="container">
       <div class="section-header">
         <h2>正交分层系统架构</h2>
-        <p>从底层 Host 到扩展库生态与 WASM 嵌入层</p>
+        <p>ZOS 与编译器工具链保留在语言；官方独立库 Numa / Rill / Loom 由 Grove 按需消费，目标均为 Planned</p>
       </div>
       <div class="arch-box">
         {archLayers.map((l) => (
@@ -89,7 +89,7 @@ const base = import.meta.env.BASE_URL.replace(/\/$/, '');
     <div class="container">
       <div class="section-header">
         <h2>路线图一览</h2>
-        <p>按功能 Phase 组织的自举与生态演进阶段</p>
+        <p>历史语言交付与 Planned 产品主线分开；编译器自举不等于编辑器或 APP 的 Zio 化</p>
       </div>
       <div class="grid-3">
         {roadmap.map((r) => (

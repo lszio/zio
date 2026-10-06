@@ -1,6 +1,12 @@
 # Zio 术语表
 
-> 运行时、类型系统、宏系统、ZOS 的关键概念定义。
+> 语言、ZOS、工具链、公共基础设施与 Grove 的术语。规范名不等于已有 API；当前成熟度见[特性矩阵](feature-matrix.md)，架构与权限以[ADR-019](adrs.md#adr-019-grove-独立应用与同像性逻辑演化)为准。
+
+Numa、Rill、Loom 是按需安装、独立版本发布的官方库短名，不是语言内置
+特性或已确认的包注册 ID；新增能力均为 Planned。未来规范目录与逻辑命名
+空间为 `numa/`、`rill/`、`loom/` 和 `numa/*`、`rill/*`、`loom/*`，不是
+`zio/compute`、`zio/command` 等语言组件，也不是可执行安装命令。当前
+crate、路径与函数名不在此次同步中改名；执行依赖见[统一实现计划](superpowers/plans/2026-10-05-zio-grove-convergence.md)。
 
 ---
 
@@ -18,13 +24,21 @@ ZOS 的核心元编程协议。定义了类、通用函数、方法等元对象�
 
 架构决策记录。轻量级文档记录每个重要架构决策的背景、决策、理由、代价。
 
+### ACP（Agent Client Protocol）
+
+外部 agent 与客户端之间的会话协议。目标双向支持：先 Loom 客户端与 Grove 教师适配，再服务端；不进入 Zio 核心语义。两方向分别验收，不将自有教师 HTTP 协议称为 ACP。
+
+### Agent logic（可编码 agent 逻辑）
+
+实际驱动任务分解、上下文选择、模型/工具路由、校验、修订和停止的版本化 Zio 程序。展示 DSL、提示词摘要或 LLM 自述不等于执行该逻辑；程序、实际路径与评价证据需关联。
+
 ---
 
 ## B
 
 ### Builtin
 
-Rust 实现的内置函数。通过 `NativeFn` 注册到环境。在 Zio 中，builtin 是唯一用 Rust 直接实现的业务逻辑（其他都是宏或库）。
+Rust 实现、通过 `NativeFn` 注册的原语。语言内建、性能计算与外部能力分别由各层安装；授权、存储与进程管理也可由 Rust 可信宿主实现，不把“其他都是宏”当作部署约束。
 
 ---
 
@@ -73,8 +87,9 @@ GF（Generic Function）的参数类型 → 方法列表的缓存。ZOS 使用 4
 
 ### EvalRuntime
 
-当前核心求值 trait。只包含 `eval_expr` 和 `env()`；模块加载与缓存由独立的
-`ModuleRegistry` trait 提供。
+当前核心求值 trait，提供 `eval_expr`、`env()`、`source_map()` 和宿主 `io()`；
+`io()` 默认使用 `StdIoHost`。模块加载、缓存与导出累积由独立的
+`ModuleRegistry` trait 提供。完整签名见 [`core/src/context.rs`](../core/src/context.rs)。
 
 ---
 
@@ -92,6 +107,10 @@ Zio 的第一类函数。包括用户定义函数（带词法闭包）、NativeF
 
 ZOS 的多分派函数。不是单分派对象的方法，而是完全独立、基于全部参数类型分派的行为入口。
 
+### Grove
+
+五字母正式短名，独立的模块化自学习与逻辑演化应用，消费 Zio 与 Numa、Rill、Loom，拥有学习目标、实验、反馈、检查点、独立评价、人工审查、逻辑演化和发布及 Web。内部宿主 `grove` crate 位于 `learning/`，应用 `grove-app` 位于 `app/`；内部采用库结构不意味着库优先或可选产品壳，语言核心无反向依赖。
+
 ---
 
 ## H
@@ -99,6 +118,12 @@ ZOS 的多分派函数。不是单分派对象的方法，而是完全独立、�
 ### Homoiconicity（同像性）
 
 代码的内部表示与核心数据结构相同。在 Zio 中，一切代码都是 Sexp，而 Sexp 也是数据。这意味着程序可以读取、变换、生成自己的代码。这是宏系统的基础。
+
+同像性支持读取、改写和审查显式逻辑，不自动提供完整宏展开、权限安全、行为正确或神经网络内部透明。
+
+### Harness
+
+Agent 执行基础设施的职责名称，官方独立库正式短名为 [Loom](#loom)。Loom 持有模型/工具会话、预算、取消、provider 与 ACP；不持 Grove 的学习目标、独立评价或正式发布批准。
 
 ### Heap Object
 
@@ -111,6 +136,20 @@ ZOS 中需要在堆上分配的 Object。包括 Instance、Class、GenericFuncti
 ### Immediate Object
 
 ZOS 中可以内联在 `Value` 枚举中的类型。包括 Integer、Float、Boolean、Nil、Keyword 等。不分配堆内存。
+
+---
+
+## L
+
+### Loom
+
+四字母正式短名，官方独立 Agent harness 库（Planned），可供 Grove 与其他
+入口按需安装、独立版本使用。负责模型、工具、会话、预算、取消、provider
+及 ACP；当前 `zio-ai` crate 与 `ai/` 是复用起点，不因采用 Loom 短名而
+已被重命名，也不是完整 Loom 交付证据。学习目标、反馈政策、独立评价与
+发布治理留在 Grove，Loom 不反向进入语言核心。
+未来按计划迁移 `ai/` → `loom/`；普通语言 CLI 不要求 Loom，ACP 服务
+由 Grove 注入执行回调并通过未来 `grove acp serve` 装配，不是语言 CLI 子命令。
 
 ---
 
@@ -132,6 +171,10 @@ GF（Generic Function）的一个实现。由 `defmethod` 定义，包含参数�
 
 ZOS 中多个 Method 组合执行的方式。支持 `:before`、`:after`、`:around`、`primary` 四种限定符，通过 `call-next-method` 串联。
 
+### Module（Grove 模块）
+
+版本化的源码、向量、神经网络或 LLM 能力单元，分别声明执行、更新、可修改范围、评价及状态兼容能力。共享生命周期，不假定所有模块都支持权重训练；LLM 推理、教师、适配器训练与完整权重训练是不同能力。
+
 ---
 
 ## N
@@ -139,6 +182,15 @@ ZOS 中多个 Method 组合执行的方式。支持 `:before`、`:after`、`:aro
 ### NativeFn
 
 Rust 实现的 Zio 函数。签名：`fn(Vector<Value>, &dyn EvalEngine) -> Result<Value, EvalError>`。所有性能关键路径通过 NativeFn 实现。
+
+### Numa
+
+四字母正式短名，官方独立计算库（Planned），负责连续 typed 数值数组、
+矩阵、向量及后端接口，按需安装、独立版本使用。现有
+`lib/zio/vector.zio` 与 torch worker 是复用起点，不是 Numa 包已交付的
+证明；数值执行与 Grove 的训练实验、检查点和发布治理分开。
+未来新建独立 `numa/` 与 `numa/zio/compute.zio`，并将当前
+`lib/zio/vector.zio` 迁到 `numa/zio/vector.zio`；这些路径是 Planned 目标。
 
 ---
 
@@ -168,6 +220,10 @@ ZOS 的符号命名空间管理器。负责符号的 export、import、alias、�
 
 程序合成模块（ADR-016）中可插拔的候选来源。协议形状为 `(proposer task history) → 候选字符串列表`：提议器只产文本，解析、闭世界白名单、去重、评分、选择与预算全部在学习循环内。枚举器、LLM、遗传算子都是同一抽象的实现——学习循环是 `amb` 求值器（SICP 4.3）的确定性工程化，提议器对应其候选来源。
 
+### Publication approval（正式发布批准）
+
+发布者对指定候选及评价版本的人工批准。控制器仍检查硬门槛、冻结区和 expected-version 后原子切换；批准不是免检令牌，独立评价合格也不自动发布。在途调用固定旧程序及依赖。
+
 ---
 
 ## R
@@ -184,6 +240,15 @@ Rust 的内部可变性模式。ZOS 在单线程阶段使用 `RefCell` 管理可
 
 Condition System 的恢复选项。当 condition 被 signal 时，调用者可以从多个 restart 中选择恢复策略。
 
+### Rill
+
+四字母正式短名，官方独立 CLI 组合库（Planned），负责参数、子命令、
+帮助、命令组合、终端 I/O 与退出状态，不承担 Zio 语言求值。当前
+`zio-cli` crate 与 `cli/` 是脚本/REPL 可执行宿主，未来消费 Rill，
+不是 Rill 的已注册包 ID，也不在此次同步中改名。Grove 可复用同一库
+组织其入口，语言核心不依赖 Rill。
+未来新建独立 `rill/` 库，不把 `cli/src/lib.rs` 作为公共命令组合库。
+
 ---
 
 ## S
@@ -192,19 +257,23 @@ Condition System 的恢复选项。当 condition 被 signal 时，调用者可�
 
 Symbolic Expression。Zio 的代码表示（AST）。一切代码和数据都编码为 Sexp。是「代码即数据」的具体实现。
 
+### Self-hosting（工具链自举）
+
+Zio 编写完整展开器、分析器与编译器，由初始执行环境引导后编译自身，再比较重复构建的规范化产物与行为。Rust 保留最小运行时、宿主及性能原语；Zio 编辑器或 agent 的应用自托管不等于编译器自举。
+
 ### Slot
 
 ZOS 中类的属性定义。每个 Slot 有名称、类型约束（可选）、默认值、分配策略（实例/类）。
 
 ### Span
 
-源码位置信息。`{ start: BytePos, end: BytePos, line: usize, col: usize, source: SourceId }`。Zio 的 Phase 1 目标是将 Span 嵌入每个 Sexp。
+源码位置与来源标识。当前 Sexp 已携带 Span；Sexp ↔ Value 转换与宏生成路径不能默认保留来源，工具链和审计轨迹必须显式维护来源关系。
 
 ### Special Form
 
-不被标准 eval 规则（先求值参数，再应用函数）处理的语法形式。如 `if`、
-`def`、`fn`、`quote`。当前生成计数为 23；权威数量见
-[项目状态](status.md)，不要在术语表中手工维护。
+不按普通“先求值参数，再调用”规则处理的语言形式，如 `if`、`def`、
+`fn`、`quote`。数量由[项目状态](status.md)生成，不在术语表手工复制；
+新增领域能力优先在宿主/库/应用层实现，而不是追加特殊形式。
 
 ---
 

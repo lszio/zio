@@ -87,6 +87,7 @@ pub fn predict(
         working_dir: paths.root.clone(),
         timeout: Duration::from_secs(120),
         max_address_space: 4 * 1024 * 1024 * 1024,
+        handshake_timeout: std::time::Duration::from_secs(300),
     };
     let mut worker = Worker::spawn(&config, &isolation)?;
     let result = (|| -> Result<(Vec<u8>, Vec<(u32, u32)>)> {

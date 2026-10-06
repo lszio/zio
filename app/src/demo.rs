@@ -15,7 +15,7 @@ use grove::evaluation::{self, EvaluationProtocol};
 use grove::store::Store;
 use grove::worker::{Frame, Isolation, Worker, WorkerConfig};
 
-use crate::{operator, publisher, Paths};
+use crate::{operator, Paths};
 
 /// The frozen acceptance gates, mirroring examples/self-learning/task.json.
 const GATE_ACCURACY: f64 = 0.90;
@@ -181,25 +181,36 @@ pub fn run_dual(root: &Path, paths: &Paths, device: &str) -> Result<String> {
     // shell-rewrites-the-evidence failure the plan forbids.
     record(&store, &operator, &trained, joint_acc, 1)?;
 
-    // 6. publication only for a candidate that earned it — a demo that
-    //    promotes an underfit model would be a lie with extra steps
-    let publisher = publisher();
-    match evaluation::publish_candidate(&store, &publisher, &protocol, &trained, None) {
-        Ok(version) => {
-            report.push_str(&format!(
-                "publication: candidate cleared every gate → v{version} active ({})\n",
-                &trained.to_hex()[..12]
-            ));
-        }
-        Err(e) => {
-            return Err(Error::new(
-                e.kind,
-                format!(
-                    "no candidate met the frozen gates — refusing to promote\n  detail: {e}\n{report}"
-                ),
-            ));
-        }
-    }
+    // 6. the demo stops at a *pending* candidate. It does not publish:
+    //    publication is a human decision behind an authenticated
+    //    approval, and a demo that reaches the publisher role by
+    //    calling a function is precisely the implicit promotion G04
+    //    removes. What the demo can honestly report is whether the
+    //    candidate would qualify — that is a comparison, not a
+    //    deployment — and then how to approve it.
+    let verdict = evaluation::compare(&store, &protocol, std::slice::from_ref(&trained))?;
+    let pending = match verdict.first() {
+        Some(row) if row.meets_gates => format!(
+            "candidate awaits human approval: cleared every frozen gate ({} repeats, accuracy {:.3})",
+            row.repeats,
+            row.mean
+                .iter()
+                .find(|(n, _)| n == "accuracy")
+                .map(|(_, v)| *v)
+                .unwrap_or(0.0)
+        ),
+        Some(row) => format!(
+            "candidate does not qualify and stays unpublished: {:?}",
+            row.gate_failures
+        ),
+        None => "candidate has no evaluation under this protocol; it cannot be approved".to_string(),
+    };
+    report.push_str(&format!(
+        "publication: none — {pending}\n  approve by hand: grove approve --root <root> \
+         --protocol {} --snapshot {}\n",
+        protocol.id,
+        trained.to_hex()
+    ));
     Ok(report)
 }
 
@@ -378,6 +389,7 @@ pub fn spawn_worker(paths: &Paths) -> Result<Worker> {
         working_dir: paths.root.clone(),
         timeout: Duration::from_secs(300),
         max_address_space: 4 * 1024 * 1024 * 1024,
+        handshake_timeout: std::time::Duration::from_secs(300),
     };
     Worker::spawn(&config, &iso)
 }

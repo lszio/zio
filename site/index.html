@@ -41,12 +41,16 @@
       <div class="hero-content">
         <div class="eyebrow">
           <span class="eyebrow-dot"></span>
-          Zero Global State • 181 Tests Passing • Real WASM Runtime
+          Legacy historical snapshot • 181 Tests Then • Real WASM Demo
         </div>
         <h1>A Modern General-Purpose Lisp.</h1>
         <p>
           Zio 是一门以同像性（Homoiconicity）为基石的现代通用脚本语言：一门语言覆盖从自动化脚本、服务编排到 Agent 应用的完整光谱。
-          基于 Rust 实现，编译为原生 WebAssembly，具备 Common Lisp CLOS/AMOP 对象系统、syntax-rules 卫生宏与 JS / DOM 深度互操作。
+          当前由 Rust 实现并提供 WebAssembly，具备 CLOS/AMOP 方向的 ZOS 子集、syntax-rules 卫生子集与 JS / DOM 互操作；完整 MOP 为 Planned。
+          此 HTML 是历史演示存档，当前部署源为 site/src/pages 与 site/content（Astro）；历史数字不代表当前验收。当前 workspace 为 core / cli / ai / learning / app 五 crate。
+          ZOS object/class/GF/method/MOP 方向属于语言核心，完整 MOP 为 Planned。Planned：core 职责收敛，Zio 自举展开、分析与编译器，Rust 保留最小运行时、宿主和性能原语；自举不等于编辑器／APP 的 Zio 化。
+          Grove 是独立 APP，不是库优先产品壳。Planned：Grove 按需消费官方独立库 Numa、Rill、Loom，负责实验、反馈、检查点、逻辑演化、评估、人工批准与产品 Web；真实 LLM 生成代码，经解析、能力检查与隔离执行，以错误和证据修订。三库独立版本，不是语言内建层，core 无反向依赖；当前 zio-ai 未改名。
+          自动实验仅限批准预算与编辑范围，可信基线、鉴权、评估、检查点和发布守卫不可自改。ACP（Agent Client Protocol）先 client／teacher adapter、后 server，当前未实现。同像性支持代码表示／编辑，不证明神经透明或正确性；LLM 自述不是执行证据。
         </p>
         <div class="hero-cta">
           <a href="#terminal" class="btn btn-primary">体验浏览器真实 WASM REPL</a>
@@ -88,7 +92,7 @@
     <div class="container stats-grid">
       <div class="stat-card">
         <div class="stat-number" data-target="181">0</div>
-        <div class="stat-label">Rust 自动化单元测试 (100% Passing)</div>
+        <div class="stat-label">历史 Rust 测试快照 (当时 100% Passing)</div>
       </div>
       <div class="stat-card">
         <div class="stat-number" data-target="90">0</div>
@@ -100,7 +104,7 @@
       </div>
       <div class="stat-card">
         <div class="stat-number" data-target="3">0</div>
-        <div class="stat-label">Workspace Crates (core + cli + ai)</div>
+        <div class="stat-label">历史 Workspace Crates (当时 core + cli + ai)</div>
       </div>
     </div>
   </section>
@@ -121,8 +125,8 @@
         </div>
         <div class="card">
           <div class="card-icon">🦀</div>
-          <h3>2. Rust 合同，Lisp 组合</h3>
-          <p>Rust 提供底层 Native 契约与 WASM 零开销性能边界；Lisp 提供元编程与灵活组合层。</p>
+          <h3>2. Rust 边界，Zio 自举方向</h3>
+          <p>当前运行时由 Rust 实现；目标由 Zio 编写展开、分析与编译器，Rust 保留最小运行时、宿主与性能原语。不宣称 WASM 或嵌入零开销。</p>
         </div>
         <div class="card">
           <div class="card-icon">🌐</div>
@@ -132,7 +136,7 @@
         <div class="card">
           <div class="card-icon">🧬</div>
           <h3>4. 宏扩充 Eval 语义</h3>
-          <p>内置 <code>syntax-rules</code> 模式匹配与自动 gensym 命名空间，彻底消除变量捕获。</p>
+          <p>内置 <code>syntax-rules</code> 模式匹配与 gensym，已有卫生子集测试；不宣称完整卫生性或消除所有变量捕获。</p>
         </div>
         <div class="card">
           <div class="card-icon">📦</div>
@@ -141,8 +145,8 @@
         </div>
         <div class="card">
           <div class="card-icon">🔄</div>
-          <h3>6. 统一并发与 CSP</h3>
-          <p>内置 Future / Promise 异步延迟解算与 Go/Clojure 风格 CSP Channel（<code>chan</code>, <code>send!</code>, <code>recv!</code>）。</p>
+          <h3>6. Future 与 Channel 原语</h3>
+          <p>Current：Future 与 <code>chan / send! / recv!</code> 是同步求值与队列演示，不是异步调度器。完整异步与取消语义为 Planned。</p>
         </div>
       </div>
     </div>
@@ -153,13 +157,13 @@
     <div class="container">
       <div class="section-header">
         <h2>正交分层系统架构</h2>
-        <p>从底层 Host 到扩展库生态与 WASM 嵌入层</p>
+        <p>ZOS 与编译器工具链留在语言；Numa / Rill / Loom 独立库由 Grove 按需消费，目标均为 Planned</p>
       </div>
 
       <div class="arch-box">
         <div class="arch-layer">
-          <div class="arch-title">应用程序与 Web 宿主层 (Application &amp; WASM Layer)</div>
-          <div class="arch-desc">site/index.html (Web REPL) • zio-cli (CLI &amp; REPL) • [Planned: LSP Server / DAP Debugger]</div>
+          <div class="arch-title">独立 Grove APP 与官方独立库 (Planned)</div>
+          <div class="arch-desc">历史 HTML Web REPL；当前部署为 Astro site/src/pages。Planned：Grove 消费独立版本、按需引入的 Numa（数值连续数组/矩阵/向量与后端接口）、Rill（参数/子命令/帮助/命令组合/终端 IO/退出状态）、Loom（模型/工具/会话/预算/取消/provider/ACP）；不是语言内建层或已可安装包。Numa 不治理学习，Rill 不是语言求值器，Loom 不治理业务学习/评估/发布；Grove 负责这些业务边界。zio-cli 二进制不是 Rill 库</div>
         </div>
         <div class="arch-layer">
           <div class="arch-title">扩展库生态层 (Extension Library Layer)</div>
@@ -171,7 +175,7 @@
         </div>
         <div class="arch-layer">
           <div class="arch-title">运行时 &amp; ZOS 对象层 (Runtime &amp; ZOS Layer)</div>
-          <div class="arch-desc">AST Evaluator (TCO Trampoline) • ZOS Class/GF/Method/C3 • syntax-rules 卫生宏 • Future/Channel • JS FFI (js/eval, js/dom-set-text)</div>
+          <div class="arch-desc">AST Evaluator • ZOS Class/GF/Method/C3 子集 • 宏卫生子集 • 同步 Future/Channel • JS FFI；完整 MOP 为 Planned</div>
         </div>
         <div class="arch-layer">
           <div class="arch-title">前端语法层 (Frontend Reader)</div>
@@ -220,7 +224,7 @@
     <div class="container">
       <div class="section-header">
         <h2>路线图一览</h2>
-        <p>按功能 Phase 组织的自举与生态演进阶段</p>
+        <p>历史语言交付快照；当前架构与执行计划以仓库文档为准</p>
       </div>
 
       <div class="grid-3">
@@ -232,12 +236,12 @@
         <div class="card" style="border-left: 3px solid var(--accent-cyan);">
           <div class="card-icon">🚀</div>
           <h3>Phase 3 &amp; Phase 4 &amp; WASM</h3>
-          <p>卫生宏引擎、ZOS 多分派 &amp; MOP 反射、Future/Promise 异步解算、CSP 通道、JSON 原语与 WASM / JS FFI 原体交付。</p>
+          <p>Current：宏卫生子集、ZOS 多分派子集、同步 Future/Channel 演示、JSON 与 WASM / JS FFI。完整 MOP、完整卫生性与异步调度为 Planned，不因历史阶段名称标为已交付。</p>
         </div>
         <div class="card" style="border-left: 3px solid var(--accent-purple);">
           <div class="card-icon">🔮</div>
           <h3>Phase 5 &amp; Phase 6 (扩展生态)</h3>
-          <p>扩展库（persistent / entity / protocol）、zio-datalog 图查询、zio-agent 编排框架 MVP 交付，Cranelift JIT 可行化探索。</p>
+          <p>扩展库（persistent / entity / protocol）与图查询实验；agent.zio 当前为预置 echo，不是完整 Agent harness。核心自举、真实 LLM 执行反馈闭环与 ACP 为 Planned。</p>
         </div>
       </div>
     </div>
@@ -257,6 +261,7 @@
         <a href="../docs/feature-matrix.md">Feature Matrix</a>
         <a href="../docs/zos-spec.md">ZOS Spec</a>
         <a href="../docs/zio-architecture.md">Architecture</a>
+        <a href="https://github.com/lszio/zio/blob/main/docs/superpowers/plans/2026-10-05-zio-grove-convergence.md">当前执行计划</a>
         <a href="../docs/adrs.md">ADRs</a>
       </div>
     </div>

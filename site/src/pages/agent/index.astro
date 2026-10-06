@@ -3,24 +3,26 @@ import Base from '../../layouts/Base.astro';
 import { scenarios } from '../../data/agent';
 const base = import.meta.env.BASE_URL.replace(/\/$/, '');
 const cards = [
-  { key: 'toolAgent', n: '①', title: 'Tool-Calling Agent Loop', desc: '模拟 LLM 按语义路由到工具（weather / calc），未命中工具时回退直答——Agent 循环的最小完备形态。' },
-  { key: 'cspAgents', n: '②', title: '多 Agent CSP 协作', desc: 'Planner / Executor 经 CSP 通道投递消息，协调者汇聚收件箱——语言原语直接承担消息总线。' },
-  { key: 'llmPipeline', n: '③', title: 'LLM 结构化输出管道', desc: '模拟补全 → 槽位提取 → json-stringify 序列化，展示 LLM 输出直通结构化数据无需胶水。' },
+  { key: 'toolAgent', n: '①', title: 'Tool-Calling 路由模拟', desc: '本地关键词规则选择 weather / calc 预置结果；这是语言组合演示，不是真实 LLM 或完整 Agent harness。' },
+  { key: 'cspAgents', n: '②', title: 'CSP 消息队列模拟', desc: 'Planner / Executor 顺序投递消息，协调者汇聚收件箱；当前 Channel 为同步队列演示，不代表并发 Agent 调度。' },
+  { key: 'llmPipeline', n: '③', title: 'LLM 结构化输出模拟', desc: '预置补全数据 → 槽位提取 → json-stringify 序列化；不调用模型，也不证明模型输出通过安全校验。' },
 ];
 ---
-<Base title="Agent & LLM 实战 — Zio 通用 Lisp" description="Zio 是通用语言，Agent 是它的应用场景：浏览器内动态展示 Zio WASM 驱动的 Agent 训练过程与 LLM 编排试用效果。">
+<Base title="Agent / LLM 模拟实验 — Zio 通用 Lisp" description="真实 Zio WASM 求值的本地规则与 Q-learning 模拟；不是 Grove 产品、真实 LLM harness 或训练服务。">
   <section class="hero">
     <div class="container">
       <div class="eyebrow">
         <span class="eyebrow-dot"></span>
         General-Purpose Core • Agent-Ready • Real WASM Evaluation
       </div>
-      <h1>通用语言，Agent 原生。</h1>
+      <h1>通用语言，本地 Agent 模拟。</h1>
       <p class="hero-lead">
         Zio 的核心定位是一门<b>通用编程语言</b>——Agent 编排不是它的存在理由，而是它擅长的工作负载之一。
-        因为语言本身是通用的：CSP 通道天然表达多 Agent 消息传递，ZOS 对象系统直接建模 Agent 与工具，
-        JSON 原语打通 LLM 的结构化输入输出，WASM 沙箱让整条链路确定性运行在浏览器与边缘环境。
-        本页所有演示均在你的浏览器中由真实 Zio WASM 引擎求值，无任何服务器参与。
+        CSP、ZOS 和 JSON 提供语言组合原语，ZOS 与编译器工具链仍属语言；不是已完成的模型／工具／会话／预算／取消 harness。
+        本页真实执行 Zio WASM，LLM 响应与学习环境是本地模拟，无服务器或模型调用。
+        同像性支持表示和编辑代码，不提供神经模型透明性或正确性证明；WASM 不替代能力检查与宿主隔离。
+        Planned：Grove 按需消费官方独立库 Numa（连续数组、矩阵、向量与数值后端）、Rill（参数、子命令、帮助、命令组合、终端 IO、退出状态）、Loom（模型、工具、会话、预算、取消、provider、ACP）。
+        三库独立版本，不是语言内建层；core 无反向依赖。Grove 负责业务实验、反馈、检查点、逻辑演化、评估、人工批准与产品 Web；当前 zio-ai 未改名，zio-cli 二进制不是 Rill 库。
       </p>
       <div class="hero-cta">
         <a href="#training" class="btn btn-primary">观看训练过程</a>
@@ -33,29 +35,29 @@ const cards = [
   <section class="section section-tight" style="background: rgba(0,0,0,0.2);">
     <div class="container">
       <div class="section-header">
-        <h2>为什么通用语言反而是 Agent 的最优解</h2>
-        <p>专用 Agent DSL 锁死能力上限；通用原语的组合没有天花板</p>
+        <h2>通用语言的 Agent 组合原语</h2>
+        <p>语言原语是基础；Planned：Loom 提供模型、工具、会话、预算、取消与 ACP harness，Grove 负责学习、评估与批准</p>
       </div>
       <div class="grid-2x2">
         <div class="card">
           <div class="card-icon">📡</div>
           <h3>CSP 通道 = Agent 消息总线</h3>
-          <p><code>chan / send! / recv!</code> 让 Planner、Executor、Critic 之间的协作退化为普通的并发数据流，无需额外框架。</p>
+          <p><code>chan / send! / recv!</code> 展示消息传递；完整任务调度、取消和跨进程隔离不是通道本身提供的保证。</p>
         </div>
         <div class="card">
           <div class="card-icon">🧱</div>
           <h3>ZOS 对象系统 = Agent 建模</h3>
-          <p>用 CLOS/AMOP 的 Generic Function 与多分派直接表达「工具路由」「能力多态」，Agent 即对象，方法即能力。</p>
+          <p>ZOS 的 Class／Generic Function／Method 子集可表达对象与能力分派；完整 MOP 为 Planned，不意味着 Agent harness 已实现。</p>
         </div>
         <div class="card">
           <div class="card-icon">🔀</div>
           <h3>JSON 原语 = LLM 结构化接口</h3>
-          <p><code>json-parse / json-stringify</code> 内建于语言，LLM 的输入输出无需胶水层；同像性让代码即数据，Prompt 亦可被宏操作。</p>
+          <p><code>json-parse / json-stringify</code> 提供结构化数据读写；真实模型接入、响应验证与能力检查仍由 harness 承担。同像性允许表示和编辑代码，不证明生成代码正确。</p>
         </div>
         <div class="card">
           <div class="card-icon">📦</div>
-          <h3>WASM 沙箱 = 确定性执行</h3>
-          <p>零全局状态 + 显式 EvalContext：同一份 Agent 脚本在浏览器、服务器、边缘设备上逐位一致地运行。</p>
+          <h3>WASM = 宿主执行边界</h3>
+          <p>显式 EvalContext 支持状态隔离；JS FFI、权限、资源预算与非确定性输入仍需宿主约束，不承诺跨环境逐位一致。</p>
         </div>
       </div>
     </div>
@@ -64,8 +66,8 @@ const cards = [
   <section class="section" id="training">
     <div class="container">
       <div class="section-header">
-        <h2>动态训练过程：Zio 驱动的 Agent 学习循环</h2>
-        <p>策略与 Q-learning 更新全部由左侧 Zio 程序在 WASM 中求值执行——不是预录动画，是实时计算</p>
+        <h2>本地 Q-learning 模拟：真实 Zio 求值</h2>
+        <p>策略与 Q 值更新由 Zio WASM 实时计算；这不是 Grove 训练服务或真实 LLM 学习闭环</p>
       </div>
 
       <div class="agent-controls" style="margin-bottom: 16px;">
@@ -111,6 +113,9 @@ const cards = [
           </div>
         ))}
       </div>
+    </div>
+    <div class="container">
+      <p class="sim-note">Planned：Grove 独立 APP 将执行 Zio Agent 逻辑，经真实 LLM 生成代码、解析、能力检查与隔离执行，以错误和证据修订；Web 展示源码、实际路径与 diff。反馈产生逻辑候选，独立评估后由人批准正式版本。自动实验只限批准预算和编辑范围；可信基线、鉴权、评估与发布守卫不可自改。ACP（Agent Client Protocol）先 client／teacher adapter、后 server，当前尚未实现。</p>
     </div>
   </section>
 

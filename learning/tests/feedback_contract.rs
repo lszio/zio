@@ -119,7 +119,31 @@ fn feedback_binds_to_the_exact_prediction_not_the_current_head() {
         graph: None,
     };
     let newer_digest = store.put_snapshot(&operator(), &newer).unwrap();
-    store.publish(&Actor::new("trainer", ActorRole::Publisher), &newer_digest, None).unwrap();
+    // The write pointer is `pub(crate)`; going through the approval
+    // boundary is how a publisher actually reaches it. The point of this
+    // test is the prediction's binding, not the route.
+    let mut protocol = grove::evaluation::EvaluationProtocol::new("publish-v1", "task", "ds-1");
+    protocol.gates = vec![("accuracy".to_string(), 0.0)];
+    store.put_protocol(&operator(), &protocol).unwrap();
+    let record = EvaluationRecord {
+        schema: SCHEMA_VERSION,
+        id: "eval-publish-v1-newer-0".to_string(),
+        snapshot: newer_digest,
+        protocol_id: protocol.id.clone(),
+        dataset_revision: protocol.dataset_revision.clone(),
+        metrics: vec![("accuracy".to_string(), 1.0)],
+        repeat_index: 0,
+        device: "cpu".to_string(),
+        completed_at_ms: 1,
+    };
+    store.put_evaluation(&operator(), &record).unwrap();
+    grove::evaluation::publish_snapshot(
+        &store,
+        &Actor::new("trainer", ActorRole::Publisher),
+        &protocol,
+        &newer_digest,
+        None,
+    ).unwrap().0;
 
     let reloaded = store.get_prediction("pred-1").unwrap();
     assert_ne!(reloaded.snapshot_digest, newer_digest);
@@ -288,7 +312,14 @@ fn a_reader_cannot_annotate_but_an_annotator_cannot_publish() {
 
     let reader = Actor::new("viewer", ActorRole::Reader);
     assert_eq!(store.submit_signal(&reader, &signal).unwrap_err().kind, ErrorKind::CapabilityDenied);
-    assert_eq!(store.publish(&annotator(), &snapshot, None).unwrap_err().kind, ErrorKind::CapabilityDenied);
+    assert!(!annotator().may(ActorRole::Publisher), "annotating is not publishing");
+    assert_eq!(
+        grove::logic::decline(&store, &annotator(), &snapshot.to_hex(), "no", 1)
+            .unwrap_err()
+            .kind,
+        ErrorKind::CapabilityDenied,
+        "declining a candidate is a publisher decision"
+    );
     assert!(store.submit_signal(&annotator(), &signal).is_ok());
 }
 

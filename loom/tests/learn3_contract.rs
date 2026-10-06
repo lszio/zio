@@ -6,8 +6,8 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use zio_ai::mock::{RecordingLlmHost, ScriptedLlmHost};
-use zio_ai::install;
+use loom::mock::{RecordingLlmHost, ScriptedLlmHost};
+use loom::install;
 use zio_core::context::{EvalContext, EvalRuntime};
 use zio_core::env::Env;
 use zio_core::error::EvalError;

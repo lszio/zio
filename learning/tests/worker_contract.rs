@@ -41,6 +41,7 @@ fn worker_config() -> WorkerConfig {
         working_dir: repo_root(),
         timeout: Duration::from_secs(240),
         max_address_space: 4 * 1024 * 1024 * 1024,
+        handshake_timeout: Duration::from_secs(180),
     }
 }
 
@@ -209,6 +210,92 @@ fn an_oversized_frame_is_refused() {
     assert!(err.to_string().contains("cap"), "{err}");
     // A frame that is not JSON at all is refused, not defaulted.
     assert!(Frame::decode("not a frame at all").is_err());
+}
+
+#[test]
+fn an_unterminated_frame_is_refused_before_it_is_buffered() {
+    // A worker that writes gigabytes without a newline must not be able
+    // to make the host allocate them. The read is bounded by the same cap
+    // the decode check uses, and reports a protocol violation.
+    let data = vec![b'x'; grove::worker::MAX_FRAME_BYTES + 4096];
+    let mut reader = std::io::BufReader::new(std::io::Cursor::new(data));
+    let mut out = Vec::new();
+    match grove::worker::probe_frame_read(&mut reader, &mut out) {
+        grove::worker::FrameReadProbe::TooLong(n) => {
+            assert!(
+                n > grove::worker::MAX_FRAME_BYTES,
+                "the cap must be exceeded, got {n}"
+            );
+            assert!(
+                out.len() <= grove::worker::MAX_FRAME_BYTES,
+                "bytes past the cap must not be buffered, got {}",
+                out.len()
+            );
+        }
+        other => panic!("an unterminated frame must be refused, got {other:?}"),
+    }
+
+    // A frame inside the cap still decodes normally.
+    let mut reader = std::io::BufReader::new(std::io::Cursor::new(
+        br#"{"v":1,"type":"failed","run_id":"r","attempt_id":"a","error":"boom"}"#.to_vec(),
+    ));
+    let mut out = Vec::new();
+    assert!(matches!(
+        grove::worker::probe_frame_read(&mut reader, &mut out),
+        grove::worker::FrameReadProbe::Line
+    ));
+    assert!(Frame::decode(std::str::from_utf8(&out).unwrap().trim_end()).is_ok());
+}
+
+#[test]
+fn a_receipt_for_another_attempt_is_refused() {
+    // The request defines whose result a frame is; the worker's own claim
+    // is not evidence. A leftover frame from a cancelled attempt must
+    // never reach the ledger.
+    let requested = Frame::Train {
+        v: PROTOCOL_VERSION,
+        request_id: "r".into(),
+        run_id: "run-1".into(),
+        attempt_id: "att-1".into(),
+        graph: linear_graph(),
+        weights: "w".into(),
+        data: "d".into(),
+        val_data: None,
+        out: "o".into(),
+        steps: 1,
+        seed: 0,
+        resume: None,
+        save_at: None,
+        state_out: None,
+        stop_after_save: None,
+    };
+    let foreign = Frame::Done {
+        v: PROTOCOL_VERSION,
+        run_id: "run-1".into(),
+        attempt_id: "att-0".into(),
+        weights: None,
+        predictions: None,
+        first_loss: None,
+        loss: Some(0.0),
+        val_accuracy: Some(1.0),
+    };
+    let err = grove::worker::probe_identity(&foreign, "run-1", "att-1")
+        .expect_err("a foreign attempt's receipt must be refused");
+    assert_eq!(err.kind, ErrorKind::ProtocolViolation);
+    assert!(err.to_string().contains("att-0"), "{err}");
+
+    // The same attempt is accepted.
+    assert!(grove::worker::probe_identity(&foreign, "run-1", "att-0").is_ok());
+
+    // A foreign run is refused too, even with the right attempt id.
+    let err = grove::worker::probe_identity(&foreign, "run-2", "att-0")
+        .expect_err("a foreign run's receipt must be refused");
+    assert_eq!(err.kind, ErrorKind::ProtocolViolation);
+    assert!(err.to_string().contains("run-2"), "{err}");
+
+    // And the request's own identity is what the request carries.
+    let (run, attempt) = grove::worker::probe_identity_of(&requested);
+    assert_eq!((run.as_str(), attempt.as_str()), ("run-1", "att-1"));
 }
 
 #[test]

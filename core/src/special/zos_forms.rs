@@ -420,6 +420,7 @@ pub fn do_defpackage(
 pub fn do_try(
     args: &[Sexp],
     env: &Arc<Env>,
+    tail: bool,
     engine: &dyn EvalEngine,
 ) -> Result<TailResult, EvalError> {
     if args.is_empty() {
@@ -468,7 +469,12 @@ pub fn do_try(
                 if catch_type == "any" || catch_type == &error_type {
                     let catch_env = Arc::new(Env::new(Some(env.clone())));
                     catch_env.set("*error*".into(), Value::String(e.to_string()));
-                    return eval_last_body(handler, &catch_env, true, engine);
+                    // The handler runs in the CALLER's tail position, not in
+                    // one of its own. Hardcoding `true` made a handler whose
+                    // last form is a call return a `TailCall` the caller then
+                    // tried to unwrap as a value — a panic instead of a caught
+                    // error.
+                    return eval_last_body(handler, &catch_env, tail, engine);
                 }
             }
             Err(e)

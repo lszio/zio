@@ -24,6 +24,13 @@ pub trait EvalRuntime {
     fn io(&self) -> &dyn crate::io::IoHost {
         &DEFAULT_STD_IO
     }
+
+    /// This runtime's execution observation port, so a special form can
+    /// report the branch it took without knowing what kind of runtime it
+    /// is running in. Inert when no observer is attached.
+    fn observation(&self) -> &crate::observer::Observation {
+        crate::observer::inert()
+    }
 }
 
 static DEFAULT_STD_IO: crate::io::StdIoHost = crate::io::StdIoHost;
@@ -75,43 +82,74 @@ pub struct EvalContext {
     /// `(export a b)` form appends to the top; `module` forms and module
     /// loaders push before evaluating a body and take the result after.
     pub module_exports: std::cell::RefCell<Vec<Vec<String>>>,
+    /// Execution observation. Absent unless a host attached one, in which
+    /// case every branch, call, error, and macro expansion is reported as
+    /// it happens. See [`crate::observer`].
+    pub observation: crate::observer::Observation,
 }
 
 impl EvalContext {
     fn build(
         env: Arc<Env>,
         io: Arc<dyn crate::io::IoHost>,
+        source_map: Arc<crate::span::SourceMap>,
     ) -> Self {
         EvalContext {
             env,
             modules: std::cell::RefCell::new(ModuleTable::new()),
             loader: std::cell::RefCell::new(None),
             io,
-            source_map: Arc::new(crate::span::SourceMap::new()),
+            source_map,
             module_exports: std::cell::RefCell::new(Vec::new()),
+            observation: crate::observer::Observation::default(),
         }
     }
 
     pub fn new(env: Arc<Env>) -> Self {
-        Self::build(env, Arc::new(crate::io::StdIoHost))
+        Self::build(env, Arc::new(crate::io::StdIoHost), Arc::new(crate::span::SourceMap::new()))
+    }
+
+    /// Attach an execution observer. See [`crate::observer`]: this is the
+    /// only way execution evidence enters the system, and the evaluator
+    /// is the only thing that can produce it.
+    pub fn attach_observer(&self, observer: Arc<dyn crate::observer::Observer>) {
+        self.observation.attach(observer);
+    }
+
+    /// Payloads this context's observer has built. Zero while no observer
+    /// is attached.
+    pub fn payloads_built(&self) -> u64 {
+        self.observation.payloads_built()
+    }
+
+    /// Bound evaluation to `ceiling` nodes, enforced by the evaluator.
+    /// `0` is unbounded. A host running code it did not write sets this
+    /// so a non-terminating program is stopped instead of the machine.
+    pub fn set_step_ceiling(&self, ceiling: u64) {
+        self.observation.set_fuel_ceiling(ceiling);
+    }
+
+    /// Nodes evaluated against the current ceiling.
+    pub fn steps_spent(&self) -> u64 {
+        self.observation.fuel_spent()
     }
 
     pub fn with_io(env: Arc<Env>, io: Arc<dyn crate::io::IoHost>) -> Self {
-        Self::build(env, io)
+        Self::build(env, io, Arc::new(crate::span::SourceMap::new()))
     }
 
-    pub fn with_loader(env: Arc<Env>, loader: Box<ModuleLoader>) -> Self {
-        let ctx = Self::build(env, Arc::new(crate::io::StdIoHost));
-        *ctx.loader.borrow_mut() = Some(loader);
-        ctx
-    }
-
+    /// Full assembly: loader, I/O, and the SourceMap a nested module
+    /// registers its own source into, so every span — script, REPL input,
+    /// or required module — resolves against one registry. Module loading
+    /// only ever happens with an explicit SourceMap and IoHost, so this is
+    /// the single way to build a loading context.
     pub fn with_loader_and_io(
         env: Arc<Env>,
         loader: Box<ModuleLoader>,
         io: Arc<dyn crate::io::IoHost>,
+        source_map: Arc<crate::span::SourceMap>,
     ) -> Self {
-        let ctx = Self::build(env, io);
+        let ctx = Self::build(env, io, source_map);
         *ctx.loader.borrow_mut() = Some(loader);
         ctx
     }

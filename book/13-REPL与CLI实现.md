@@ -19,7 +19,14 @@ Zio 回应: 25
 
 ## CLI 入口
 
-打开 `cli/src/main.rs`。整个 REPL 实现不到 200 行。
+打开 `cli/src/main.rs`。本章保留简化的 REPL 教学实现，不是当前入口的
+完整清单。`zio-cli` 是二进制宿主，未来消费 Rill 官方独立 CLI 组合库；
+Rill 负责参数、子命令、帮助、命令组合、终端 I/O 与退出状态，不承担语言
+求值。它按需安装、独立版本发布，不是 Zio 语言内置特性，Grove 可复用，
+核心无反向依赖。Rill 仍为 Planned，正式短名不是已确认注册包 ID，
+不能用 REPL 可运行代替其验收，也不改名本章源码或运行命令。边界见
+[ADR-019](../docs/adrs.md#adr-019-grove-独立应用与同像性逻辑演化)，
+执行顺序见[统一实现计划](../docs/superpowers/plans/2026-10-05-zio-grove-convergence.md)。
 
 ### Main 函数
 
@@ -91,41 +98,34 @@ fn run_repl(sm: &Arc<SourceMap>) {
 
 ### 上下文创建
 
-```rust
-fn make_ctx(sm: &Arc<SourceMap>) -> EvalContext {
-    let env = make_root_env();
-    let loader = make_require_loader(sm);
-    EvalContext::with_loader(env, loader)
-}
+装配不在 CLI 里，也不在 core 的 eval 里：`core/src/bootstrap.rs` 是唯一的装配入口，
+CLI、编译器前端和 Grove 的候选执行都调用同一个 `language_context`。
 
-fn make_root_env() -> Arc<Env> {
-    let env = Arc::new(Env::new(None));  // 根环境
-    builtins::setup_env(&env);            // 安装全部内置函数（数量见 status.md）
-    setup_special_forms(&env);            // 也可以设置特殊形式引用
-    env
-}
+```rust
+let ctx = zio_core::bootstrap::language_context(
+    zio_core::bootstrap::ModuleRoots::new(roots)?,  // 显式授予的模块根
+)?;                                                 // 标准库失败即返回 Err
 ```
+
+它做三件事：安装内置函数（`builtins::setup_env`）、按授予根安装 `require` 加载器、
+加载 `core.zio` 标准库。标准库是失败即停的 —— 半加载的 stdlib 会让之后的每个符号解析
+都变成猜测，所以解析或求值出错直接返回错误，不降级为警告。
 
 根环境创建时为空（`outer: None`），然后通过 `setup_env` 注入所有内置函数。
 
 ## 脚本运行
 
 ```rust
-fn run_script(path: &str, sm: &Arc<SourceMap>) -> Result<Value, EvalError> {
-    let ctx = make_ctx(sm);
-    load_stdlib(&ctx, sm);        // 加载标准库
-
-    let source = read_source_file(&PathBuf::from(path))?;
-    let mut last_val = Value::Nil;
-
-    // 支持文件中有多个表达式，逐个求值
-    for expr in parse_all(&source) {
-        last_val = eval::eval(&expr, &ctx)?;
-    }
-
-    Ok(last_val)
+fn run_script(path: &str) -> Result<Value, EvalError> {
+    let ctx = language_context(script_roots(path))?;
+    let source = std::fs::read_to_string(path)?;
+    // 源文件按路径名注册进 ctx 的 SourceMap，错误定位直接指向脚本行号
+    eval_source(&ctx, path, &source)
 }
 ```
+
+`eval_source` 是"运行一段 Zio 文本"的唯一入口：它注册来源、逐个求值顶层 form、
+返回最后一个值。
 
 ## 标准库加载
 

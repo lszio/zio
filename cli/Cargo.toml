@@ -6,5 +6,5 @@ license.workspace = true
 
 [dependencies]
 zio-core = { path = "../core" }
-zio-ai = { path = "../ai" }
+loom = { path = "../loom" }
 im = "15.1.0"

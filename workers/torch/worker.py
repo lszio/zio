@@ -215,36 +215,75 @@ def build_model(graph, params: dict, seed: int = 0):
 
 # ── the training action ────────────────────────────────────────────
 
-def make_optimiser(linears: dict, lr: float):
-    """Adam over layer weights in a stable, named order — the order the
-    state artifact serializes and restores."""
-    named = [(name, layer.weight) for name, layer in linears.items()]
-    opt = torch.optim.Adam([w for _, w in named], lr=lr)
+def trainable_layers(graph, linears: dict) -> list[str]:
+    """The layers this graph actually trains, in a stable order.
+
+    An empty `trainable` list means every linear layer, which is what a
+    single-layer baseline declared before the field existed. A name that
+    is not a linear layer is a graph error, not a silent skip: training
+    the wrong thing is worse than refusing.
+    """
+    declared = list(graph.trainable)
+    if not declared:
+        return list(linears.keys())
+    missing = [n for n in declared if n not in linears]
+    if missing:
+        raise GraphError(
+            f"trainable names {missing!r} are not linear layers; "
+            f"the model has {list(linears)}"
+        )
+    return [name for name in linears if name in set(declared)]
+
+
+def make_optimiser(linears: dict, trainable: list[str], lr: float):
+    """Adam over the *trainable* layers' weight **and** bias, in a stable
+    named order — the order the state artifact serializes and restores.
+
+    Two things this gets right that a weight-only version does not:
+    a layer outside `trainable` contributes no parameters at all, and a
+    trainable layer's bias is trained, not frozen by omission.
+    """
+    chosen = set(trainable)
+    named: list[tuple[str, torch.nn.Parameter]] = []
+    for name, layer in linears.items():
+        if name not in chosen:
+            layer.weight.requires_grad_(False)
+            if layer.bias is not None:
+                layer.bias.requires_grad_(False)
+            continue
+        named.append((f"{name}.weight", layer.weight))
+        if layer.bias is not None:
+            named.append((f"{name}.bias", layer.bias))
+    if not named:
+        raise GraphError("no trainable parameter remains after freezing")
+    opt = torch.optim.Adam([p for _, p in named], lr=lr)
     return opt, named
 
 
 def save_state(path: Path, run_id: str, attempt_id: str, step: int,
-               linears: dict, optimiser, first_loss) -> None:
+               linears: dict, optimiser, named, first_loss) -> None:
     """Full training state in a non-executing format: plain JSON of float
     lists and a base64 RNG blob. torch.save/pickle is banned — loading a
     state artifact must never run code.
 
+    Optimizer moments are keyed `name.weight` / `name.bias`, so a bias
+    that was trained round-trips and a frozen layer contributes nothing.
+
     Atomic: write to a temp name, fsync, rename — a killed worker leaves
     no half state that a checkpoint could ever reference.
     """
-    named = [(name, layer.weight) for name, layer in linears.items()]
     opt_state = {}
-    for name, param in named:
+    for key, param in named:
         entry = optimiser.state.get(param)
         if entry is None:
             continue
-        opt_state[name] = {
+        opt_state[key] = {
             "step": int(entry.get("step", torch.tensor(0)).item()),
             "exp_avg": entry["exp_avg"].tolist(),
             "exp_avg_sq": entry["exp_avg_sq"].tolist(),
         }
     payload = {
-        "schema": 1,
+        "schema": 2,
         "protocol": "grove.worker.state/1",
         "run_id": run_id,
         "attempt_id": attempt_id,
@@ -264,25 +303,38 @@ def save_state(path: Path, run_id: str, attempt_id: str, step: int,
     os.replace(tmp, path)
 
 
-def load_state(path: Path, linears: dict, optimiser):
+def load_state(path: Path, linears: dict, optimiser, named):
     """Restore everything the training loop consumes: parameters, Adam
-    moments and step, and the CPU RNG stream."""
+    moments and step, and the CPU RNG stream.
+
+    A state artifact whose `trainable` set does not match this attempt's
+    is refused: resuming optimizer moments for a different parameter set
+    would silently produce a model neither run describes.
+    """
     payload = json.loads(Path(path).read_text(encoding="utf-8"))
-    if payload.get("schema") != 1 or payload.get("protocol") != "grove.worker.state/1":
+    if payload.get("protocol") != "grove.worker.state/1":
         raise GraphError(
             f"state artifact has unsupported schema {payload.get('schema')!r} "
             f"({payload.get('protocol')!r}); refusing to resume blind"
+        )
+    if payload.get("schema") != 2:
+        raise GraphError(
+            f"state artifact schema {payload.get('schema')!r} predates the "
+            "trainable set being recorded; refusing to resume blind"
+        )
+    saved_keys = set(payload.get("optimizer", {}).get("adam", {}))
+    if saved_keys != {key for key, _ in named}:
+        raise GraphError(
+            f"state artifact was saved for optimizer parameters {sorted(saved_keys)}, "
+            f"this attempt trains {sorted(key for key, _ in named)}"
         )
     with torch.no_grad():
         for name, layer in linears.items():
             saved = payload["params"][name]
             layer.weight.copy_(torch.tensor(saved["w"], dtype=torch.float32))
             layer.bias.copy_(torch.tensor(saved["b"], dtype=torch.float32))
-    named = [(name, layer.weight) for name, layer in linears.items()]
-    for name, param in named:
-        entry = payload["optimizer"]["adam"].get(name)
-        if entry is None:
-            continue
+    for key, param in named:
+        entry = payload["optimizer"]["adam"][key]
         optimiser.state[param] = {
             "step": torch.tensor(float(entry["step"])),
             "exp_avg": torch.tensor(entry["exp_avg"], dtype=torch.float32),
@@ -318,13 +370,16 @@ def do_train(frame: dict) -> None:
 
         torch.manual_seed(seed)
         torch.set_num_threads(1)
-        optimiser, named = make_optimiser(linears, lr=0.02)
+        # The trainable set is resolved *before* the optimiser exists, so
+        # a frozen layer contributes no parameters and no optimizer state.
+        trainable = trainable_layers(graph, linears)
+        optimiser, named = make_optimiser(linears, trainable, lr=0.02)
 
         start_step = 0
         first_loss = None
         if resume_path:
             state_run, start_step, first_loss = load_state(
-                Path(resume_path), linears, optimiser)
+                Path(resume_path), linears, optimiser, named)
             if state_run != run_id:
                 raise GraphError(
                     f"state artifact belongs to run {state_run!r}, not {run_id!r}"
@@ -372,7 +427,7 @@ def do_train(frame: dict) -> None:
             # may be declared paused
             if save_at is not None and step >= int(save_at):
                 save_state(Path(frame["state_out"]), run_id, attempt_id, step,
-                           linears, optimiser, first_loss)
+                           linears, optimiser, named, first_loss)
                 emit({"v": PROTOCOL_VERSION, "type": "progress", "run_id": run_id,
                       "attempt_id": attempt_id, "step": step, "loss": last_loss,
                       "saved": str(frame["state_out"])})

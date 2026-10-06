@@ -15,11 +15,12 @@
 //! embeddings) with full-string verification; a miss is a hard error —
 //! the replay contract forbids touching the network.
 
-use std::cell::RefCell;
+use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 
+use crate::harness::{Budget, ChatMessage, ChatRequest, ChatResponse, ModelHost, Usage};
 use crate::{EmbedHost, HostError, HostErrorKind, LlmHost, LlmOptions, fnv1a64};
 
 // ── Scripted backends (for tests and recording) ─────────────────
@@ -27,26 +28,26 @@ use crate::{EmbedHost, HostError, HostErrorKind, LlmHost, LlmOptions, fnv1a64};
 /// Answers completion calls from a queue of responses in order, and
 /// remembers the last prompt/options it saw.
 pub struct ScriptedLlmHost {
-    responses: RefCell<Vec<String>>,
-    pub last_prompt: RefCell<String>,
-    pub last_opts: RefCell<LlmOptions>,
+    responses: Mutex<Vec<String>>,
+    pub last_prompt: Mutex<String>,
+    pub last_opts: Mutex<LlmOptions>,
 }
 
 impl ScriptedLlmHost {
     pub fn new<I: IntoIterator<Item = String>>(responses: I) -> Self {
         ScriptedLlmHost {
-            responses: RefCell::new(responses.into_iter().collect()),
-            last_prompt: RefCell::new(String::new()),
-            last_opts: RefCell::new(LlmOptions::default()),
+            responses: Mutex::new(responses.into_iter().collect()),
+            last_prompt: Mutex::new(String::new()),
+            last_opts: Mutex::new(LlmOptions::default()),
         }
     }
 }
 
 impl LlmHost for ScriptedLlmHost {
     fn complete(&self, prompt: &str, opts: &LlmOptions) -> Result<String, HostError> {
-        *self.last_prompt.borrow_mut() = prompt.to_string();
-        *self.last_opts.borrow_mut() = opts.clone();
-        let mut queue = self.responses.borrow_mut();
+        *self.last_prompt.lock() = prompt.to_string();
+        *self.last_opts.lock() = opts.clone();
+        let mut queue = self.responses.lock();
         if queue.is_empty() {
             return Err(HostError::new(
                 HostErrorKind::Protocol,
@@ -57,25 +58,35 @@ impl LlmHost for ScriptedLlmHost {
     }
 }
 
+impl ModelHost for ScriptedLlmHost {
+    fn respond(
+        &self,
+        request: &ChatRequest,
+        _budget: &Budget,
+    ) -> Result<ChatResponse, HostError> {
+        respond_as_chat(self, request)
+    }
+}
+
 /// Answers embedding calls from a queue of batches in order.
 pub struct ScriptedEmbedHost {
-    batches: RefCell<Vec<Vec<Vec<f64>>>>,
-    pub last_texts: RefCell<Vec<String>>,
+    batches: Mutex<Vec<Vec<Vec<f64>>>>,
+    pub last_texts: Mutex<Vec<String>>,
 }
 
 impl ScriptedEmbedHost {
     pub fn new<I: IntoIterator<Item = Vec<Vec<f64>>>>(batches: I) -> Self {
         ScriptedEmbedHost {
-            batches: RefCell::new(batches.into_iter().collect()),
-            last_texts: RefCell::new(Vec::new()),
+            batches: Mutex::new(batches.into_iter().collect()),
+            last_texts: Mutex::new(Vec::new()),
         }
     }
 }
 
 impl EmbedHost for ScriptedEmbedHost {
     fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f64>>, HostError> {
-        *self.last_texts.borrow_mut() = texts.to_vec();
-        let mut queue = self.batches.borrow_mut();
+        *self.last_texts.lock() = texts.to_vec();
+        let mut queue = self.batches.lock();
         if queue.is_empty() {
             return Err(HostError::new(
                 HostErrorKind::Protocol,
@@ -187,6 +198,88 @@ impl LlmHost for MockLlmHost {
     }
 }
 
+impl ModelHost for MockLlmHost {
+    /// Replay by the *whole request*, not the last prompt.
+    ///
+    /// A conversation is not determined by its final message: the same
+    /// question asked after different turns is a different request, and
+    /// replaying the same answer for both would hide exactly the
+    /// dependence the recording is supposed to pin down. The key covers
+    /// every message, the tool schemas, and the output cap.
+    fn respond(
+        &self,
+        request: &ChatRequest,
+        _budget: &Budget,
+    ) -> Result<ChatResponse, HostError> {
+        let prompt = transcript_prompt(request);
+        let key = fnv1a64(prompt.as_bytes());
+        match self.entries.get(&key) {
+            Some((recorded_prompt, response)) if *recorded_prompt == prompt => {
+                Ok(ChatResponse {
+                    request_id: request.request_id.clone(),
+                    message: ChatMessage {
+                        role: "assistant".into(),
+                        content: serde_json::Value::String(response.clone()),
+                        tool_calls: Vec::new(),
+                        tool_call_id: None,
+                    },
+                    usage: Usage { input_tokens: 0, output_tokens: 0, cost_micros: None },
+                    finish_reason: "stop".into(),
+                })
+            }
+            _ => Err(HostError::new(
+                HostErrorKind::ReplayMiss,
+                format!(
+                    "no llm recording for conversation hash {key:016x} (fail-fast by contract; \
+                     record the call or point at the right recording file)"
+                ),
+            )),
+        }
+    }
+}
+
+/// The canonical text of a request, used as the replay key.
+///
+/// Every part that can change the answer is in it: each message's role
+/// and content, the tool schemas, and the output cap.
+pub fn transcript_prompt(request: &ChatRequest) -> String {
+    let mut out = String::new();
+    for message in &request.messages {
+        out.push_str(&message.role);
+        out.push(':');
+        out.push_str(&message.content.to_string());
+        for call in &message.tool_calls {
+            out.push_str("|call:");
+            out.push_str(&call.name);
+            out.push('(');
+            out.push_str(&call.arguments.to_string());
+            out.push(')');
+        }
+        if let Some(id) = &message.tool_call_id {
+            out.push_str("|for:");
+            out.push_str(id);
+        }
+        out.push('\n');
+    }
+    out.push_str("|tools:");
+    out.push_str(&request.tools.to_string());
+    out.push_str("|max:");
+    out.push_str(&request.max_output_tokens.to_string());
+    // Options change the answer, so they are part of the request's
+    // identity: a recording made at one temperature is not a recording of
+    // the same call at another.
+    out.push_str("|temp:");
+    match request.options.temperature {
+        Some(t) => out.push_str(&t.to_string()),
+        None => out.push_str("default"),
+    }
+    for stop in &request.options.stop {
+        out.push_str("|stop:");
+        out.push_str(stop);
+    }
+    out
+}
+
 /// Replays recorded embedding batches.
 pub struct MockEmbedHost {
     entries: HashMap<u64, (Vec<String>, Vec<Vec<f64>>)>,
@@ -272,27 +365,66 @@ impl EmbedHost for MockEmbedHost {
     }
 }
 
+/// One shared bridge from the narrow text port to the structured one.
+///
+/// Every text-only host in this crate gets [`ModelHost`] through this
+/// function, so there is exactly one place where a `prompt`/`String`
+/// pair becomes a conversation — and no transport that exists only for
+/// the text shape.
+pub(crate) fn respond_as_chat(
+    host: &dyn LlmHost,
+    request: &ChatRequest,
+) -> Result<ChatResponse, HostError> {
+    // The caller's own transcript, without the harness's system message:
+    // a recording keys on the conversation the embedder asked about, not
+    // on the harness's fixed preamble.
+    let caller = &request.messages;
+    let text = caller
+        .last()
+        .and_then(|m| m.content.as_str().map(str::to_string))
+        .unwrap_or_default();
+    let answer = host.complete(
+        &text,
+        &LlmOptions {
+            temperature: request.options.temperature,
+            max_tokens: Some(request.max_output_tokens),
+            stop: request.options.stop.clone(),
+        },
+    )?;
+    Ok(ChatResponse {
+        request_id: request.request_id.clone(),
+        message: ChatMessage {
+            role: "assistant".into(),
+            content: serde_json::Value::String(answer),
+            tool_calls: Vec::new(),
+            tool_call_id: None,
+        },
+        usage: Usage { input_tokens: 0, output_tokens: 0, cost_micros: None },
+        finish_reason: "stop".into(),
+    })
+}
+
 // ── Recording pass-through hosts ────────────────────────────────
 
 /// Wraps a real backend, records every (prompt, response) pair, and saves
 /// the capture as a zio data literal file for [`MockLlmHost`].
 pub struct RecordingLlmHost {
     backend: Arc<dyn LlmHost>,
-    calls: RefCell<Vec<(String, String)>>,
+    calls: Mutex<Vec<(String, String)>>,
 }
 
 impl RecordingLlmHost {
     pub fn new(backend: Arc<dyn LlmHost>) -> Self {
-        RecordingLlmHost { backend, calls: RefCell::new(Vec::new()) }
+        RecordingLlmHost { backend, calls: Mutex::new(Vec::new()) }
     }
 
     pub fn calls(&self) -> usize {
-        self.calls.borrow().len()
+        self.calls.lock().len()
     }
 
     /// Write the captured calls to `path`; returns the entry count.
     pub fn save(&self, path: impl AsRef<Path>) -> std::io::Result<usize> {
-        let calls = self.calls.borrow();
+        let calls = self.calls.lock();
         std::fs::write(path, llm_recording_text(&calls))?;
         Ok(calls.len())
     }
@@ -301,28 +433,64 @@ impl RecordingLlmHost {
 impl LlmHost for RecordingLlmHost {
     fn complete(&self, prompt: &str, opts: &LlmOptions) -> Result<String, HostError> {
         let response = self.backend.complete(prompt, opts)?;
-        self.calls.borrow_mut().push((prompt.to_string(), response.clone()));
+        self.calls.lock().push((prompt.to_string(), response.clone()));
         Ok(response)
+    }
+}
+
+impl ModelHost for RecordingLlmHost {
+    fn respond(
+        &self,
+        request: &ChatRequest,
+        _budget: &Budget,
+    ) -> Result<ChatResponse, HostError> {
+        // The recording is keyed the way replay looks it up: on the
+        // conversation, not on the last message. A recording saved under
+        // the bare prompt would miss the moment a conversation grows a
+        // second turn, which is exactly when the answer changes.
+        let key = transcript_prompt(request);
+        // The request's options reach the backend unchanged: a recorder
+        // that rewrote them would capture a call the embedder never made.
+        let answer = LlmHost::complete(
+            self,
+            &key,
+            &LlmOptions {
+                temperature: request.options.temperature,
+                max_tokens: Some(request.max_output_tokens),
+                stop: request.options.stop.clone(),
+            },
+        )?;
+        Ok(ChatResponse {
+            request_id: request.request_id.clone(),
+            message: ChatMessage {
+                role: "assistant".into(),
+                content: serde_json::Value::String(answer),
+                tool_calls: Vec::new(),
+                tool_call_id: None,
+            },
+            usage: Usage { input_tokens: 0, output_tokens: 0, cost_micros: None },
+            finish_reason: "stop".into(),
+        })
     }
 }
 
 /// Wraps a real embedder and records every batch for [`MockEmbedHost`].
 pub struct RecordingEmbedHost {
     backend: Arc<dyn EmbedHost>,
-    batches: RefCell<Vec<(Vec<String>, Vec<Vec<f64>>)>>,
+    batches: Mutex<Vec<(Vec<String>, Vec<Vec<f64>>)>>,
 }
 
 impl RecordingEmbedHost {
     pub fn new(backend: Arc<dyn EmbedHost>) -> Self {
-        RecordingEmbedHost { backend, batches: RefCell::new(Vec::new()) }
+        RecordingEmbedHost { backend, batches: Mutex::new(Vec::new()) }
     }
 
     pub fn batches(&self) -> usize {
-        self.batches.borrow().len()
+        self.batches.lock().len()
     }
 
     pub fn save(&self, path: impl AsRef<Path>) -> std::io::Result<usize> {
-        let batches = self.batches.borrow();
+        let batches = self.batches.lock();
         std::fs::write(path, embed_recording_text(&batches))?;
         Ok(batches.len())
     }
@@ -331,7 +499,7 @@ impl RecordingEmbedHost {
 impl EmbedHost for RecordingEmbedHost {
     fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f64>>, HostError> {
         let vectors = self.backend.embed(texts)?;
-        self.batches.borrow_mut().push((texts.to_vec(), vectors.clone()));
+        self.batches.lock().push((texts.to_vec(), vectors.clone()));
         Ok(vectors)
     }
 }
@@ -363,7 +531,7 @@ pub fn parse_answer_lines(answer: &str) -> Vec<String> {
 // ── zio data literal format ─────────────────────────────────────
 
 pub fn llm_recording_text(calls: &[(String, String)]) -> String {
-    let mut out = String::from(";; zio-ai llm recording v1 — [\"prompt\" \"response\"] per call\n");
+    let mut out = String::from(";; loom llm recording v1 — [\"prompt\" \"response\"] per call\n");
     for (prompt, response) in calls {
         out.push_str(&format!(
             "[\"{}\" \"{}\"]\n",
@@ -376,7 +544,7 @@ pub fn llm_recording_text(calls: &[(String, String)]) -> String {
 
 pub fn embed_recording_text(batches: &[(Vec<String>, Vec<Vec<f64>>)]) -> String {
     let mut out =
-        String::from(";; zio-ai embedding recording v1 — [[\"t1\" ...] (v1 ...) ...] per batch\n");
+        String::from(";; loom embedding recording v1 — [[\"t1\" ...] (v1 ...) ...] per batch\n");
     for (texts, vectors) in batches {
         let texts: Vec<String> = texts.iter().map(|t| format!("\"{}\"", zio_escape(t))).collect();
         let rows: Vec<String> = vectors

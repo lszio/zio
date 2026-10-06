@@ -217,6 +217,17 @@ impl EvalError {
         }
     }
 
+    /// The host's step budget ran out. Distinct from a program error: the
+    /// program did not do anything wrong, it just did not stop, and a
+    /// caller that retries with a bigger budget should not be told the
+    /// source is broken.
+    pub fn step_limit_exhausted(spent: u64) -> Self {
+        EvalError::Custom(
+            format!("step limit exhausted after {spent} evaluation steps"),
+            SpanContext::DUMMY,
+        )
+    }
+
     pub fn recur_without_loop() -> Self {
         EvalError::RecurWithoutLoop {
             span: SpanContext::DUMMY,

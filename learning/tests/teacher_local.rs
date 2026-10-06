@@ -1,5 +1,5 @@
 //! End-to-end check of the local teacher path: a real torch-trained
-//! teacher served over HTTP, queried through the `zio-ai` teacher host.
+//! teacher served over HTTP, queried through Loom's teacher host.
 //!
 //! Skipped unless a weights file and the venv are present, because the
 //! teacher is an optional backend — its absence is reported, never faked.
@@ -9,8 +9,8 @@ use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
-use zio_ai::teacher::http_teacher::HttpTeacherHost;
-use zio_ai::teacher::{
+use loom::teacher::http_teacher::HttpTeacherHost;
+use loom::teacher::{
     ContentPart, Modality, OutputKind, TeacherCapability, TeacherHost, TeacherRequest,
     UsageLicence,
 };

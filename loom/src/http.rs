@@ -1,6 +1,6 @@
 //! OpenAI-compatible HTTP implementation of the host protocols.
 //!
-//! Opt-in via the `http` feature; the default build of zio-ai has no
+//! Opt-in via the `http` feature; the default build of Loom has no
 //! network dependency at all. The client is small, blocking, and honest
 //! about it (ADR-012/014): a completion call blocks the eval loop for at
 //! most the configured timeout, reads at most `max_response_bytes`, and
@@ -9,6 +9,7 @@
 use std::io::Read;
 use std::time::Duration;
 
+use crate::harness::{Budget, ChatRequest, ChatResponse, ModelHost, Usage};
 use crate::{EmbedHost, HostError, HostErrorKind, LlmHost, LlmOptions};
 
 /// OpenAI-compatible chat/embedding host.
@@ -201,6 +202,147 @@ impl LlmHost for HttpAiHost {
                     "chat/completions: no choices[0].message.content in response",
                 )
             })
+    }
+}
+
+/// Read one tool call out of a provider's answer.
+///
+/// A call the harness cannot attribute is a call it cannot check, so a
+/// missing name or unparsable arguments is a protocol error rather than
+/// a call with a guessed field. A missing *id* is indexable, though: the
+/// position is part of what the provider sent.
+fn parse_tool_call(index: usize, call: &serde_json::Value) -> Result<crate::harness::ToolCall, HostError> {
+    let name = call["function"]["name"]
+        .as_str()
+        .ok_or_else(|| {
+            HostError::new(
+                HostErrorKind::Protocol,
+                "chat/completions: a tool call has no function name",
+            )
+        })?
+        .to_string();
+    let arguments = match call["function"]["arguments"].as_str() {
+        Some(text) => serde_json::from_str(text).map_err(|e| {
+            HostError::new(
+                HostErrorKind::Protocol,
+                format!("chat/completions: tool arguments are not JSON: {e}"),
+            )
+        })?,
+        None => serde_json::Value::Object(Default::default()),
+    };
+    let id = call["id"]
+        .as_str()
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("call-{index}"));
+    Ok(crate::harness::ToolCall { id, name, arguments })
+}
+
+impl ModelHost for HttpAiHost {
+    /// The structured path: the whole conversation is sent, and the
+    /// provider's own tool calls and finish reason are read back.
+    ///
+    /// The narrow `complete` above deliberately collapses to one user
+    /// message — that is what a text binding asks for. This one does
+    /// not, because a provider that answered the last message while
+    /// ignoring the turns before it is answering a different question
+    /// than the one that was asked.
+    fn respond(
+        &self,
+        request: &ChatRequest,
+        _budget: &Budget,
+    ) -> Result<ChatResponse, HostError> {
+        // The API is given the conversation as it stands. A caller-supplied
+        // `system` message is the harness's own instruction and is sent
+        // as such; a caller that tried to supply one is refused before
+        // any request is built.
+        crate::harness::validate_request(request).map_err(|e| {
+            HostError::new(e.kind, format!("chat/completions: {}", e.message))
+        })?;
+        let messages: Vec<serde_json::Value> = request
+            .messages
+            .iter()
+            .map(|m| {
+                let mut out = serde_json::json!({ "role": m.role, "content": m.content });
+                if !m.tool_calls.is_empty() {
+                    out["tool_calls"] = serde_json::Value::Array(
+                        m.tool_calls
+                            .iter()
+                            .map(|c| {
+                                serde_json::json!({
+                                    "id": c.id,
+                                    "type": "function",
+                                    "function": {
+                                        "name": c.name,
+                                        "arguments": c.arguments.to_string(),
+                                    },
+                                })
+                            })
+                            .collect(),
+                    );
+                }
+                if let Some(id) = &m.tool_call_id {
+                    out["tool_call_id"] = serde_json::Value::String(id.clone());
+                }
+                out
+            })
+            .collect();
+        let mut body = serde_json::json!({
+            "model": self.model,
+            "messages": messages,
+        });
+        if request.max_output_tokens > 0 {
+            body["max_tokens"] = serde_json::json!(request.max_output_tokens);
+        }
+        if let Some(temperature) = request.options.temperature {
+            body["temperature"] = serde_json::json!(temperature);
+        }
+        if !request.options.stop.is_empty() {
+            body["stop"] = serde_json::json!(request.options.stop);
+        }
+        if !request.tools.is_null() {
+            body["tools"] = request.tools.clone();
+        }
+        let response = self.post_json("chat/completions", body)?;
+        let choice = response["choices"][0].clone();
+        let raw = choice["message"].clone();
+        let content = raw["content"].clone();
+        let tool_calls = match raw.get("tool_calls") {
+            Some(serde_json::Value::Array(items)) if !items.is_empty() => {
+                let mut calls = Vec::with_capacity(items.len());
+                for (index, call) in items.iter().enumerate() {
+                    calls.push(parse_tool_call(index, call)?);
+                }
+                calls
+            }
+            _ => Vec::new(),
+        };
+        let usage = Usage {
+            input_tokens: response["usage"]["prompt_tokens"].as_u64().unwrap_or(0),
+            output_tokens: response["usage"]["completion_tokens"].as_u64().unwrap_or(0),
+            // A provider that reports no cost is not a free call; the
+            // caller's budget keeps the reservation.
+            cost_micros: None,
+        };
+        // The API's finish_reason names the same four states, and
+        // `check_response` is the single place that decides whether a
+        // finish reason is one this harness can act on.
+        let finish_reason = choice["finish_reason"]
+            .as_str()
+            .unwrap_or("stop")
+            .to_string();
+        let answer = ChatResponse {
+            request_id: request.request_id.clone(),
+            message: crate::harness::ChatMessage {
+                role: "assistant".into(),
+                content,
+                tool_calls,
+                tool_call_id: None,
+            },
+            usage,
+            finish_reason,
+        };
+        crate::harness::check_response(&answer, &request.request_id)?;
+        Ok(answer)
     }
 }
 

@@ -186,11 +186,13 @@
     <ul id="modules" aria-live="polite"><li>Loading…</li></ul>
   </section>
 
-  <!-- ── publish ────────────────────────────────────────────── -->
+  <!-- ── approve ────────────────────────────────────────────── -->
   <section aria-labelledby="h-publish">
-    <h2 id="h-publish">5. Publish</h2>
+    <h2 id="h-publish">5. Approve and publish</h2>
     <p class="note">Publication is a separate grant from training, and it
-      re-checks every gate. A snapshot trained on a retracted signal is refused.</p>
+      re-checks every gate. A snapshot trained on a retracted signal is refused.
+      Nothing here publishes itself: the demo and the CLI produce a candidate,
+      and this form records your decision about it.</p>
     <form id="publish-form">
       <div class="row">
         <label for="pub-snapshot">Snapshot</label>
@@ -204,10 +206,11 @@
         <label for="pub-version">Expected publication version</label>
         <input id="pub-version" name="pub-version" placeholder="leave blank for first">
       </div>
-      <button type="submit" class="danger">Publish this snapshot</button>
+      <button type="submit" class="danger">Approve and publish this snapshot</button>
       <output id="publish-out" role="status" aria-live="polite"></output>
     </form>
     <p id="publication" aria-live="polite"></p>
+    <ul id="approvals" aria-live="polite"></ul>
   </section>
 </main>
 

@@ -7,8 +7,8 @@
 use std::net::TcpListener;
 use std::time::Duration;
 
-use zio_ai::http::HttpAiHost;
-use zio_ai::{HostErrorKind, LlmHost};
+use loom::http::HttpAiHost;
+use loom::{HostErrorKind, LlmHost};
 
 #[test]
 fn read_timeout_maps_to_timeout_error() {
