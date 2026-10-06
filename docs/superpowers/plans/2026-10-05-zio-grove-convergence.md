@@ -1,5 +1,7 @@
 # Zio / Numa / Rill / Loom / Grove 架构收敛 Implementation Plan
 
+> Historical document: paths, commands and delivery claims below describe their original date. The 2026-10-07 language-first cutover supersedes directory and library ownership targets; see [current architecture](../../zio-architecture.md) and [approved layout plan](../plans/2026-10-07-language-first-layout.md). Rust Grove business migration remains outstanding.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use `subagent-driven-development` or `executing-plans` to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 保留 ZOS 的语言核心，交付 Zio 工具链自举、官方独立库 Numa（计算）、Rill（CLI）、Loom（harness），以及消费这些库的独立 Grove 应用。
@@ -298,6 +300,7 @@ pub struct Usage { pub input_tokens: u64, pub output_tokens: u64, pub cost_micro
 pub struct ChatResponse {
     pub request_id: String, pub message: ChatMessage,
     pub usage: Usage, pub finish_reason: String,
+
 }
 // LlmHost::respond(&ChatRequest) -> Result<ChatResponse, HostError>。
 ```
@@ -448,6 +451,7 @@ Accepted != Published；任何状态失败不切正式版本
 
 我自己踩的坑（不是代码缺陷，记录以免重犯）：手工构造 fixture 时用 Python 的裸 `sha256` 算制品摘要，而 `digest_bytes` 是**域分隔**的（`sha256("grove-artifact-v1\0" + bytes)`），于是我"校验通过"的文件被 store 判为损坏。真实路径不经过这段代码。
 
+
 未做（不宣称完成）：`Queued → Accepted` 的**评价**仍无人做（run 停在 `evaluating`，等 G04 的独立评价器）；`Accepted ≠ Published` 成立但 `publish` 仍是独立的人工命令，无 CAS 冲突测试（G04）；fork 不增加原 grant 的验证依赖 `coordinator` 既有 population 语义，本包未新增跨包证明；HTTP 层的并发测试仍只有两条 receipt 合同，没有对同一 `operation_id` 的真并发 HTTP 压测。
 
 ### G04 — 反馈、逻辑候选、独立评价与人工版本切换
@@ -597,6 +601,7 @@ zero norm -> explicit unavailable/abstain, not claimed similarity
 - [ ] 运行 `cargo test -p zio-cli --test lib_contract` 并实际执行这些向量，核对数值和错误；删除只复刻错误刻度/输出措辞的旧测试，而非重新 pin。
 
 ### C01 — 两个消费者驱动的 Numa 官方计算库
+
 
 **Files:** 创建独立库 `numa/Cargo.toml`、`numa/src/lib.rs`、`array.rs`、`kernels.rs`、`numa/tests/array_contract.rs`、`numa/zio/compute.zio`、`examples/numa.zio`；将现有 `lib/zio/vector.zio` 迁至 `numa/zio/vector.zio`，迁移所有 require、测试及依赖；修改根/CLI/app manifest 和向量消费者。C00 的现有路径是迁移前起点，不在 C01 后保留同功能旧模块。
 

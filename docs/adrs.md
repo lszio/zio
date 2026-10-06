@@ -1,5 +1,7 @@
 # Zio 架构决策记录（ADRs）
 
+> 2026-10-07：以下 ADR 保留历史决策与证据；其中独立 Rust 库/旧目录目标由[当前架构](zio-architecture.md)及[批准目录计划](superpowers/plans/2026-10-07-language-first-layout.md)取代。库目标为 Zio，现有 Rust Grove 业务仍待迁移；历史验收数字不代表本轮重新实跑。
+
 > 轻量级架构决策日志。每个 ADR 记录一个关键决策的背景、决策、理由、代价、备选方案。
 >
 > ADR 的“已采纳”只表示设计决策成立，不表示其所有下游能力都已实现。
@@ -104,7 +106,7 @@ pub struct EvalContext {
 
 **状态**: ✅ 已实现
 
-此 ADR 只覆盖 core 中 `im` 类型的结构共享。`lib/zio/persistent.zio`
+此 ADR 只覆盖 core 中 `im` 类型的结构共享。`libs/std/persistent.zio`
 的 library API 状态（Experimental，部分函数待核心 map 迭代支持）以
 [特性矩阵](feature-matrix.md)为准。
 
@@ -298,6 +300,7 @@ pub enum Value {
 
 - Immediate 类型保持内联（性能不损失）
 - Heap Object 通过 trait object 获得开放扩展能力
+
 - `as_any()` 允许向下转型到具体类型
 
 ### 代价
@@ -448,11 +451,12 @@ Clojure 风格集合等特性。如果全部进入 core，核心将膨胀到不�
 - 库之间的版本兼容性需要保证
 - 某些库可能需要核心的 API 扩展（通过 MOP）
 
+
 ---
 
 ## ADR-010: 卫生宏分阶段实现
 
-**状态**: ✅ 已实现（Phase 1：`syntax-rules` 模式匹配 + 自动重命名，见 `core/src/macros.rs`；Explicit Renaming 等高级机制仍为规划）
+**状态**: ✅ 已实现（Phase 1：`syntax-rules` 模式匹配 + 自动重命名，见 `langs/core/src/macros.rs`；Explicit Renaming 等高级机制仍为规划）
 
 ### 背景
 
@@ -598,6 +602,7 @@ core 的 `Value` 含 `Future` 与 `Channel` 变体，`future-call` / `chan` /
 `eval.rs` 的 `apply()` 直接 downcast 到 `GFObject` 并在 eval 层构建
 method combination（`:before`/`:primary`/`:after`/`:around` 链）。这使
 Runtime 层硬编码知晓 ZOS 的具体类型与分派语义，违反定理 5（协议比实现
+
 重要）：MOP 的任何演化（分派缓存、combination 变体）都要修改 eval.rs。
 
 ### 决策
@@ -712,7 +717,7 @@ ADR-012 将并发原语诚实化为同步占位，并把"真并发"推迟为独�
 
 ### 背景
 
-同象性学习器 MVP(`lib/zio/learn.zio`,枚举 + eval 评分)验证了"数据 →
+同象性学习器 MVP(`libs/learning/learn.zio`,枚举 + eval 评分)验证了"数据 →
 搜索 → 程序"的闭环,但枚举提议器受组合爆炸约束(深度 2 即需秒级,
 深度 3 不可行)。程序合成的瓶颈在提议而非评分;学习机器(LLM、遗传
 算子、RL 策略、神经网络)是提议能力的不同来源;zio 的 eval 是共享的
@@ -730,7 +735,7 @@ ADR-012 将并发原语诚实化为同步占位，并把"真并发"推迟为独�
    eval 判定成功。embedding 只做可选的语义桥(自然语言任务),不做
    候选去重(候选去重用 AST 规范化 + 结构哈希)。
 3. **宿主协议外部 attach**:trait `LlmHost` / `EmbedHost` / `ModelHost`
-   进 crate `loom`(H00 已交付,`ai/` 整体迁移;承载 "LLM API / 自学习"
+   进 crate `loom`(H00 已交付,`contribs/native/loom/` 整体迁移;承载 "LLM API / 自学习"
    的宿主能力面;crate 内不含学习算法)。`ModelHost::respond` 是唯一
    provider 端口,窄口 `LlmHost` 经同一个桥接实现它——不保留并行
    text-only transport。
@@ -745,9 +750,10 @@ ADR-012 将并发原语诚实化为同步占位，并把"真并发"推迟为独�
 5. **确定性回放合同**:核心循环对同样提议永远产出同样结果;随机性
    (GP 的 `:seed`、LLM temperature 的 Mock 冻结)隔离在提议边界;
    Mock record/replay 使学习过程精确复现,replay miss 即 fail-fast。
-6. **记忆的语言化(经验即数据)**:`lib/zio/memory.zio` 三索引经验库
+6. **记忆的语言化(经验即数据)**:`libs/learning/memory.zio` 三索引经验库
    ——结构索引(规范化 AST)、行为指纹(规范输入电池上的输出向量,
-   解释器即 embedder)、可选向量索引(`lib/zio/vector.zio`,自然语言
+   解释器即 embedder)、可选向量索引(`libs/numa/vector.zio`,自然语言
+
    任务的语义桥);宏蒸馏升级为**反统一蒸馏**(Plotkin LGG →
    defmacro)+ **环境吸收**(宏定义进经验模块,后续学习 require 之,
    `:ops` 词汇表与白名单扩充;经验文件本身是可 load 的 zio 源码);
@@ -799,7 +805,7 @@ core 不引入任何领域字段。grove 要在此之上加入持久化、权限
 
 ### 决策
 
-1. **新增 `grove` crate（`learning/`）作为可信宿主**，依赖方向单向：
+1. **新增 `grove` crate（`apps/grove/native/learning/`）作为可信宿主**，依赖方向单向：
    `core` ← `loom` ← `grove` ← （未来的 `grove-app`）。core 仍不认识
    学习概念；`grove::install` 以外部 attach 注册 native binding，未装配
    能力返回 `capability-denied:`（沿用 ADR-016 的前缀约定）。
@@ -808,7 +814,7 @@ core 不引入任何领域字段。grove 要在此之上加入持久化、权限
    只会留下无引用对象，不会产生指向不存在字节的已提交记录。
 3. **反馈是纯 Zio 政策，宿主只做授权与事务**。字段作用域、人工优先于
    教师、冲突隔离（后写不获胜）、abstain 一等、冻结数据视图不变更，
-   全部是 `lib/zio/learn/feedback.zio` 的纯函数；`grove` 不复制这套
+   全部是 `libs/learning/learn/feedback.zio` 的纯函数；`grove` 不复制这套
    判断，只做角色门控、幂等回执和生命周期状态。
 4. **教师是独立角色，不是 completion 的别名**。教师必须声明模态、
    输出类型、软输出词表和数据许可；未声明的能力按缺失报告，不以
@@ -840,7 +846,7 @@ core 不引入任何领域字段。grove 要在此之上加入持久化、权限
 
 P1 证据：`cargo test -p grove`（store 22 + feedback 12）、
 `cargo test -p loom --features http --test teacher_contract`（16）、
-`workers/torch/tests/test_training.py`（8）、本地教师真实训练并经
+`apps/grove/workers/torch/tests/test_training.py`（8）、本地教师真实训练并经
 Rust 宿主查询。W00–W17 全部证据见
 [grove 交付计划](superpowers/plans/2026-10-02-self-learning.md) 第 12 节
 与 [特性矩阵](feature-matrix.md)。
@@ -898,6 +904,7 @@ W13 要求模块可组合，W16 要求多专家可集成。两者都面对同一
 
 ### 代价
 
+
 - `ModelSnapshot` 新增 `modules` / `ensemble` / `graph` 三个字段；旧
   记录以 `#[serde(default)]` 继续可读，但结构化快照的构造点显著增多；
 - 语义空间目前是自由字符串，没有全局词表强制，因此校验依赖声明的
@@ -907,10 +914,10 @@ W13 要求模块可组合，W16 要求多专家可集成。两者都面对同一
 
 ### 交付与衡量
 
-`learning/tests/composition_contract.rs`（9）、`ensemble_contract.rs`（12）、
+`apps/grove/native/learning/tests/composition_contract.rs`（9）、`ensemble_contract.rs`（12）、
 `grove-app` 的 `ui_contract`（5）与 `learning_e2e`（6），
 `cargo test --workspace --all-features` 364 通过，
-`python -m unittest discover -s workers/torch/tests` 72 通过，
+`python -m unittest discover -s apps/grove/workers/torch/tests` 72 通过，
 `grove demo --case modular` 真实演化并组合两个模块、拒绝异构空间、
 联合训练至 1.000 并以整体分数发布。
 
@@ -929,7 +936,7 @@ T/C/I/H/G 是新的工作包，不重命名历史 L/W；实施前完成符号影
 三库独立版本、按需引入和安装，不是语言内置组成；Zio/ZOS 与自举工具链仍是
 语言，核心不反向依赖库或产品。当前 `loom`/`zio-cli` 及历史命令不在文档
 修订中重命名；H00/I00/C01 负责迁移/抽取/创建和全部调用者切换。
-目标目录 `loom/`、`rill/`、`numa/` 与模块词根独立；实际注册表包 ID 尚未核验，
+目标目录 `contribs/native/loom/`、`rill/`、`numa/` 与模块词根独立；实际注册表包 ID 尚未核验，
 实施前锁定。此补充更新当前定位，不改写 ADR-009/016 等历史发生时的名称。
 
 ### 背景

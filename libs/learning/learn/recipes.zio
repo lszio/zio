@@ -1,0 +1,201 @@
+;; ── zio.learn.recipes — what may consume which signals, at what cost ──
+;; A recipe is a declaration: the signal kinds it consumes, the parts of
+;; the model it may train, its step budget and its initialization rule.
+;; The loop checks a candidate against the recipe; the worker executes
+;; what the recipe declares. Recipes are data, so a new method (W15's
+;; distillation/preference/…) is a new value, not a new loop.
+
+(def recipes--registry {})
+
+(defn recipes--register [registry recipe]
+  ;; recipes are versioned by id; re-registering an id replaces it
+  (put registry (get recipe :id nil) recipe))
+
+(defn recipes--lookup [registry id]
+  (get registry id nil))
+
+;; The supervised hard-label recipe (W05): consumes teacher labels and
+;; human corrections, trains every declared layer, fixed step budget,
+;; deterministic seeded init.
+(def recipes--supervised
+  {:id "supervised@1"
+   :consumes [:teacher-label :human-correction]
+   :trainable :all            ; every declared layer may move
+   :budget-steps 512
+   :init :seeded              ; structural candidates start from the seed
+   :loss "cross-entropy"})
+
+(defn recipes--check-signal [recipe signal-kind]
+  ;; a recipe silently ignoring a signal kind would be an invisible
+  ;; policy change; refusing is the honest behavior
+  (let* [consumes (get recipe :consumes [])]
+    (reduce (fn [found k] (if found true (= k signal-kind)))
+            false consumes)))
+
+(defn recipes--budget-for [recipe requested]
+  ;; a recipe caps what a candidate may spend, whatever it asks for
+  (let* [cap (get recipe :budget-steps 0)]
+    (if (> requested cap) cap requested)))
+
+(defn recipes--trainable? [recipe layer-name]
+  (let* [policy (get recipe :trainable nil)]
+    (or (= :all policy)
+        (reduce (fn [found n] (if found true (= n layer-name)))
+                false policy))))
+
+;; ── W15: the extended recipe family ──────────────────────────────
+;; Each of the five new methods is a *value* in the same registry, not a
+;; new loop: the host dispatches on the recipe id and `apps/grove/workers/torch/recipes.py`
+;; executes exactly what is declared here. The declarations exist to be
+;; refused, so each one carries the contract field that makes it honest
+;; — a distillation's teacher vocabulary, a policy's action set, a
+;; demonstrator's legal actions — rather than a name and a hope.
+
+(defn recipes--vocab-matches? [recipe teacher-vocab student-vocab]
+  ;; Soft distillation is only meaningful on ONE label space. A teacher
+  ;; whose classes are not the student's classes must be refused, never
+  ;; reshaped into the student's head: reshaping would invent a
+  ;; distribution over classes the teacher never expressed.
+  (let* [want (get recipe :teacher-vocab nil)]
+    (or (nil? want)
+        (and (= (list teacher-vocab) (list want))
+             (= (list student-vocab) (list want))))))
+
+(defn recipes--teacher-vocab-declared? [recipe]
+  (not (nil? (get recipe :teacher-vocab nil))))
+
+(defn recipes--legal-action? [recipe action]
+  ;; Demonstration cloning is supervised on demonstrator actions inside a
+  ;; DECLARED action space. An action outside it is masked out of the
+  ;; loss, not trained: the model is not asked to imitate behaviour the
+  ;; contract says is not available to it.
+  (reduce (fn [found a] (if found true (= a action)))
+          false (get recipe :legal-actions [])))
+
+(defn recipes--preference-usable? [recipe preferred unpreferred]
+  ;; An abstention is not a loss. "I cannot tell" is a position, not a
+  ;; negative, so a pair that contains one is excluded from the objective
+  ;; and counted — never trained as a rejected alternative.
+  (and (not (get preferred :abstain false))
+       (not (get unpreferred :abstain false))))
+
+(defn recipes--action-set-declared? [recipe]
+  ;; A policy recipe without an explicit action set has no termination or
+  ;; reward contract to hold the policy to, so it is refused rather than
+  ;; read as "any action".
+  (let* [actions (get recipe :actions nil)]
+    (and (not (nil? actions)) (> (count actions) 0))))
+
+(defn recipes--delayed-binds-trajectory? [recipe result]
+  ;; A delayed outcome must name the trajectory it belongs to. An
+  ;; unattributable result cannot be attributed later either, so it is
+  ;; refused at submission instead of being silently assigned.
+  (let* [traj (get result :trajectory-id nil)]
+    (and (not (nil? traj)) (not (= traj "")))))
+
+;; ── the registry ────────────────────────────────────────────────
+;; `recipes--registry` collects the declarations the driver dispatches
+;; on. Re-registering an id replaces it, so a version bump is data.
+
+(def recipes--soft-distill
+  {:id "soft-distill@1"
+   :consumes [:teacher-label]
+   :trainable :all
+   :budget-steps 512
+   :init :seeded
+   :loss "kl-divergence"
+   :temperature 2.0
+   ;; the contract field: a soft target is only usable on the student's
+   ;; own label space, so the vocabulary is declared, not inferred
+   :teacher-vocab ["clear" "fault"]})
+
+(def recipes--hard-distill
+  {:id "hard-distill@1"
+   :consumes [:teacher-label]
+   :trainable :all
+   :budget-steps 512
+   :init :seeded
+   :loss "cross-entropy"})
+
+(def recipes--preference
+  {:id "preference@1"
+   :consumes [:human-preference]
+   :trainable :all
+   :budget-steps 512
+   :init :seeded
+   :loss "pairwise-logistic"
+   ;; abstain is a valid position on either side; a pair holding one is
+   ;; excluded from the objective, never trained as a negative
+   :abstain-is-loss false})
+
+(def recipes--demonstration
+  {:id "demonstration@1"
+   :consumes [:demonstration]
+   :trainable :all
+   :budget-steps 512
+   :init :seeded
+   :loss "masked-cross-entropy"
+   ;; the contract field: supervised on demonstrator actions restricted to
+   ;; a declared legal action space. A demonstration that names anything
+   ;; outside this set is masked out of the loss, not trained.
+   :legal-actions ["clear" "fault"]})
+
+(def recipes--self-supervised
+  {:id "self-supervised@1"
+   :consumes [:demonstration]
+   :trainable :all
+   :budget-steps 512
+   :init :seeded
+   :loss "masked-reconstruction"
+   ;; self-supervision may improve the representation but NEVER substitutes
+   ;; for task acceptance: :task-gate is the task's own evaluation, and a
+   ;; run that cannot pass it does not become a candidate however well it
+   ;; reconstructs.
+   :task-gate "holdout-accuracy>=0.90"})
+
+(def recipes--environment-feedback
+  {:id "environment-feedback@1"
+   :consumes [:environment-result]
+   :trainable :all
+   :budget-steps 512
+   :init :seeded
+   :loss "trajectory-return"
+   ;; a delayed outcome names the trajectory it settles; one that cannot
+   ;; is refused at submission
+   :binds :trajectory
+   :delay-allowed true})
+
+(def recipes--policy-gradient
+  {:id "policy-gradient@1"
+   :consumes [:environment-result]
+   :trainable :all
+   :budget-steps 512
+   :init :seeded
+   :loss "reinforce"
+   ;; The contract is the point, not the coverage: an explicit action set,
+   ;; a reward, and a termination rule. This is a RESTRICTED discrete
+   ;; policy over a declared environment, not a claim about arbitrary RL.
+   ;;
+   ;; The action set below is exactly the environment the executor
+   ;; implements (a line of cells; left / right / stay). Action 2 is
+   ;; "stay": it is legal and deliberately useless, so a policy that
+   ;; learns nothing still has somewhere to put its indecision.
+   :actions ["left" "right" "stay"]
+   :reward "step-cost-and-goal-bonus"
+   :termination "reach-goal-or-max-steps"})
+
+(def recipes--all
+  [recipes--supervised
+   recipes--hard-distill
+   recipes--soft-distill
+   recipes--preference
+   recipes--demonstration
+   recipes--self-supervised
+   recipes--environment-feedback
+   recipes--policy-gradient])
+
+(defn recipes--load-registry []
+  (let [reg recipes--registry]
+    (reduce (fn [acc r] (recipes--register acc r)) reg recipes--all)))
+
+(println "zio.learn.recipes loaded (supervised, hard/soft distill, preference, demonstration, self-supervised, environment feedback, restricted policy gradient; pure declaration, no host access)")

@@ -1,0 +1,23 @@
+---
+import Base from '../../layouts/Base.astro';
+import Repl from '../../components/Repl.astro';
+const base = import.meta.env.BASE_URL.replace(/\/$/, '');
+---
+<Base title="Zio Playground — 编辑并运行 Zio" description="在浏览器编辑多行 Zio 源码，通过真实 WebAssembly 会话执行并观察返回值或错误。">
+  <section class="hero hero-page-head">
+    <div class="container">
+      <h1>Zio Playground</h1>
+      <p>编辑下面的源码并执行。真实 WASM 会话保留定义，输出最后一个表达式的值或 reader／求值错误；预设只是可修改的起点。</p>
+      <p>这是语言 Playground，不是 Grove 或学习应用。Future 与 Channel 目前是同步占位能力，不提供真正并发。JS 互操作可以操作当前页面；只执行可信代码，长时间计算可能阻塞页面。</p>
+      <div class="hero-cta">
+        <a href={`${base}/syntax/`} class="btn btn-secondary">语法入门</a>
+        <a href={`${base}/docs/feature-matrix/`} class="btn btn-secondary">当前能力边界</a>
+      </div>
+    </div>
+  </section>
+  <section class="section section-tight"><div class="container"><Repl /></div></section>
+  <script>
+    import { initRepl } from '../../scripts-repl.js';
+    initRepl();
+  </script>
+</Base>

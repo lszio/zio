@@ -1781,7 +1781,6 @@ name = "zio-cli"
 version = "0.2.0"
 dependencies = [
  "im",
- "loom",
  "zio-core",
 ]
 

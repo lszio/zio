@@ -1,5 +1,7 @@
 # 06 - Eval 循环与 Apply：解释器的灵魂
 
+> 2026-10-07 目录更新：本文教学代码与旧阶段/验收描述保留历史语境；源码链接和运行路径已映射到当前位置。现行目标是 `libs/` 的 Zio 库与 `apps/grove/` 的 Zio 业务迁移，Rust Grove 业务尚未整体重写；通用 Rust transport/host adapter 在 `contribs/native/loom/`。当前归属见[架构](../docs/zio-architecture.md)与[批准目录计划](../docs/superpowers/plans/2026-10-07-language-first-layout.md)。
+
 ## 核心问题
 
 问：`(+ 1 2)` 是怎么算出 3 的？
@@ -14,7 +16,7 @@
 
 ## eval_inner：核心求值器
 
-打开 `core/src/eval.rs`，找到 `eval_inner` 函数。它的结构非常清晰：
+打开 `langs/core/src/eval.rs`，找到 `eval_inner` 函数。它的结构非常清晰：
 
 ```rust
 fn eval_inner(expr: &Sexp, env: &Arc<Env>, tail: bool, engine: &dyn EvalEngine)
@@ -148,6 +150,7 @@ eval_inner 的决策树：
 
            ┌─ Nil/Boolean/Integer → 自求值
            │
+
     expr ──┼─ Symbol → env.get(name)
            │
            ├─ List ──┬─ 空列表 → nil
@@ -192,8 +195,8 @@ pub enum TailResult {
 当前 Zio 实现了 `loop/recur` 的 TCO。其他尾位置（if 分支、let body 等）正在实现中。
 
 ## 测试中看 eval
-
-打开 `core/src/eval.rs` 底部有很多测试。找一个看看：
+打开 `langs/core/src/eval.rs` 底部有很多测试。找一个看看：
+打开 `langs/core/src/eval.rs` 底部有很多测试。找一个看看：
 
 ```rust
 #[test]

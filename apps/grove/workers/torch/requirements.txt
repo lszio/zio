@@ -1,0 +1,11 @@
+# Reproducible install for the grove reference training worker (W04).
+# CPU wheels only; the default CLI and the `grove` host do not require
+# this file, and a missing backend is reported as a missing capability
+# rather than degraded into a simulation.
+#
+#   python -m venv .venv
+#   .venv/bin/pip install -r apps/grove/workers/torch/requirements.txt
+#
+# GPU is an accelerator, not a requirement: install the matching CUDA
+# build from https://download.pytorch.org/whl/cu124 in place of torch.
+torch==2.14.1

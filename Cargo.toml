@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["core", "cli", "loom", "learning", "app"]
+members = ["langs/core", "langs/cli", "contribs/native/loom", "apps/grove/native/learning", "apps/grove/native/app"]
 
 [workspace.package]
 version = "0.2.0"

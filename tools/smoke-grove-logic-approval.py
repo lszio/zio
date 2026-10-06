@@ -91,7 +91,7 @@ def main():
         # ── A. governance refusals ────────────────────────────────
         protected = call("POST", "/api/logic/propose", operator, {
             "id": "smoke-protected",
-            "module_path": "learning/src/evaluation.rs",
+            "module_path": "apps/grove/native/learning/src/evaluation.rs",
             "source": "(defn agent-run [t n] {:status \"candidate\"})\n",
             "diff": "try to rewrite the evaluator",
         })
@@ -105,7 +105,7 @@ def main():
                   "(defn validate-entry [s] (= \"agent-entry\" s))\n")
         proposed = call("POST", "/api/logic/propose", operator, {
             "id": "smoke-candidate",
-            "module_path": "lib/zio/agent.zio",
+            "module_path": "libs/loom/agent.zio",
             "source": source,
             "diff": "+validate-entry\n",
         })

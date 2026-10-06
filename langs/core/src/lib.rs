@@ -1,0 +1,27 @@
+#![recursion_limit = "256"]
+pub mod value;
+#[doc(hidden)]
+pub mod im {
+    pub use ::im::*;
+}
+pub mod sexp;
+pub mod env;
+pub mod eval;
+pub mod builtins;
+pub mod bootstrap;
+pub mod error;
+pub mod macros;
+pub mod observer;
+pub mod module;
+pub mod span;
+pub mod special;
+pub mod reader;
+pub mod syntax;
+pub mod context;
+pub mod io;
+pub mod zos;
+pub mod wasm;
+/// Return the embedded core standard library source.
+pub fn stdlib_source() -> &'static str {
+    include_str!("../../../libs/std/core.zio")
+}

@@ -1,0 +1,100 @@
+;; libs/learning/memory.zio contract — three indexes over one fact base and
+;; the refusals that keep them honest.
+(load "libs/learning/memory.zio")
+
+(defn check [label actual expected]
+  (if (= actual expected)
+    (println "PASS" label)
+    (println "FAIL" label "got:" actual "want:" expected)))
+
+;; ── structural index ────────────────────────────────────────────
+;; same shape, different literals/names → one structural key
+(def a1 {:memory/id "s-1" :memory/ast "(+ (* 2 x) 1)"
+         :memory/ast-shape (memory--ast-shape '(+ (* 2 x) 1))
+         :memory/usage-permitted true
+         :memory/sources ["o-1"]})
+(def a2 {:memory/id "s-2" :memory/ast "(+ (* 7 y) 3)"
+         :memory/ast-shape (memory--ast-shape '(+ (* 7 y) 3))
+         :memory/usage-permitted true
+         :memory/sources ["o-1"]})
+(def a3 {:memory/id "s-3" :memory/ast "(cons h t)"
+         :memory/ast-shape (memory--ast-shape '(cons h t))
+         :memory/usage-permitted true
+         :memory/sources ["o-1"]})
+
+(check "shape-same" (memory--structural-key a1) (memory--structural-key a2))
+(check "shape-differs" (= (memory--structural-key a1) (memory--structural-key a3)) false)
+
+(def sindex (memory--index-structural [a1 a2 a3]))
+(check "structural-index-count" (count sindex) 3)
+(check "structural-neighbours" (count (memory--structural-neighbours sindex '(+ (* 9 z) 4))) 2)
+(check "structural-neighbours-other" (count (memory--structural-neighbours sindex '(cons a b))) 1)
+
+;; merge is AST-gated: a different AST is refused, same AST merges
+(check "merge-refuses-different-ast"
+       (if (= (memory--merge-structural a1 a3) a1) true false)
+       false)
+(check "merge-same-ast-id" (get (memory--merge-structural a1 {:memory/id "s-9" :memory/ast "(+ (* 2 x) 1)"}) :memory/id) "s-9")
+
+;; ── behavioural index (named probe set) ─────────────────────────
+(def b1 {:memory/id "b-1" :memory/probes "arith-v1" :memory/fingerprint "fp-a"})
+(def b2 {:memory/id "b-2" :memory/probes "arith-v1" :memory/fingerprint "fp-a"})
+(def b3 {:memory/id "b-3" :memory/probes "arith-v2" :memory/fingerprint "fp-a"})
+
+(check "probe-same-match" (memory--behavioural-match? b1 b2) true)
+;; different probe set → no claim at all (nil), never a cross-set compare
+(check "probe-differs-nil" (memory--behavioural-match? b1 b3) nil)
+(check "probe-compatible-differs" (memory--fingerprint-compatible? b1 b3) false)
+
+(def bindex (memory--index-behavioural [b1 b2 b3]))
+(check "behavioural-bucket-v1" (count (memory--behavioural-bucket bindex "arith-v1")) 2)
+(check "behavioural-bucket-v2" (count (memory--behavioural-bucket bindex "arith-v2")) 1)
+
+;; ── licence refusal (an error, not a filtered row) ──────────────
+(def allowed {:memory/id "L1" :memory/usage-permitted true :memory/sources ["o-ok"]})
+(def own-refused {:memory/id "L2" :memory/usage-permitted false :memory/sources ["o-ok"]})
+(def source-refused {:memory/id "L3" :memory/usage-permitted true :memory/sources ["o-no"]})
+(def src {"o-ok" true})
+
+(check "licence-allowed" (memory--retrievable? allowed src) true)
+(check "licence-own-refused-is-string" (string? (memory--retrievable? own-refused src)) true)
+(check "licence-source-refused-is-string" (string? (memory--retrievable? source-refused src)) true)
+(check "licence-refusal-carries-id"
+       (str-contains? (memory--retrievable? own-refused src) "L2") true)
+
+;; ── abstraction extraction ──────────────────────────────────────
+(def progs '[(+ (* 2 x) 1) (+ (* 3 y) 2) (+ (* 5 z) 7)])
+(def shared (memory--common-abstraction progs))
+(check "abstraction-spine" shared ["+" "*"])
+;; a program on a different spine truncates the shared prefix to empty
+(def mixed '[(+ (* 2 x) 1) (cons h t)])
+(check "abstraction-truncates-empty" (count (memory--common-abstraction mixed)) 0)
+
+;; description length counts the call sites PLUS the library definition.
+;; `count` of a call form is its elements: (+ (* 2 x) 1) is 3, and the
+;; abstracted (apply-spine 2 x 1) is 4 — the abstraction is honestly
+;; LONGER than the one program it came from.
+(def before-dl (memory--description-length '[(+ (* 2 x) 1)] 0))
+(def after-dl (memory--description-length '[(apply-spine 2 x 1)] 14))
+(check "dl-before-is-one-program" before-dl 3)
+(check "dl-counts-definition" after-dl 18)
+;; several call sites share ONE definition: charged once, not per call
+(def two-calls (memory--description-length '[(apply-spine 1 2 3) (apply-spine 4 5 6)] 14))
+(check "dl-two-calls-one-definition" two-calls 22)
+(check "dl-not-per-call" (= two-calls (* 2 after-dl)) false)
+;; a library hidden in a function name is still charged
+(check "dl-zero-definition-is-call-only" (memory--description-length '[(apply-spine 1 2 3)] 0) 4)
+;; the honest verdict: one program does NOT pay for the library
+(check "dl-one-call-loses" (> after-dl before-dl) true)
+
+;; ── macro route: last resort, and re-checked after expansion ────
+;; a 2-deep spine is a plain function; a macro is only proposed deeper
+(check "macro-not-for-short-spine" (memory--macro-candidate '[(+ (* 2 x) 1) (+ (* 3 y) 2)]) nil)
+(def macro-long (memory--macro-candidate '[(+ (* (/ 2 x) 1) 3) (+ (* (/ 3 y) 2) 5) (+ (* (/ 5 z) 7) 9)]))
+(check "macro-for-deep-spine" (list? macro-long) true)
+(check "macro-candidate-carries-name" (get macro-long 1) 'memory--apply-spine)
+;; the re-check: the invocation is expanded, and the expansion is what
+;; gets validated — expansion can reintroduce hidden dependencies
+(def expanded (memory--expanded-body '(memory--apply-spine 'x 'y)))
+(check "macro-recheck-after-expansion" (list? expanded) true)
+(check "macro-expansion-not-the-macro-call" (= (car expanded) 'y) true)

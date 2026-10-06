@@ -1,7 +1,7 @@
 target
-site/node_modules
-site/dist
-site/.astro
+apps/site/node_modules
+apps/site/dist
+apps/site/.astro
 .git
 .github
 *.md.bak

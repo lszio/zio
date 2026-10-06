@@ -22,8 +22,8 @@ __pycache__/
 /.agents/skills/*
 !/.agents/skills/architect/
 
-# Astro build output and deps. site/public/wasm is deliberately NOT ignored:
+# Astro build output and deps. apps/site/public/wasm is deliberately tracked:
 # the committed wasm bundle is what the page loads (tools/build-wasm.sh).
-site/node_modules/
-site/dist/
-site/.astro/
+apps/site/node_modules/
+apps/site/dist/
+apps/site/.astro/

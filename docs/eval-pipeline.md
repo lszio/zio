@@ -87,17 +87,11 @@ ZIR、bytecode VM 与 JIT 尚未实现；其批准设计和状态见
 计划增加可关闭的执行观测：开启时关联程序版本、源码/表达式、分支与能力
 调用；关闭时不构造轨迹对象，不把学习策略或模型协议放入核心。
 
-Numa（数值计算）、Rill（CLI 组合）、Loom（Agent harness）是按需安装、
-独立版本发布的官方库，均不属于 Zio/ZOS 或编译工具链的语言语义。
-Grove 消费语言与库，核心没有反向依赖。当前 `zio-ai` 是 Loom 的起点，
-`zio-cli` 是未来消费 Rill 的可执行宿主，包名、路径与示例保持现状；
-正式短名不是已注册包 ID，新增能力仍为 Planned。职责依据
-[ADR-019](adrs.md#adr-019-grove-独立应用与同像性逻辑演化)，依赖见
-[统一实现计划](superpowers/plans/2026-10-05-zio-grove-convergence.md)。
+Zio 库目标采用 Zio 实现并归入 `libs/`：Numa 持计算，Rill 持 CLI 组合，Loom 持 harness 组合。现有 Rust 通用传输/宿主合同位于 `contribs/native/loom/`，不是 Zio 库本体；普通语言 CLI 位于 `langs/cli/`，不装配 LLM replay。Grove 是 `apps/grove/` 独立应用，其 Rust 业务仍待后续迁为 Zio；语言介绍、文档与 playground 位于 `apps/site/`。本轮只完成结构切换，不证明完整库交付、Tree-sitter、LSP 或编译器自举。当前合同见[架构](zio-architecture.md)与[批准目录计划](superpowers/plans/2026-10-07-language-first-layout.md)。短名不等于已注册包 ID。
 
 ---
 
-## 2 Eval 引擎详解
+## 2 Eval 循环
 
 ### 2.1 eval_inner 核心逻辑
 
@@ -148,6 +142,7 @@ pub fn apply(func: Value, args: Vector<Value>, engine: &dyn EvalEngine) -> TailR
 当前 evaluator 有两条不同的无栈增长路径：
 
 - 普通函数调用出现在尾位置时，`eval_inner` 返回
+
   `TailResult::TailCall(Value, Vector<Value>)`。`eval()` trampoline（以及非尾调用
   内部的 trampoline）反复调用 `apply`，因此普通自递归和 `even?`/`odd?`
   这类互递归都不会为每次尾调用增加 Rust 栈帧。函数体以及 `if`、`cond`、
@@ -167,8 +162,8 @@ pub fn apply(func: Value, args: Vector<Value>, engine: &dyn EvalEngine) -> TailR
 
 ZOS 是 `zio-core` crate 的一部分，不是独立 crate：
 
-```
-zio-core/src/
+langs/core/src/
+langs/core/src/
 ├── lib.rs            — 模块入口
 ├── value.rs          — Value 枚举 + Value::Object
 ├── sexp.rs           — Sexp 语法树
@@ -197,8 +192,8 @@ zio-core/src/
 
 当前 experimental ZOS subset：
 
-```
-zio-core/src/zos/
+langs/core/src/zos/
+langs/core/src/zos/
 ├── mod.rs            — ZOS 模块入口
 ├── object.rs         — ObjectHeader + ZosObject trait
 ├── class.rs          — Class 定义 + 注册表 + defclass
@@ -213,8 +208,8 @@ zio-core/src/zos/
 [特性矩阵](feature-matrix.md)为准。
 
 ### 3.2 EvalEngine 拆分
-
-这是 `core/src/context.rs` 中已经存在的当前 API。求值与模块注册分别由两个
+这是 `langs/core/src/context.rs` 中已经存在的当前 API。求值与模块注册分别由两个
+这是 `langs/core/src/context.rs` 中已经存在的当前 API。求值与模块注册分别由两个
 能力 trait 表达，`EvalEngine` 是组合二者的 marker supertrait：
 
 ```rust

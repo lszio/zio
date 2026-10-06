@@ -23,9 +23,7 @@ Zio = Stable Lisp 核心（Reader + Sexp + AST eval/apply + 宏 + stdlib）
     + Rust 宿主（EvalContext + NativeFn）
 ```
 
-Numa（数值计算）、Rill（CLI 组合）、Loom（Agent harness）是官方独立库，
-不是语言内置特性；按需安装、独立版本发布，Grove 是消费这些库的独立应用。
-现有 `.zio` 库与 Rust 宿主是复用起点，不表示三库已经交付。具体状态见[特性矩阵](feature-matrix.md)。
+Zio 库目标采用 Zio 实现并归入 `libs/`：Numa 持计算，Rill 持 CLI 组合，Loom 持 harness 组合。现有 Rust 通用传输/宿主合同位于 `contribs/native/loom/`，不是 Zio 库本体；普通语言 CLI 位于 `langs/cli/`，不装配 LLM replay。Grove 是 `apps/grove/` 独立应用，其 Rust 业务仍待后续迁为 Zio；语言介绍、文档与 playground 位于 `apps/site/`。本轮只完成结构切换，不证明完整库交付、Tree-sitter、LSP 或编译器自举。当前合同见[架构](zio-architecture.md)与[批准目录计划](superpowers/plans/2026-10-07-language-first-layout.md)。短名不等于已注册包 ID。
 
 ### 1.2 核心命题
 
@@ -44,22 +42,12 @@ Zio 语言与生态的规划分解（不是当前组件清单）：
 Zio 语言 = 当前 AST Lisp 核心 + 保留在核心的 Experimental ZOS 子集
          + Planned Zio 展开 / 分析 / 编译器与最小执行后端
          + Planned 后续 ZIR / JIT / 编辑器 / LSP / Debugger
-官方独立库 = Numa（计算） / Rill（CLI 组合） / Loom（Agent harness）
+官方 Zio 库 = Numa（计算） / Rill（CLI 组合） / Loom（Agent harness）
 独立应用 = Grove（消费语言与库，治理学习、评价、检查点与发布）
 依赖方向 = 库与 Grove → 语言；语言核心不反向依赖库或 Grove
 ```
 
-三库的正式短名不等于已注册包 ID。未来规范目录与逻辑命名空间分别为
-`numa/`、`rill/`、`loom/` 与 `numa/*`、`rill/*`、`loom/*`，不是语言组件
-`zio/compute` 或 `zio/command`；包注册 ID 未定，不能把命名空间占位当安装命令。
-当前 `zio-ai`/`ai/` 是 Loom 的复用起点，`zio-cli`/`cli/` 是未来消费 Rill
-的可执行宿主，本次不重命名 crate、目录、命令或已有 API。
-迁移计划为 `ai/` → `loom/`，新建独立 `rill/` 库（不把 `cli/src/lib.rs`
-当公共命令库），新建 `numa/` 与 `numa/zio/compute.zio`，并把当前
-`lib/zio/vector.zio` 迁到 `numa/zio/vector.zio`。这些是后续
-实施目标，不是当前文件；普通语言 CLI 不要求 Loom，ACP 服务由 Grove
-向 Loom 注入执行回调并通过未来 `grove acp serve` 装配。
-所有新增能力仍为 Planned；批准依赖与验收见[统一实现计划](superpowers/plans/2026-10-05-zio-grove-convergence.md)。
+Zio 库目标采用 Zio 实现并归入 `libs/`：Numa 持计算，Rill 持 CLI 组合，Loom 持 harness 组合。现有 Rust 通用传输/宿主合同位于 `contribs/native/loom/`，不是 Zio 库本体；普通语言 CLI 位于 `langs/cli/`，不装配 LLM replay。Grove 是 `apps/grove/` 独立应用，其 Rust 业务仍待后续迁为 Zio；语言介绍、文档与 playground 位于 `apps/site/`。本轮只完成结构切换，不证明完整库交付、Tree-sitter、LSP 或编译器自举。当前合同见[架构](zio-architecture.md)与[批准目录计划](superpowers/plans/2026-10-07-language-first-layout.md)。短名不等于已注册包 ID。
 
 ---
 
@@ -74,11 +62,11 @@ Zio 语言 = 当前 AST Lisp 核心 + 保留在核心的 Experimental ZOS 子集
 
 **原理**: 隐藏的可变状态是测试、嵌入、并发的最大敌人。显式状态使系统可隔离、可 mock、可缩放。
 
-### 定理 2: Rust 是合同边界，Lisp 是组合层
+### 定理 2: 语言先行，库与应用用 Zio 实现
 
-**推论**: 性能关键路径通过 `NativeFn` 用 Rust 实现。Lisp 层负责策略、组合、元编程。
+**推论**：不能把 Zio 固定为 Rust 业务的配置或编排层。领域算法、策略与应用业务首先用 Zio 表达；缺少能力时补齐可被其他程序复用的语言原语或库。
 
-**原理**: Rust 层提供最小、正确、经过测试的原语。Lisp 层通过宏、高阶函数、DSL 组合这些原语。两者通过 `EvalEngine` trait 解耦。
+**原理**：Rust 是当前引导运行时与必要宿主边界的实现语言，不是领域业务必须落入的层。原生实现仅承担语言执行、系统能力、可信隔离与有实测需求的计算原语；不添加 Grove 专用特殊形式来替代 Zio 应用实现。
 
 ### 定理 3: 宏是用户扩展 eval 的方式
 
@@ -148,16 +136,17 @@ Zio 的核心特性构成一个自洽的整体，不是其他语言特性的组�
 | **持久化数据结构** | 核心值与库 | 当前 `im` 集合；完整扩展集合库另行验收 |
 | **Rust 嵌入** | 宿主 | 可嵌入；不作零分配或零开销保证 |
 
+
 ### 4.1 规划中的扩展库
 
 扩展的归属按职责决定，不要求所有性能或协议代码都写成宏/MOP：
 
 | 能力 | 起点与落点 | 状态 |
-|------|------------|------|
-| Numa：数值数组/矩阵/向量与后端接口 | 复用 `lib/zio/vector.zio`、`workers/torch/` 的计算边界；连续 typed array 与公共计算接口按需求扩展，不持训练或发布治理 | 当前组件 Experimental；Numa Planned |
+| Numa：数值数组/矩阵/向量与后端接口 | 复用 `libs/numa/vector.zio`、`apps/grove/workers/torch/` 的计算边界；连续 typed array 与公共计算接口按需求扩展，不持训练或发布治理 | 当前组件 Experimental；Numa Planned |
+| Numa：数值数组/矩阵/向量与后端接口 | 复用 `libs/numa/vector.zio`、`apps/grove/workers/torch/` 的计算边界；连续 typed array 与公共计算接口按需求扩展，不持训练或发布治理 | 当前组件 Experimental；Numa Planned |
 | Rill：CLI 应用组织 | 参数、子命令、帮助、命令组合、终端 I/O 与退出状态；`zio-cli` 当前为脚本/REPL 可执行入口，未来消费 Rill；不承担语言求值 | Rill Planned |
-| Loom：模型与工具 harness | 复用当前 `zio-ai`；模型、工具、会话、预算、取消、provider 与 ACP，不进入 eval 特殊形式，不持 Grove 学习目标/评价/发布 | Loom Planned |
-| Grove 独立应用 | `learning/`、`app/` 和 Zio 策略；首条主线为真实 agent 逻辑与受控演化 | 当前组件 Experimental；新主线 Planned |
+| Grove 独立应用 | `apps/grove/native/learning/`、`apps/grove/native/app/` 和 Zio 策略；首条主线为真实 agent 逻辑与受控演化 | Rust 业务仍待迁为 Zio；能力见特性矩阵 |
+| Grove 独立应用 | `apps/grove/native/learning/`、`apps/grove/native/app/` 和 Zio 策略；首条主线为真实 agent 逻辑与受控演化 | Rust 业务仍待迁为 Zio；能力见特性矩阵 |
 | Datalog / Entity / Protocol / 集合 | 保留已有数据表达与占位模块；领域执行不因能加载文件而成立 | 各项状态见特性矩阵 |
 
 ### 4.2 自举
@@ -208,7 +197,7 @@ ZOS（Zio Object System）是 Zio 的统一运行时对象模型。它不是传�
 ## 6 架构分层
 
 ```text
-当前：zio-cli / zio-ai / grove-app
+当前：zio-cli / loom native adapter / grove-app
                   ↓
       Grove 内部宿主 + CPU 后端 / Zio 标准库与领域组件
                   ↓

@@ -1,5 +1,7 @@
 # 01: 你好，eval
 
+> 2026-10-07 目录更新：本文教学代码与旧阶段/验收描述保留历史语境；源码链接和运行路径已映射到当前位置。现行目标是 `libs/` 的 Zio 库与 `apps/grove/` 的 Zio 业务迁移，Rust Grove 业务尚未整体重写；通用 Rust transport/host adapter 在 `contribs/native/loom/`。当前归属见[架构](../docs/zio-architecture.md)与[批准目录计划](../docs/superpowers/plans/2026-10-07-language-first-layout.md)。
+
 > 评估一段 Lisp 代码，就是"求值"（eval）。从 S 表达式（S-expression）到运行时值（Value），这就是 eval 循环的核心。
 
 ---
@@ -16,7 +18,7 @@ Lisp 的 eval 和其他语言的解释器有一个根本不同：**代码本身�
 
 ## eval 循环
 
-打开 [`core/src/eval.rs`](../core/src/eval.rs)，看 `eval_inner` 函数：
+打开 [`langs/core/src/eval.rs`](../langs/core/src/eval.rs)，看 `eval_inner` 函数：
 
 ```rust
 fn eval_inner(expr: &Sexp, env: &Arc<Env>, tail: bool, engine: &dyn EvalEngine) -> Result<TailResult, EvalError> {
@@ -104,13 +106,13 @@ eval 的处理流程：
 
 ## 在代码中
 
-- 打开 [`core/src/eval.rs`](../core/src/eval.rs)，看 `eval_inner`（第 81-161 行）
-- 打开 [`core/src/sexp.rs`](../core/src/sexp.rs)，看 `Sexp` 枚举的定义
-- 打开 [`core/src/value.rs`](../core/src/value.rs)，对比 `Value` 枚举
+- 打开 [`langs/core/src/eval.rs`](../langs/core/src/eval.rs)，看 `eval_inner`（第 81-161 行）
+- 打开 [`langs/core/src/sexp.rs`](../langs/core/src/sexp.rs)，看 `Sexp` 枚举的定义
+- 打开 [`langs/core/src/value.rs`](../langs/core/src/value.rs)，对比 `Value` 枚举
 
 ```bash
 # 启动 REPL，试试 eval
-cargo run
+cargo run -p zio-cli
 
 # 在 REPL 中
 zio> (+ 1 2 3)

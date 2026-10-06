@@ -2,11 +2,7 @@
 
 > 语言、ZOS、工具链、公共基础设施与 Grove 的术语。规范名不等于已有 API；当前成熟度见[特性矩阵](feature-matrix.md)，架构与权限以[ADR-019](adrs.md#adr-019-grove-独立应用与同像性逻辑演化)为准。
 
-Numa、Rill、Loom 是按需安装、独立版本发布的官方库短名，不是语言内置
-特性或已确认的包注册 ID；新增能力均为 Planned。未来规范目录与逻辑命名
-空间为 `numa/`、`rill/`、`loom/` 和 `numa/*`、`rill/*`、`loom/*`，不是
-`zio/compute`、`zio/command` 等语言组件，也不是可执行安装命令。当前
-crate、路径与函数名不在此次同步中改名；执行依赖见[统一实现计划](superpowers/plans/2026-10-05-zio-grove-convergence.md)。
+Zio 库目标采用 Zio 实现并归入 `libs/`：Numa 持计算，Rill 持 CLI 组合，Loom 持 harness 组合。现有 Rust 通用传输/宿主合同位于 `contribs/native/loom/`，不是 Zio 库本体；普通语言 CLI 位于 `langs/cli/`，不装配 LLM replay。Grove 是 `apps/grove/` 独立应用，其 Rust 业务仍待后续迁为 Zio；语言介绍、文档与 playground 位于 `apps/site/`。本轮只完成结构切换，不证明完整库交付、Tree-sitter、LSP 或编译器自举。当前合同见[架构](zio-architecture.md)与[批准目录计划](superpowers/plans/2026-10-07-language-first-layout.md)。短名不等于已注册包 ID。
 
 ---
 
@@ -89,7 +85,7 @@ GF（Generic Function）的参数类型 → 方法列表的缓存。ZOS 使用 4
 
 当前核心求值 trait，提供 `eval_expr`、`env()`、`source_map()` 和宿主 `io()`；
 `io()` 默认使用 `StdIoHost`。模块加载、缓存与导出累积由独立的
-`ModuleRegistry` trait 提供。完整签名见 [`core/src/context.rs`](../core/src/context.rs)。
+`ModuleRegistry` trait 提供。完整签名见 [`langs/core/src/context.rs`](../langs/core/src/context.rs)。
 
 ---
 
@@ -109,7 +105,7 @@ ZOS 的多分派函数。不是单分派对象的方法，而是完全独立、�
 
 ### Grove
 
-五字母正式短名，独立的模块化自学习与逻辑演化应用，消费 Zio 与 Numa、Rill、Loom，拥有学习目标、实验、反馈、检查点、独立评价、人工审查、逻辑演化和发布及 Web。内部宿主 `grove` crate 位于 `learning/`，应用 `grove-app` 位于 `app/`；内部采用库结构不意味着库优先或可选产品壳，语言核心无反向依赖。
+五字母正式短名，独立的模块化自学习与逻辑演化应用，消费 Zio 与 Numa、Rill、Loom，拥有学习目标、实验、反馈、检查点、独立评价、人工审查、逻辑演化和发布及 Web。内部宿主 `grove` crate 位于 `apps/grove/native/learning/`，应用 `grove-app` 位于 `apps/grove/native/app/`；内部采用库结构不意味着库优先或可选产品壳，语言核心无反向依赖。
 
 ---
 
@@ -123,7 +119,7 @@ ZOS 的多分派函数。不是单分派对象的方法，而是完全独立、�
 
 ### Harness
 
-Agent 执行基础设施的职责名称，官方独立库正式短名为 [Loom](#loom)。Loom 持有模型/工具会话、预算、取消、provider 与 ACP；不持 Grove 的学习目标、独立评价或正式发布批准。
+Agent 执行基础设施的职责名称，官方 Zio 库正式短名为 [Loom](#loom)。Loom 持有模型/工具会话、预算、取消、provider 与 ACP；不持 Grove 的学习目标、独立评价或正式发布批准。
 
 ### Heap Object
 
@@ -143,12 +139,10 @@ ZOS 中可以内联在 `Value` 枚举中的类型。包括 Integer、Float、Boo
 
 ### Loom
 
-四字母正式短名，官方独立 Agent harness 库（Planned），可供 Grove 与其他
-入口按需安装、独立版本使用。负责模型、工具、会话、预算、取消、provider
-及 ACP；当前 `zio-ai` crate 与 `ai/` 是复用起点，不因采用 Loom 短名而
-已被重命名，也不是完整 Loom 交付证据。学习目标、反馈政策、独立评价与
-发布治理留在 Grove，Loom 不反向进入语言核心。
-未来按计划迁移 `ai/` → `loom/`；普通语言 CLI 不要求 Loom，ACP 服务
+四字母 harness 库方向。Zio 组合位于 `libs/loom/`；已有 Rust crate `loom`
+位于 `contribs/native/loom/`，提供通用模型/工具合同、预算与传输适配，
+不能把它视为 Zio 库已整体完成。学习目标、评价与批准留在 Grove。
+ACP 与各模型能力的状态以特性矩阵为准；语言 CLI 不装配 LLM replay。
 由 Grove 注入执行回调并通过未来 `grove acp serve` 装配，不是语言 CLI 子命令。
 
 ---
@@ -184,13 +178,10 @@ ZOS 中多个 Method 组合执行的方式。支持 `:before`、`:after`、`:aro
 Rust 实现的 Zio 函数。签名：`fn(Vector<Value>, &dyn EvalEngine) -> Result<Value, EvalError>`。所有性能关键路径通过 NativeFn 实现。
 
 ### Numa
-
-四字母正式短名，官方独立计算库（Planned），负责连续 typed 数值数组、
-矩阵、向量及后端接口，按需安装、独立版本使用。现有
-`lib/zio/vector.zio` 与 torch worker 是复用起点，不是 Numa 包已交付的
-证明；数值执行与 Grove 的训练实验、检查点和发布治理分开。
-未来新建独立 `numa/` 与 `numa/zio/compute.zio`，并将当前
-`lib/zio/vector.zio` 迁到 `numa/zio/vector.zio`；这些路径是 Planned 目标。
+四字母计算库方向，Zio 向量库已位于 `libs/numa/vector.zio`。
+连续数组、矩阵及更广后端能力仍按特性矩阵验收；CPU worker 是
+`apps/grove/workers/torch/` 应用后端，不证明整个 Numa 库已完成。
+计算与 Grove 训练、评价、发布治理分开，不以新建独立 Rust 业务库为目标。
 
 ---
 
@@ -241,13 +232,9 @@ Rust 的内部可变性模式。ZOS 在单线程阶段使用 `RefCell` 管理可
 Condition System 的恢复选项。当 condition 被 signal 时，调用者可以从多个 restart 中选择恢复策略。
 
 ### Rill
-
-四字母正式短名，官方独立 CLI 组合库（Planned），负责参数、子命令、
-帮助、命令组合、终端 I/O 与退出状态，不承担 Zio 语言求值。当前
-`zio-cli` crate 与 `cli/` 是脚本/REPL 可执行宿主，未来消费 Rill，
-不是 Rill 的已注册包 ID，也不在此次同步中改名。Grove 可复用同一库
-组织其入口，语言核心不依赖 Rill。
-未来新建独立 `rill/` 库，不把 `cli/src/lib.rs` 作为公共命令组合库。
+四字母 CLI 组合库方向（Planned），目标用 Zio 提供参数、子命令、帮助、
+终端 I/O 与退出状态，不承担语言求值；尚未创建库目录，不设空占位。
+`langs/cli/` 的 `zio-cli` 是普通语言二进制，不是 Rill 库。
 
 ---
 
@@ -310,7 +297,7 @@ Zio 的统一运行时对象模型。AMOP 的参考实现。定义了 Object、C
 ### ZosRuntime
 
 ZOS 规范中规划的能力 trait，用于隔离 `class_of`、GF 分派和 condition
-signal 等操作。当前 `core/src/context.rs` 尚无独立 `ZosRuntime` trait；现有
+signal 等操作。当前 `langs/core/src/context.rs` 尚无独立 `ZosRuntime` trait；现有
 experimental ZOS 分派仍经 `EvalEngine` 路径执行。
 
 ### ZIR（Zio Intermediate Representation）

@@ -1,0 +1,33 @@
+---
+const presets = [
+  { key: 'basics', label: '表达式与函数' },
+  { key: 'jseval', label: 'JS 互操作 (eval & DOM)' },
+  { key: 'syntax', label: 'syntax-rules 卫生宏' },
+  { key: 'zos', label: 'ZOS 类与多分派' },
+  { key: 'csp', label: 'CSP 同步队列演示' },
+  { key: 'json', label: 'JSON 序列化' },
+];
+---
+<div class="terminal-card" id="terminal">
+  <div class="terminal-header">
+    <div class="terminal-dots">
+      <span class="dot dot-red"></span>
+      <span class="dot dot-yellow"></span>
+      <span class="dot dot-green"></span>
+    </div>
+    <span class="terminal-title">Zio WASM Live Terminal</span>
+    <span id="wasm-status-badge" class="logo-tag">⚡ WASM Loading...</span>
+  </div>
+  <div class="terminal-presets">
+    {presets.map((p, i) => (
+      <button class:list={['preset-btn', { active: i === 0 }]} data-preset={p.key}>{p.label}</button>
+    ))}
+  </div>
+  <div class="terminal-body" id="repl-output" role="log" aria-live="polite" aria-label="Zio 执行结果"></div>
+  <form id="repl-form" class="repl-editor">
+    <label for="repl-input">Zio 源码（可编辑多行程序；Ctrl / ⌘ + Enter 执行）</label>
+    <textarea id="repl-input" rows="6" spellcheck="false">(defn square [x] (* x x))
+(square 7)</textarea>
+    <button id="repl-run" type="submit" class="btn btn-primary" disabled>执行 Zio</button>
+  </form>
+</div>

@@ -1,5 +1,7 @@
 # 03 - Lisp 入门：S 表达式、求值、函数
 
+> 2026-10-07 目录更新：本文教学代码与旧阶段/验收描述保留历史语境；源码链接和运行路径已映射到当前位置。现行目标是 `libs/` 的 Zio 库与 `apps/grove/` 的 Zio 业务迁移，Rust Grove 业务尚未整体重写；通用 Rust transport/host adapter 在 `contribs/native/loom/`。当前归属见[架构](../docs/zio-architecture.md)与[批准目录计划](../docs/superpowers/plans/2026-10-07-language-first-layout.md)。
+
 ## 一切从括号开始
 
 Lisp 最显著的特征：**到处是括号**。但这不是为了奇怪——括号统一了"代码的结构"和"数据的结构"。

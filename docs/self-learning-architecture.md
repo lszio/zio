@@ -1,18 +1,18 @@
 # grove 整体设计
 
-> 状态：已确认的目标架构，2026-10-05 修订；现有 W00–W17 的组件、CPU 训练与 demo 证据见[特性矩阵](feature-matrix.md)，不代表本文新的 agent 产品主线已交付。Zio 编码的 agent 逻辑、生成执行闭环、可审查升级与 ACP 均为 Planned。
+> 状态：产品合同设计；2026-10-07 目录归属以[当前架构](zio-architecture.md)为准。G02 agent/生成执行与 G04 人工批准的已有证据见[特性矩阵](feature-matrix.md)；服务贯通、ACP 与 Rust Grove 业务迁为 Zio 仍需分别验收。
 > 初始设计日期：2026-10-02。实现状态以 [特性矩阵](feature-matrix.md) 为准；定位与升级权限以 [ADR-019](adrs.md#adr-019-grove-独立应用与同像性逻辑演化) 为准。
-> 统一命名：独立应用与命令为 `grove`；当前内部宿主 crate 为 `grove`（`learning/`），应用 crate 为 `grove-app`（`app/`）。代码可组织为库，但 Grove 不以通用学习库或可选产品壳为第一身份。
-> 已确认方向：Grove 是消费 Numa（计算）、Rill（CLI）、Loom（harness/ACP）的独立应用；三个库由官方维护、独立版本、按需引入，不属于语言内置。首个产品验收是 Zio agent 逻辑、LLM 生成执行、站点审查与人工批准升级。
+> 统一命名：独立应用与命令为 `grove`；当前内部宿主 crate 为 `grove`（`apps/grove/native/learning/`），应用 crate 为 `grove-app`（`apps/grove/native/app/`）。代码可组织为库，但 Grove 不以通用学习库或可选产品壳为第一身份。
+> 已确认方向：Grove 是消费 Numa（计算）、Rill（CLI）、Loom（harness/ACP）的独立应用；三个库由官方维护、按需消费，不属于语言内置。首个产品验收是 Zio agent 逻辑、LLM 生成执行、站点审查与人工批准升级。
 > 演进方向：源码、向量表示、神经网络和 LLM 模块逐步加入；保留已有训练、检查点、谱系与组合能力，不要求所有模型类型先实现后才能交付首条主线。
 > 本文提出具体边界与合同，API 名称均为设计记法，不是现有可调用接口。
-> 配套：[当前统一实现计划](superpowers/plans/2026-10-05-zio-grove-convergence.md)给出 T/C/I/H/G 工作包与验收；[历史 W00–W17](superpowers/plans/2026-10-02-self-learning.md)只保留原组件和 demo 证据。本文定义能力与合同，不维护第二份平行架构。
+> 配套：[历史统一实现计划](superpowers/plans/2026-10-05-zio-grove-convergence.md)给出 T/C/I/H/G 工作包与验收；[历史 W00–W17](superpowers/plans/2026-10-02-self-learning.md)只保留原组件和 demo 证据。本文定义能力与合同，不维护第二份平行架构。
 
 ## 阅读摘要
 
 目标是让 agent 的显式逻辑成为真实执行的 Zio 程序：程序可作为数据读取、比较和改写，执行行为与版本绑定，升级依据来自独立评价与人工审查，而不是模型对自身行为的文字解释。
 
-采用独立应用、单机优先的基线：Grove 拥有模块、学习/实验、反馈、独立评价、版本治理与站点；Zio/ZOS 提供语言与对象语义，Rust 提供可信宿主。官方独立库 Numa 提供计算，Rill 提供 CLI，Loom 提供模型/工具会话与 ACP；Grove 消费其公开接口，不在应用中复制引擎，也不让语言核心反向依赖这些库。
+采用独立应用、单机优先的基线：Grove 拥有模块、学习/实验、反馈、独立评价、版本治理与站点；Zio/ZOS 提供语言与对象语义，Rust 提供可信宿主。官方 Zio 库 Numa 提供计算，Rill 提供 CLI，Loom 提供模型/工具会话与 ACP；Grove 消费其公开接口，不在应用中复制引擎，也不让语言核心反向依赖这些库。
 
 首条主线必须实际执行 Zio agent 逻辑，实际调用 LLM 生成并修订代码，展示执行证据与候选差异，经独立评价和人工批准切换版本。不能用 echo、模拟调用或入队记录代替执行。已有 CPU 权重训练与多 worker demo 是可复用基础，不是这条主线已交付的证明。
 
@@ -26,10 +26,10 @@ Grove 是独立的自学习与逻辑演化应用，不是“通用学习库 + �
 
 | 位置 | 已有能力 | 不能据此宣称的能力 |
 |---|---|---|
-| `core/`、`lib/zio/learn.zio`、`proposer.zio` | Zio 解释执行、代码作为数据、算术候选生成与评价 | 完整编译前端、隔离的通用生成执行模块、实际驱动 agent 的可升级 Zio 逻辑 |
-| `ai/` | completion、embedding、独立 TeacherHost 与 HTTP 教师合同 | 已接入 Grove 产品的教师工作流、ACP |
-| `learning/`、`workers/torch/` | 版本化制品、存储与生命周期合同；CPU 参数训练、Adam 与 CPU RNG 检查点 | 通用模型后端、完整异构恢复、冻结参数和文件系统保护已强制落实 |
-| `app/`、`app/web/` | CLI demo、HTTP、同源 HTML、实际 torch 推理 | 服务持续执行训练队列、持久进度事件、agent 逻辑审查与升级闭环 |
+| `langs/core/`、`libs/learning/learn.zio`、`proposer.zio` | Zio 解释执行、代码作为数据、算术候选生成与评价 | 完整编译前端、隔离的通用生成执行模块、实际驱动 agent 的可升级 Zio 逻辑 |
+| `contribs/native/loom/` | completion、embedding、独立 TeacherHost 与 HTTP 教师合同 | 已接入 Grove 产品的教师工作流、ACP |
+| `apps/grove/native/learning/`、`apps/grove/workers/torch/` | 版本化制品、存储与生命周期合同；CPU 参数训练、Adam 与 CPU RNG 检查点 | 通用模型后端、完整异构恢复、冻结参数和文件系统保护已强制落实 |
+| `apps/grove/native/app/`、`apps/grove/native/app/web/` | CLI demo、HTTP、同源 HTML、实际 torch 推理 | 服务持续执行训练队列、持久进度事件、agent 逻辑审查与升级闭环 |
 
 2026-10-05 审核实跑 `cargo run -p zio-cli -- examples/learn-demo.zio`：f(10)=21、f(6)=36、确定性检查为 true；Grove 服务返回产品 HTML。源码显示 Web train/resume 仅记录 queued run，`learned_into` 查询冻结数据集成员，不能证明训练消费；优化器与联合提交未执行 frozen 参数约束。完整审核没有重跑历史 torch 训练或检查点测试。
 
@@ -55,7 +55,7 @@ Grove 是独立的自学习与逻辑演化应用，不是“通用学习库 + �
 | Grove 独立应用 | 模块组织、反馈与实验、学习运行、版本/检查点/谱系、审查批准、教师适配与站点 | 重复实现语言、数值引擎或第二套通用 agent 执行循环 |
 | 可信宿主 | 持久事务、授权、制品、隔离、资源限制、受保护的验证与发布执行 | 接受候选自行改变安全边界或独立评价合同 |
 
-三个官方库独立版本、按需安装，可供非 Grove 消费者使用；官方维护不意味着语言默认内置。实现计划 H00/I00/C01 分别迁移或创建 `loom/`、`rill/`、`numa/`，但本次文档同步不改现有包。发布包 ID 尚未核验；短名不保证注册表可用。Grove 策略可用 Zio/ZOS 编写，数据热路径不强制对象化；不新增微服务/插件框架，不把全部未来库能力当首条产品主线前提。
+Zio 库目标采用 Zio 实现并归入 `libs/`：Numa 持计算，Rill 持 CLI 组合，Loom 持 harness 组合。现有 Rust 通用传输/宿主合同位于 `contribs/native/loom/`，不是 Zio 库本体；普通语言 CLI 位于 `langs/cli/`，不装配 LLM replay。Grove 是 `apps/grove/` 独立应用，其 Rust 业务仍待后续迁为 Zio；语言介绍、文档与 playground 位于 `apps/site/`。本轮只完成结构切换，不证明完整库交付、Tree-sitter、LSP 或编译器自举。当前合同见[架构](zio-architecture.md)与[批准目录计划](superpowers/plans/2026-10-07-language-first-layout.md)。短名不等于已注册包 ID。
 
 候选生成与训练可在预先批准的预算、触发规则和可修改范围内自动进行；独立评价只产生发布资格，正式发布默认需要人工批准。批准绑定候选及评价版本，受授权控制器重新检查硬门槛和预期旧版本后原子切换；人工同意也不能绕过保护。
 
@@ -65,13 +65,13 @@ Grove 是独立的自学习与逻辑演化应用，不是“通用学习库 + �
 
 | 位置 | 职责与实现选择 |
 |---|---|
-| `lib/zio/learn.zio`、`proposer.zio` 及学习子模块 | 统一任务策略、候选生成、反馈使用政策、群体选择、能力抽象；现有数值学习作为同一系统中的任务适配 |
-| `ai/`（当前 `zio-ai`；H00 目标迁为 `loom/`） | Loom 实现起点：模型/供应商/教师合同，增加会话、工具、预算/取消；不承担产品评价或批准 |
-| `numa/`、`rill/`（Target） | C01/I00 创建官方计算/CLI 库；分别迁移向量接口和提取两个入口的命令需求，独立资源/版本进入产品依赖记录 |
-| `learning/`（`grove`，已实现） | 对 Zio 外部 attach 的可信宿主：合同编解码、SQLite、制品、进程管理、预算、检查点提交和发布事务 |
-| `workers/torch/`（已有） | CPU PyTorch 参考训练后端；仅执行许可算子图。GPU/device 路径为待扩展能力，不因安装 CUDA 即视为支持 |
-| `app/`（当前 `grove-app`，命令 `grove`） | 独立应用入口；目标消费 Numa/Rill/Loom，装配运行、教师、审查与发布，不把 demo 当 runner |
-| `app/web/`（已有） | 同源 HTML/CSS/JS 控制面；待连接真实进度与逻辑审查。实时站点与静态 HTML 报告共享事实记录，landing 不冒充产品 |
+| `libs/learning/learn.zio`、`proposer.zio` 及学习子模块 | 统一任务策略、候选生成、反馈使用政策、群体选择、能力抽象；现有数值学习作为同一系统中的任务适配 |
+| `contribs/native/loom/`（当前 Rust crate `loom`） | Loom 实现起点：模型/供应商/教师合同，增加会话、工具、预算/取消；不承担产品评价或批准 |
+| `libs/numa/`、未来 Rill Zio 库 | 向量库已归 Numa；更广计算与 CLI 合同按真实需求实现，不新建独立 Rust 业务库或空目录 |
+| `apps/grove/native/learning/`（`grove`，已实现） | 对 Zio 外部 attach 的可信宿主：合同编解码、SQLite、制品、进程管理、预算、检查点提交和发布事务 |
+| `apps/grove/workers/torch/`（已有） | CPU PyTorch 参考训练后端；仅执行许可算子图。GPU/device 路径为待扩展能力，不因安装 CUDA 即视为支持 |
+| `apps/grove/native/app/`（当前 `grove-app`，命令 `grove`） | 独立应用入口；目标消费 Numa/Rill/Loom，装配运行、教师、审查与发布，不把 demo 当 runner |
+| `apps/grove/native/app/web/`（已有） | 同源 HTML/CSS/JS 控制面；待连接真实进度与逻辑审查。实时站点与静态 HTML 报告共享事实记录，landing 不冒充产品 |
 
 上述新增依赖均待实施阶段按兼容版本固定；当前默认 CLI 不要求安装 Python 或 PyTorch。训练后端未安装返回明确 capability 错误，不降级为模拟训练。
 
@@ -298,6 +298,7 @@ Zio AST 和模型清单是模型结构的权威表示；后端计算图是从该
 1. 接收多模态观察，在指定快照上执行并记录预测。
 2. 收集教师、人类、环境等信号，验证关联、权限、格式、冲突和用途。
 3. 用版本化规则生成冻结数据视图；按会话/实体/来源关系分割，防止近重复泄漏。
+
 4. 检索已有经验；在预算内提出参数适配或程序候选。
 5. 检查 AST、模块合同、依赖、梯度边界、权限与资源需求。
 6. 固定候选结构，训练允许的参数；必要时在外循环比较多种结构。
@@ -485,4 +486,4 @@ P1–P4 是历史交付计划的编号，不重命名 L1–L4，也不替代新�
 | [LoRA](https://arxiv.org/abs/2106.09685) | 作为参数高效适配的一种学习方法 | 不视为代码结构演化或所有训练需求的替代 |
 | [Population Based Training](https://arxiv.org/abs/1711.09846) | 固定总预算下多分支训练、继承优秀状态并探索超参数 | 不假定不同代码结构/权重都可直接继承，不将训练种群自动等同于推理集成 |
 
-仓库依据：[学习器](../lib/zio/learn.zio)、[提议器](../lib/zio/proposer.zio)、[宿主协议](../ai/src/lib.rs)、[特性矩阵](feature-matrix.md)、[ADR](adrs.md)。
+仓库依据：[学习器](../libs/learning/learn.zio)、[提议器](../libs/loom/proposer.zio)、[宿主协议](../contribs/native/loom/src/lib.rs)、[特性矩阵](feature-matrix.md)、[ADR](adrs.md)。

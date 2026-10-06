@@ -2,7 +2,7 @@
 ;; S-expression pipeline declarations expanding into plain
 ;; filter/map/count calls (design spec §10.3).
 (println "=== Pipeline DSL ===")
-(load "lib/zio/pipeline.zio")
+(load "libs/std/pipeline.zio")
 
 (def nums [1 2 3 4 5 6])
 (def doubled (pipeline nums
