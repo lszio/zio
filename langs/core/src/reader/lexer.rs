@@ -84,6 +84,24 @@ pub fn tokenize(input: &str) -> Vec<Token> {
                     }
                 }
             }
+            '\\' => {
+                // A character dispatch payload includes one delimiter scalar,
+                // or a named character up to the next token boundary.
+                let mut atom = String::from("\\");
+                chars.next();
+                if let Some(&(_, first)) = chars.peek() {
+                    atom.push(chars.next().unwrap().1);
+                    if !first.is_whitespace() && !"()[]{}'\";".contains(first) {
+                        while let Some(&(_, next)) = chars.peek() {
+                            if next.is_whitespace() || "()[]{}'\";".contains(next) {
+                                break;
+                            }
+                            atom.push(chars.next().unwrap().1);
+                        }
+                    }
+                }
+                tokens.push(Token::new(atom, start));
+            }
             _ => {
                 let mut atom = String::new();
                 while let Some(&(_, c)) = chars.peek() {

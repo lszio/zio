@@ -165,4 +165,3 @@
     (fn [task history]
       (llm--propose task history k retries temperature max-tokens))))
 
-(println "zio.proposer loaded (LLM proposer over llm-complete; line response protocol, deterministic correction retry)")

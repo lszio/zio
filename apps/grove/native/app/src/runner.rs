@@ -346,7 +346,11 @@ impl Runner {
     /// starting the loop.
     pub fn drive(&self, actor: &Actor, request: &RunRequest) -> Result<RunOutcome> {
         let claim = self
-            .claim(actor, &request.run_id, &format!("attempt-{}", request.run_id))
+            .claim(
+                actor,
+                &request.run_id,
+                &format!("attempt-{}", request.run_id),
+            )
             .map_err(|e| {
                 // A run that is not queued is reported, not retried: the
                 // caller asked for this specific run and the answer is
@@ -546,18 +550,19 @@ impl Runner {
             let remaining = deadline.saturating_duration_since(std::time::Instant::now());
             if remaining.is_zero() {
                 worker.kill();
-                return Err(Error::new(ErrorKind::Timeout, "worker did not finish in time"));
+                return Err(Error::new(
+                    ErrorKind::Timeout,
+                    "worker did not finish in time",
+                ));
             }
             let frame = worker.next_frame(remaining)?;
             // The worker's own claim about whose result this is is not
             // evidence; the request is.
-            grove::worker::probe_identity(
-                &frame,
-                &claim.run_id,
-                &claim.attempt_id,
-            )?;
+            grove::worker::probe_identity(&frame, &claim.run_id, &claim.attempt_id)?;
             match frame {
-                grove::worker::Frame::Progress { step, loss, saved, .. } => {
+                grove::worker::Frame::Progress {
+                    step, loss, saved, ..
+                } => {
                     last_loss = Some(loss);
                     events.push(training_event(
                         &claim.run_id,
@@ -576,16 +581,17 @@ impl Runner {
                         let _ = path;
                     }
                 }
-                grove::worker::Frame::Done { loss, first_loss, val_accuracy, .. } => {
+                grove::worker::Frame::Done {
+                    loss,
+                    first_loss,
+                    val_accuracy,
+                    ..
+                } => {
                     let detail = format!(
                         "training complete: loss {:?} first_loss {:?} val_accuracy {:?}",
                         loss, first_loss, val_accuracy
                     );
-                    events.push(training_event(
-                        &claim.run_id,
-                        &claim.attempt_id,
-                        &detail,
-                    ));
+                    events.push(training_event(&claim.run_id, &claim.attempt_id, &detail));
                     break Ok(RunOutcome {
                         run_id: claim.run_id.clone(),
                         status: "completed".into(),
@@ -703,10 +709,7 @@ fn stage_training_inputs(
             let restamped = restamp_state(&bytes, run_id)?;
             let path = dir.join("resume-state.json");
             std::fs::write(&path, restamped).map_err(|e| {
-                Error::new(
-                    ErrorKind::BackendFailed,
-                    format!("stage resume state: {e}"),
-                )
+                Error::new(ErrorKind::BackendFailed, format!("stage resume state: {e}"))
             })?;
             Some(path.to_string_lossy().into_owned())
         }
@@ -714,7 +717,7 @@ fn stage_training_inputs(
             return Err(Error::new(
                 ErrorKind::InvalidInput,
                 format!("resume must be a state artifact digest, got {other}"),
-            ))
+            ));
         }
         None => None,
     };
@@ -760,7 +763,10 @@ fn restamp_state(bytes: &[u8], run_id: &str) -> Result<Vec<u8>> {
             "checkpointed state is not a JSON object",
         ));
     };
-    object.insert("run_id".to_string(), serde_json::Value::String(run_id.to_string()));
+    object.insert(
+        "run_id".to_string(),
+        serde_json::Value::String(run_id.to_string()),
+    );
     serde_json::to_vec(&manifest).map_err(|e| {
         Error::new(
             ErrorKind::BackendFailed,
@@ -828,12 +834,7 @@ impl Runner {
     /// because the owner that runs the work is often not the process
     /// that queued it — and after a restart it never is.
     pub fn request_for(&self, run_id: &str) -> Option<RunRequest> {
-        let (kind, payload) = self
-            .store
-            .lock()
-            .queued_work(run_id)
-            .ok()
-            .flatten()?;
+        let (kind, payload) = self.store.lock().queued_work(run_id).ok().flatten()?;
         let kind = match kind.as_str() {
             "zio" => WorkKind::Zio { source: payload },
             "training" => {
@@ -854,7 +855,12 @@ impl Runner {
     /// run row exists before the work does, so a crash between them
     /// leaves a run whose work is missing and visible, rather than work
     /// nothing will ever claim.
-    pub fn enqueue(&self, actor: &Actor, run: &grove::contracts::Run, request: &RunRequest) -> Result<()> {
+    pub fn enqueue(
+        &self,
+        actor: &Actor,
+        run: &grove::contracts::Run,
+        request: &RunRequest,
+    ) -> Result<()> {
         self.store.lock().put_run(actor, run)?;
         let (kind, payload) = match &request.kind {
             WorkKind::Zio { source } => ("zio", source.clone()),
@@ -868,7 +874,9 @@ impl Runner {
                 })?,
             ),
         };
-        self.store.lock().put_queued_work(actor, &run.id, kind, &payload)
+        self.store
+            .lock()
+            .put_queued_work(actor, &run.id, kind, &payload)
     }
 }
 

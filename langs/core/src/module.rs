@@ -1,9 +1,9 @@
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use crate::env::Env;
 use crate::error::EvalError;
 use crate::span::SourceId;
 use crate::value::Value;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 /// A loaded or declared module.
 ///
@@ -39,6 +39,26 @@ impl Module {
     pub fn display_name(&self) -> String {
         self.name.join(".")
     }
+
+    pub fn validate_exports(&self) -> Result<(), EvalError> {
+        for name in &self.exports {
+            if self.env.get_owned(name).is_none() {
+                return Err(EvalError::custom(format!(
+                    "module {} export {name} is not an owned binding",
+                    self.display_name()
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    pub fn exported(&self, name: &str) -> Option<Value> {
+        if self.exports.iter().any(|export| export == name) {
+            self.env.get_owned(name)
+        } else {
+            None
+        }
+    }
 }
 
 /// Registry of all loaded modules, keyed by fully-qualified name.
@@ -59,6 +79,7 @@ impl ModuleTable {
 
     /// Register a module.
     pub fn register(&mut self, module: Module) {
+        self.remove(&module.name);
         self.modules.push(module);
     }
 
@@ -85,7 +106,11 @@ impl ModuleTable {
     /// Push a path onto the loading stack. Returns error if already loading (circular).
     pub fn begin_loading(&mut self, path: &Path) -> Result<(), EvalError> {
         if self.loading_stack.iter().any(|p| p == path) {
-            let chain: Vec<String> = self.loading_stack.iter().map(|p| p.display().to_string()).collect();
+            let chain: Vec<String> = self
+                .loading_stack
+                .iter()
+                .map(|p| p.display().to_string())
+                .collect();
             return Err(EvalError::custom(format!(
                 "circular require detected: {} → {}",
                 chain.join(" → "),
@@ -110,8 +135,8 @@ pub fn resolve_module_path(path: &str) -> Result<PathBuf, EvalError> {
     let filename = format!("{}.zio", file_stem);
 
     // Check current directory first
-    let cwd_path = std::env::current_dir()
-        .map_err(|e| EvalError::custom(format!("cannot get cwd: {e}")))?;
+    let cwd_path =
+        std::env::current_dir().map_err(|e| EvalError::custom(format!("cannot get cwd: {e}")))?;
     let candidate = cwd_path.join(&filename);
     if candidate.exists() {
         return Ok(candidate);
@@ -144,7 +169,12 @@ pub fn parse_module_name(value: &Value) -> Result<Vec<String>, EvalError> {
     let s = match value {
         Value::Keyword(s) => s.clone(),
         Value::Symbol(s) => s.clone(),
-        other => return Err(EvalError::type_error("module name (keyword or symbol)", other.value_type())),
+        other => {
+            return Err(EvalError::type_error(
+                "module name (keyword or symbol)",
+                other.value_type(),
+            ));
+        }
     };
     Ok(s.split('.').map(|p| p.to_string()).collect())
 }

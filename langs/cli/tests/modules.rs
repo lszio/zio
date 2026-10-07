@@ -4,7 +4,6 @@ use std::process::Command;
 /// End-to-end contract for file-based modules: a module file declares
 /// exports with the `(export ...)` form; `require` enforces encapsulation
 /// and `ns/name` qualified access resolves exported symbols only.
-
 struct ModuleFixture {
     dir: PathBuf,
 }

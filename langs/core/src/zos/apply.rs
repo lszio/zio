@@ -72,29 +72,37 @@ fn build_primary_combination(
     let before = dispatch.before.clone();
     let primary = dispatch.primary.clone();
     let after = dispatch.after.clone();
-    Ok(NativeFn::new("__primary_combination__", move |_: Vector<Value>, engine: &dyn EvalEngine| -> Result<Value, EvalError> {
-        // Execute :before methods (most specific first)
-        for m in &before {
-            let env = bind_method_args(&m.body, &args)?;
-            engine.eval_expr(&m.body.body, &env, false)?;
-        }
-
-        // Execute :primary methods (most specific first — take the first)
-        if let Some(m) = primary.first() {
-            let env = bind_method_args(&m.body, &args)?;
-            let result = engine.eval_expr(&m.body.body, &env, false)?.into_value();
-
-            // Execute :after methods (least specific first → reverse order)
-            for m in after.iter().rev() {
-                let env = bind_method_args(&m.body, &args)?;
-                engine.eval_expr(&m.body.body, &env, false)?;
+    Ok(NativeFn::new(
+        "__primary_combination__",
+        move |_: Vector<Value>, engine: &dyn EvalEngine| -> Result<Value, EvalError> {
+            // Execute :before methods (most specific first)
+            for m in &before {
+                crate::bytecode::call_value(Value::Function(m.body.clone()), args.clone(), engine)?;
             }
 
-            Ok(result)
-        } else {
-            Ok(Value::Nil)
-        }
-    }))
+            // Execute :primary methods (most specific first — take the first)
+            if let Some(m) = primary.first() {
+                let result = crate::bytecode::call_value(
+                    Value::Function(m.body.clone()),
+                    args.clone(),
+                    engine,
+                )?;
+
+                // Execute :after methods (least specific first → reverse order)
+                for m in after.iter().rev() {
+                    crate::bytecode::call_value(
+                        Value::Function(m.body.clone()),
+                        args.clone(),
+                        engine,
+                    )?;
+                }
+
+                Ok(result)
+            } else {
+                Ok(Value::Nil)
+            }
+        },
+    ))
 }
 
 /// Wrap the primary combination in :around methods (outermost first).
@@ -112,23 +120,22 @@ fn build_around_wrappers(
         let args = args.clone();
         let method = Arc::clone(m);
 
-        chain = NativeFn::new("__around_method__", move |_: Vector<Value>, engine: &dyn EvalEngine| -> Result<Value, EvalError> {
-            let env = bind_method_args(&method.body, &args)?;
-            env.set("*next-method*".into(), Value::NativeFunction(prev_chain.clone()));
-            engine.eval_expr(&method.body.body, &env, false).map(|r| r.into_value())
-        });
+        chain = NativeFn::new(
+            "__around_method__",
+            move |_: Vector<Value>, engine: &dyn EvalEngine| -> Result<Value, EvalError> {
+                let env = Arc::new(Env::new(Some(method.body.env.clone())));
+                env.set(
+                    "*next-method*".into(),
+                    Value::NativeFunction(prev_chain.clone()),
+                );
+                let mut body = (*method.body).clone();
+                body.env = env;
+                crate::bytecode::call_value(Value::Function(Arc::new(body)), args.clone(), engine)
+            },
+        );
     }
 
     Ok(chain)
-}
-
-/// Bind method parameters to the dispatched arguments in a child environment.
-fn bind_method_args(func: &std::sync::Arc<crate::value::Function>, args: &Vector<Value>) -> Result<Arc<Env>, EvalError> {
-    if func.rest_param.is_some() {
-        Env::bind_variadic(&func.env, &func.params, &func.rest_param, args)
-    } else {
-        Env::bind(&func.env, &func.params, args)
-    }
 }
 
 /// Get the class ref for a Value (used by GF dispatch).

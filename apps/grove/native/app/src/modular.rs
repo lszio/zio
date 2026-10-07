@@ -22,6 +22,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use grove::composition;
+use grove::contracts::Result;
 use grove::contracts::{
     Actor, ActorRole, ArtifactRef, EnsembleRule, EnsembleSpec, Error, ErrorKind, ModelSnapshot,
     ModuleSpec, Run, RunState, SCHEMA_VERSION,
@@ -29,11 +30,10 @@ use grove::contracts::{
 use grove::ensemble::{self, ExpertOutput};
 use grove::evaluation;
 use grove::store::Store;
-use grove::contracts::Result;
 use grove::worker::Frame;
 
 use crate::demo::{acceptance_protocol, ensure_data, provision_protocol, spawn_worker};
-use crate::{operator, Paths};
+use crate::{Paths, operator};
 
 /// The fusion module alone: image + numeric → hidden. No head, so this
 /// is genuinely a partial model rather than a smaller whole one.
@@ -125,20 +125,25 @@ pub fn run_modular(root: &Path, paths: &Paths, device: &str) -> Result<String> {
     // ── 1. the two modules train on their own ─────────────────────
     let mut worker = spawn_worker(paths)?;
 
-    let visual_run = seed_module_run(&store, "run-module-visual", &seed_contract(&store, &op, "mod-visual-contract")?, 1000)?;
-    let (visual_loss, visual_weights) = train_module(
-        &mut worker,
-        &scratch,
-        "mod-visual",
-        fusion_graph(),
-        250,
+    let visual_run = seed_module_run(
+        &store,
+        "run-module-visual",
+        &seed_contract(&store, &op, "mod-visual-contract")?,
+        1000,
     )?;
+    let (visual_loss, visual_weights) =
+        train_module(&mut worker, &scratch, "mod-visual", fusion_graph(), 250)?;
     store.consume_steps(&visual_run.id, 250)?;
     report.push_str(&format!(
         "module `visual` (fused → hidden) trained alone: representation loss {visual_loss:.4}, no class accuracy (it is not a classifier)\n"
     ));
 
-    let head_run = seed_module_run(&store, "run-module-head", &seed_contract(&store, &op, "mod-head-contract")?, 1000)?;
+    let head_run = seed_module_run(
+        &store,
+        "run-module-head",
+        &seed_contract(&store, &op, "mod-head-contract")?,
+        1000,
+    )?;
     let (_head_loss, head_weights) =
         train_module(&mut worker, &scratch, "mod-head", head_graph(), 250)?;
     store.consume_steps(&head_run.id, 250)?;
@@ -258,7 +263,9 @@ pub fn run_modular(root: &Path, paths: &Paths, device: &str) -> Result<String> {
     store.consume_steps(&run.id, 300)?;
     report.push_str(&format!(
         "composite trained jointly: loss {joint_loss:.4}  val accuracy {}\n",
-        joint_acc.map(|a| format!("{a:.3}")).unwrap_or_else(|| "n/a".into())
+        joint_acc
+            .map(|a| format!("{a:.3}"))
+            .unwrap_or_else(|| "n/a".into())
     ));
 
     // ── 5. compare the base, both locals and the composite ────────
@@ -291,9 +298,12 @@ pub fn run_modular(root: &Path, paths: &Paths, device: &str) -> Result<String> {
             .first()
             .map(|row| row.meets_gates)
             .unwrap_or(false);
-        let mean = comparison
-            .first()
-            .and_then(|row| row.mean.iter().find(|(n, _)| n == "accuracy").map(|(_, v)| *v));
+        let mean = comparison.first().and_then(|row| {
+            row.mean
+                .iter()
+                .find(|(n, _)| n == "accuracy")
+                .map(|(_, v)| *v)
+        });
         rows.push((label, mean, meets));
     }
 
@@ -359,7 +369,12 @@ pub fn run_modular(root: &Path, paths: &Paths, device: &str) -> Result<String> {
     }
 
     // ── 7. ensemble over the base and the composite ──────────────
-    report.push_str(&report_ensemble(&store, &op, visual_snapshot, composite_snapshot)?);
+    report.push_str(&report_ensemble(
+        &store,
+        &op,
+        visual_snapshot,
+        composite_snapshot,
+    )?);
     Ok(report)
 }
 
@@ -405,8 +420,16 @@ fn report_ensemble(
     let agree = ensemble::combine(
         bound,
         &[
-            ExpertOutput { expert: "visual".into(), class: Some(1), cost_steps: 12 },
-            ExpertOutput { expert: "composite".into(), class: Some(1), cost_steps: 18 },
+            ExpertOutput {
+                expert: "visual".into(),
+                class: Some(1),
+                cost_steps: 12,
+            },
+            ExpertOutput {
+                expert: "composite".into(),
+                class: Some(1),
+                cost_steps: 18,
+            },
         ],
     )?;
     out.push_str(&format!(
@@ -423,8 +446,16 @@ fn report_ensemble(
     let partial = ensemble::combine(
         bound,
         &[
-            ExpertOutput { expert: "visual".into(), class: Some(1), cost_steps: 12 },
-            ExpertOutput { expert: "composite".into(), class: None, cost_steps: 0 },
+            ExpertOutput {
+                expert: "visual".into(),
+                class: Some(1),
+                cost_steps: 12,
+            },
+            ExpertOutput {
+                expert: "composite".into(),
+                class: None,
+                cost_steps: 0,
+            },
         ],
     )?;
     out.push_str(&format!(
@@ -443,8 +474,16 @@ fn report_ensemble(
     let strict_outcome = ensemble::combine(
         &strict,
         &[
-            ExpertOutput { expert: "visual".into(), class: Some(1), cost_steps: 12 },
-            ExpertOutput { expert: "composite".into(), class: None, cost_steps: 0 },
+            ExpertOutput {
+                expert: "visual".into(),
+                class: Some(1),
+                cost_steps: 12,
+            },
+            ExpertOutput {
+                expert: "composite".into(),
+                class: None,
+                cost_steps: 0,
+            },
         ],
     )?;
     out.push_str(&format!(
@@ -501,10 +540,15 @@ fn train_from(
         let remaining = deadline.saturating_duration_since(std::time::Instant::now());
         if remaining.is_zero() {
             worker.kill();
-            return Err(Error::new(ErrorKind::Timeout, "worker did not finish in time"));
+            return Err(Error::new(
+                ErrorKind::Timeout,
+                "worker did not finish in time",
+            ));
         }
         match worker.next_frame(remaining)? {
-            Frame::Done { loss, val_accuracy, .. } => {
+            Frame::Done {
+                loss, val_accuracy, ..
+            } => {
                 let loss = loss.ok_or_else(|| {
                     Error::new(ErrorKind::BackendFailed, "done frame without a loss")
                 })?;
@@ -572,8 +616,8 @@ fn commit_module(
     modules: Vec<ModuleSpec>,
     graph: serde_json::Value,
 ) -> Result<ArtifactRef> {
-    crate::demo::commit_trained_snapshot(store, actor, name, weights_path, graph)
-        .and_then(|digest| {
+    crate::demo::commit_trained_snapshot(store, actor, name, weights_path, graph).and_then(
+        |digest| {
             // the demo's snapshot builder declares no modules; the
             // module contract is part of THIS model's identity, so it is
             // re-committed with the modules attached
@@ -588,7 +632,8 @@ fn commit_module(
                 grove::contracts::Derivation::ModuleComposition,
             )?;
             Ok(redigested)
-        })
+        },
+    )
 }
 
 /// A filesystem failure, named. `grove::Error` deliberately has no
@@ -602,10 +647,18 @@ fn io(context: &str) -> impl Fn(std::io::Error) -> Error + '_ {
 fn merged_params(visual: &Path, head: &Path) -> Result<Vec<u8>> {
     let a = std::fs::read(visual).map_err(io("read visual weights"))?;
     let b = std::fs::read(head).map_err(io("read head weights"))?;
-    let va: serde_json::Value = serde_json::from_slice(&a)
-        .map_err(|e| Error::new(ErrorKind::IncompatibleState, format!("visual weights are not JSON: {e}")))?;
-    let vb: serde_json::Value = serde_json::from_slice(&b)
-        .map_err(|e| Error::new(ErrorKind::IncompatibleState, format!("head weights are not JSON: {e}")))?;
+    let va: serde_json::Value = serde_json::from_slice(&a).map_err(|e| {
+        Error::new(
+            ErrorKind::IncompatibleState,
+            format!("visual weights are not JSON: {e}"),
+        )
+    })?;
+    let vb: serde_json::Value = serde_json::from_slice(&b).map_err(|e| {
+        Error::new(
+            ErrorKind::IncompatibleState,
+            format!("head weights are not JSON: {e}"),
+        )
+    })?;
     let mut params = serde_json::Map::new();
     if let Some(p) = va["params"].as_object() {
         for (k, v) in p {
@@ -617,8 +670,12 @@ fn merged_params(visual: &Path, head: &Path) -> Result<Vec<u8>> {
             params.insert(k.clone(), v.clone());
         }
     }
-    serde_json::to_vec(&serde_json::json!({ "params": params }))
-        .map_err(|e| Error::new(ErrorKind::BackendFailed, format!("merged params are not serializable: {e}")))
+    serde_json::to_vec(&serde_json::json!({ "params": params })).map_err(|e| {
+        Error::new(
+            ErrorKind::BackendFailed,
+            format!("merged params are not serializable: {e}"),
+        )
+    })
 }
 
 fn record(
@@ -634,10 +691,7 @@ fn record(
         // an evaluation id is (protocol, snapshot, repeat): the same
         // identity scored twice under one protocol is a second repeat,
         // not a second record pretending to be a different one
-        id: format!(
-            "eval-accept-v1-{}-{repeat}",
-            &snapshot.to_hex()[..12]
-        ),
+        id: format!("eval-accept-v1-{}-{repeat}", &snapshot.to_hex()[..12]),
         snapshot: *snapshot,
         protocol_id: "accept-v1".to_string(),
         dataset_revision: "ds-1".to_string(),

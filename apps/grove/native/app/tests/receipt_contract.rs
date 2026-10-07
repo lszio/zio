@@ -26,7 +26,8 @@ struct Reboot {
 
 impl Reboot {
     fn start(label: &str) -> Self {
-        let root = std::env::temp_dir().join(format!("grove-receipt-{}-{label}", std::process::id()));
+        let root =
+            std::env::temp_dir().join(format!("grove-receipt-{}-{label}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         Reboot { root }
     }
@@ -92,11 +93,13 @@ fn a_receipt_is_written_by_the_housekeeper_and_read_by_a_reader() {
         .record_receipt("op-3", 200, &serde_json::json!({"ok": true}))
         .expect("record");
     // A reader may look at a receipt without being able to write one.
-    assert!(state
-        .replay_receipt::<serde_json::Value>("op-3")
-        .is_some());
+    assert!(state.replay_receipt::<serde_json::Value>("op-3").is_some());
     // Writing is an operator's act, and an unknown id is simply absent.
-    assert!(state.replay_receipt::<serde_json::Value>("never-seen").is_none());
+    assert!(
+        state
+            .replay_receipt::<serde_json::Value>("never-seen")
+            .is_none()
+    );
     let _ = std::fs::remove_dir_all(&reboot.root);
     let _ = operator();
 }

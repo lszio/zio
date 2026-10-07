@@ -16,13 +16,16 @@ pub fn str_join(args: Vector<Value>, _engine: &dyn EvalEngine) -> Result<Value, 
     }
     let sep = match &args[0] {
         Value::String(s) => s.clone(),
-        other => return Err(EvalError::type_error("string",
-        &format!("{}", other),)),
+        other => return Err(EvalError::type_error("string", format!("{other}"))),
     };
-    let parts: Vec<String> = args.iter().skip(1).map(|v| match v {
-        Value::String(s) => s.clone(),
-        other => format!("{other}"),
-    }).collect();
+    let parts: Vec<String> = args
+        .iter()
+        .skip(1)
+        .map(|v| match v {
+            Value::String(s) => s.clone(),
+            other => format!("{other}"),
+        })
+        .collect();
     Ok(Value::String(parts.join(&sep)))
 }
 
@@ -33,15 +36,16 @@ pub fn str_split(args: Vector<Value>, _engine: &dyn EvalEngine) -> Result<Value,
     }
     let sep = match &args[0] {
         Value::String(s) => s.clone(),
-        other => return Err(EvalError::type_error("string",
-        &format!("{}", other),)),
+        other => return Err(EvalError::type_error("string", format!("{other}"))),
     };
     let s = match &args[1] {
         Value::String(s) => s.clone(),
-        other => return Err(EvalError::type_error("string",
-        &format!("{}", other),)),
+        other => return Err(EvalError::type_error("string", format!("{other}"))),
     };
-    let parts: Vector<Value> = s.split(&sep).map(|p| Value::String(p.to_string())).collect();
+    let parts: Vector<Value> = s
+        .split(&sep)
+        .map(|p| Value::String(p.to_string()))
+        .collect();
     Ok(Value::Vector(parts))
 }
 
@@ -52,8 +56,7 @@ pub fn str_trim(args: Vector<Value>, _engine: &dyn EvalEngine) -> Result<Value, 
     }
     match &args[0] {
         Value::String(s) => Ok(Value::String(s.trim().to_string())),
-        other => Err(EvalError::type_error("string",
-        &format!("{}", other),)),
+        other => Err(EvalError::type_error("string", format!("{other}"))),
     }
 }
 
@@ -64,13 +67,11 @@ pub fn str_contains(args: Vector<Value>, _engine: &dyn EvalEngine) -> Result<Val
     }
     let haystack = match &args[0] {
         Value::String(s) => s.clone(),
-        other => return Err(EvalError::type_error("string",
-        &format!("{}", other),)),
+        other => return Err(EvalError::type_error("string", format!("{other}"))),
     };
     let needle = match &args[1] {
         Value::String(s) => s.clone(),
-        other => return Err(EvalError::type_error("string",
-        &format!("{}", other),)),
+        other => return Err(EvalError::type_error("string", format!("{other}"))),
     };
     Ok(Value::Boolean(haystack.contains(&needle)))
 }
@@ -82,13 +83,11 @@ pub fn str_starts_with(args: Vector<Value>, _engine: &dyn EvalEngine) -> Result<
     }
     let s = match &args[0] {
         Value::String(s_val) => s_val.clone(),
-        other => return Err(EvalError::type_error("string",
-        &format!("{}", other),)),
+        other => return Err(EvalError::type_error("string", format!("{other}"))),
     };
     let prefix = match &args[1] {
         Value::String(p) => p.clone(),
-        other => return Err(EvalError::type_error("string",
-        &format!("{}", other),)),
+        other => return Err(EvalError::type_error("string", format!("{other}"))),
     };
     Ok(Value::Boolean(s.starts_with(&prefix)))
 }
@@ -100,22 +99,38 @@ pub fn str_ends_with(args: Vector<Value>, _engine: &dyn EvalEngine) -> Result<Va
     }
     let s = match &args[0] {
         Value::String(s_val) => s_val.clone(),
-        other => return Err(EvalError::type_error("string",
-        &format!("{}", other),)),
+        other => return Err(EvalError::type_error("string", format!("{other}"))),
     };
     let suffix = match &args[1] {
         Value::String(suf) => suf.clone(),
-        other => return Err(EvalError::type_error("string",
-        &format!("{}", other),)),
+        other => return Err(EvalError::type_error("string", format!("{other}"))),
     };
     Ok(Value::Boolean(s.ends_with(&suffix)))
 }
 
 pub fn register(env: &Arc<Env>) {
-    env.set("str-join".into(), Value::NativeFunction(NativeFn::new("str-join", str_join)));
-    env.set("str-split".into(), Value::NativeFunction(NativeFn::new("str-split", str_split)));
-    env.set("str-trim".into(), Value::NativeFunction(NativeFn::new("str-trim", str_trim)));
-    env.set("str-contains?".into(), Value::NativeFunction(NativeFn::new("str-contains?", str_contains)));
-    env.set("str-starts-with?".into(), Value::NativeFunction(NativeFn::new("str-starts-with?", str_starts_with)));
-    env.set("str-ends-with?".into(), Value::NativeFunction(NativeFn::new("str-ends-with?", str_ends_with)));
+    env.set(
+        "str-join".into(),
+        Value::NativeFunction(NativeFn::new("str-join", str_join)),
+    );
+    env.set(
+        "str-split".into(),
+        Value::NativeFunction(NativeFn::new("str-split", str_split)),
+    );
+    env.set(
+        "str-trim".into(),
+        Value::NativeFunction(NativeFn::new("str-trim", str_trim)),
+    );
+    env.set(
+        "str-contains?".into(),
+        Value::NativeFunction(NativeFn::new("str-contains?", str_contains)),
+    );
+    env.set(
+        "str-starts-with?".into(),
+        Value::NativeFunction(NativeFn::new("str-starts-with?", str_starts_with)),
+    );
+    env.set(
+        "str-ends-with?".into(),
+        Value::NativeFunction(NativeFn::new("str-ends-with?", str_ends_with)),
+    );
 }

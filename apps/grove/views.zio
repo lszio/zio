@@ -1,0 +1,55 @@
+;; Plain-text renderers for the Grove CLI. Each command handler ends with a
+;; single view call so the binary surface stays uniform. Renderers know about
+;; the schema-1 record shapes only — no business logic.
+
+(load "contracts.zio")
+(load "codec.zio")
+
+(defn views--render-run [run]
+  (str "run " (get run :id "") " state=" (get run :state "") " "
+       "steps=" (get run :steps_consumed 0) "/" (get run :steps_budget 0) " "
+       (if (get run :resumed_from nil) (str "resumed-from=" (get run :resumed_from "")) "")))
+
+(defn views--render-checkpoint [cp]
+  (str "checkpoint " (get cp :id "") " step=" (get cp :budget_spent_steps 0)
+       " level=" (get cp :resume_level "")))
+
+(defn views--render-branch [branch]
+  (str "branch " (get branch :id "") " head=" (get branch :head "")
+       " quota=" (get branch :budget_quota 0) " policy=" (get branch :policy "")))
+
+(defn views--render-resume [plan]
+  (str "resume " (get plan :new_run "")
+       " step=" (get plan :state_step 0)
+       " inherited=" (get (get plan :run {}) :steps_consumed 0)))
+
+(defn views--render-snapshot-row [row]
+  (let [snap (get row :snapshot "")
+        repeats (get row :repeats 0)
+        mean (get row :mean [])
+        gates (get row :meets_gates false)
+        metrics (str-join "," (map (fn [m] (str (get m 0) "=" (get m 1))) mean))]
+    (str snap "  repeats=" repeats "  metrics=[" metrics "]  gates=" met)))
+
+(defn views--render-comparison [rows]
+  (str-join "\n" (map views--render-snapshot-row rows)))
+
+(defn views--render-publication [publication approval]
+  (str "publication v" (get publication :version 0)
+       " active → " (get publication :snapshot "")
+       "\n  approved by " (get approval :authenticated_actor "")
+       " against " (get approval :id "")))
+
+(defn views--render-decline [subject reason]
+  (str "declined " subject ": " reason "\n  nothing was published\n"))
+
+(defn views--render-run-report [report]
+  (let [status (get report :status "")
+        turns (get report :turns 0)
+        exec (get report :execution {})]
+    (str "status=" status " turns=" turns
+         " execution-status=" (get exec :status "")
+         (if (get exec :error nil) (str " error=" (get exec :error "")) ""))))
+
+(defn views--render-error [class detail]
+  (str class ": " detail "\n"))

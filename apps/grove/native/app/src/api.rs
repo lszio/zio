@@ -80,9 +80,8 @@ impl ApiState {
         // own file handle, so the Arc here is only for sharing
         let store = match Arc::try_unwrap(store) {
             Ok(store) => store,
-            Err(shared) => Store::open(shared.artifacts().root().parent().unwrap()).expect(
-                "the shared store is still referenced; open the same root instead",
-            ),
+            Err(shared) => Store::open(shared.artifacts().root().parent().unwrap())
+                .expect("the shared store is still referenced; open the same root instead"),
         };
         // staged weights and inputs live under the store's own root, so
         // "delete this product's data directory" removes them too
@@ -260,8 +259,7 @@ fn require(state: &ApiState, headers: &HeaderMap, minimum: ActorRole) -> ApiResu
             class: "capability-denied".into(),
             detail: format!(
                 "{} needs role {minimum:?}, this token holds {:?}",
-                actor.id,
-                actor.role
+                actor.id, actor.role
             ),
             conflict_version: None,
         });
@@ -434,7 +432,9 @@ fn remember<T: Serialize>(
     status: u16,
     body: &T,
 ) -> ApiResult<()> {
-    state.record_receipt(operation_id, status, body).map_err(ApiError::from)
+    state
+        .record_receipt(operation_id, status, body)
+        .map_err(ApiError::from)
 }
 
 /// Replay guard for a synchronous mutation: check, do, record.
@@ -471,7 +471,10 @@ async fn health(State(state): State<ApiState>) -> Json<serde_json::Value> {
 }
 
 /// `GET /api/runs` — reader-visible run ledger.
-async fn list_runs(State(state): State<ApiState>, headers: HeaderMap) -> ApiResult<Json<Vec<RunRef>>> {
+async fn list_runs(
+    State(state): State<ApiState>,
+    headers: HeaderMap,
+) -> ApiResult<Json<Vec<RunRef>>> {
     require(&state, &headers, ActorRole::Reader)?;
     let runs = store(&state)
         .runs()
@@ -515,10 +518,7 @@ async fn post_observation(
         if body.pixels.len() != 256 {
             return Err(ApiError {
                 class: "invalid-input".into(),
-                detail: format!(
-                    "expected 256 pixel samples, got {}",
-                    body.pixels.len()
-                ),
+                detail: format!("expected 256 pixel samples, got {}", body.pixels.len()),
                 conflict_version: None,
             });
         }
@@ -629,7 +629,7 @@ fn parse_signal_kind(name: &str) -> ApiResult<grove::contracts::SignalKind> {
                 class: "invalid-input".into(),
                 detail: format!("unknown signal kind {other:?}"),
                 conflict_version: None,
-            })
+            });
         }
     })
 }
@@ -843,7 +843,8 @@ async fn evaluate_candidate(
     let guard = store(&state);
     let candidate = guard.get_candidate(&body.id)?;
     let protocol: EvaluationProtocol = guard.get_protocol(&body.protocol)?;
-    let verdict = grove::logic::evaluate_candidate(&guard, &actor, &protocol, &candidate, now_ms())?;
+    let verdict =
+        grove::logic::evaluate_candidate(&guard, &actor, &protocol, &candidate, now_ms())?;
     Ok(Json(serde_json::json!({
         "id": verdict.candidate_id,
         "state": verdict.state.as_str(),
@@ -1103,7 +1104,7 @@ async fn enqueue_zio_work(
                  training spec); a request that names both or neither is not a run anyone \
                  asked for",
             )
-            .into())
+            .into());
         }
     };
     let request = crate::runner::RunRequest {
@@ -1145,7 +1146,11 @@ async fn cancel_run(
     let run = store(&state).get_run(&id)?;
     Ok(Json(RunRef {
         id: run.id,
-        state: if was_running { "cancelling".into() } else { wire_name(run.state, "unknown") },
+        state: if was_running {
+            "cancelling".into()
+        } else {
+            wire_name(run.state, "unknown")
+        },
         steps_consumed: run.steps_consumed,
         steps_budget: run.steps_budget,
         resumed_from: run.resumed_from,
@@ -1197,9 +1202,7 @@ async fn list_predictions(
 ) -> ApiResult<Json<Vec<serde_json::Value>>> {
     require(&state, &headers, ActorRole::Reader)?;
     let guard = store(&state);
-    let rows = guard
-        .query_predictions()
-        .map_err(|e| ApiError::from(e))?;
+    let rows = guard.query_predictions().map_err(|e| ApiError::from(e))?;
     Ok(Json(
         rows.into_iter()
             .map(|p| {
@@ -1289,46 +1292,45 @@ async fn make_prediction(
     // Spawning an isolated torch worker is blocking work; running it on
     // the async runtime would stall every other connection for the
     // duration of a model forward pass.
-    let outcome = tokio::task::spawn_blocking(move || -> ApiResult<crate::inference::InferenceResult> {
-        // A second connection to the same store root, so the blocking
-        // work never holds the API's mutex while the worker runs.
-        let store = Store::open(&root)?;
-        let observation = store.get_observation(&observation_id)?;
-        // The graph comes from the committed snapshot, not the request:
-        // a prediction must be these weights under the structure they
-        // were trained with, and a caller-supplied graph would let any
-        // reader describe any model however they liked.
-        let snapshot = store.load_snapshot(&digest)?;
-        let graph = snapshot.graph.clone().ok_or_else(|| {
-            ApiError {
+    let outcome =
+        tokio::task::spawn_blocking(move || -> ApiResult<crate::inference::InferenceResult> {
+            // A second connection to the same store root, so the blocking
+            // work never holds the API's mutex while the worker runs.
+            let store = Store::open(&root)?;
+            let observation = store.get_observation(&observation_id)?;
+            // The graph comes from the committed snapshot, not the request:
+            // a prediction must be these weights under the structure they
+            // were trained with, and a caller-supplied graph would let any
+            // reader describe any model however they liked.
+            let snapshot = store.load_snapshot(&digest)?;
+            let graph = snapshot.graph.clone().ok_or_else(|| ApiError {
                 class: "incompatible-state".into(),
                 detail: format!(
                     "snapshot {digest} declares no operator graph, so there is \
                      nothing to execute; it cannot serve predictions"
                 ),
                 conflict_version: None,
-            }
-        })?;
-        let outcome = crate::inference::predict(
-            &store,
-            &actor,
-            &paths,
-            &digest,
-            &graph,
-            &observation,
-            &scratch,
-        )?;
-        // the record is the product's durable claim; storing it is what
-        // makes the correction that follows referenceable
-        store.put_prediction(&actor, &outcome.prediction)?;
-        Ok(outcome)
-    })
-    .await
-    .map_err(|e| ApiError {
-        class: "backend-failed".into(),
-        detail: format!("prediction task failed: {e}"),
-        conflict_version: None,
-    })??;
+            })?;
+            let outcome = crate::inference::predict(
+                &store,
+                &actor,
+                &paths,
+                &digest,
+                &graph,
+                &observation,
+                &scratch,
+            )?;
+            // the record is the product's durable claim; storing it is what
+            // makes the correction that follows referenceable
+            store.put_prediction(&actor, &outcome.prediction)?;
+            Ok(outcome)
+        })
+        .await
+        .map_err(|e| ApiError {
+            class: "backend-failed".into(),
+            detail: format!("prediction task failed: {e}"),
+            conflict_version: None,
+        })??;
 
     let payload = serde_json::json!({
         "id": outcome.prediction.id,
@@ -1414,7 +1416,7 @@ async fn resume_run(
                 class: "invalid-input".into(),
                 detail: format!("unknown resume level {other:?}"),
                 conflict_version: None,
-            })
+            });
         }
     };
     let plan = grove::checkpoint::resume_plan(
@@ -1606,10 +1608,12 @@ async fn lineage(
             .parents_of(&name)
             .map_err(ApiError::from)?
             .into_iter()
-            .map(|(d, k)| serde_json::json!({
-                "parent": d.to_hex(),
-                "derivation": grove::checkpoint::derivation_label(k),
-            }))
+            .map(|(d, k)| {
+                serde_json::json!({
+                    "parent": d.to_hex(),
+                    "derivation": grove::checkpoint::derivation_label(k),
+                })
+            })
             .collect();
         let invalidation = guard.snapshot_invalidation(&digest).ok().flatten();
         nodes.push(serde_json::json!({
@@ -1651,9 +1655,7 @@ async fn lineage(
 fn web_root() -> std::path::PathBuf {
     std::env::var_os("GROVE_WEB_ROOT")
         .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| {
-            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("web")
-        })
+        .unwrap_or_else(|| std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("web"))
 }
 
 /// Read one asset. A path that escapes the web root is refused rather
@@ -1668,12 +1670,10 @@ fn read_asset(name: &str) -> ApiResult<(String, &'static str)> {
         });
     }
     let path = web_root().join(name);
-    let bytes = std::fs::read(&path).map_err(|e| {
-        ApiError {
-            class: "artifact-unavailable".into(),
-            detail: format!("web asset {} is unreadable: {e}", path.display()),
-            conflict_version: None,
-        }
+    let bytes = std::fs::read(&path).map_err(|e| ApiError {
+        class: "artifact-unavailable".into(),
+        detail: format!("web asset {} is unreadable: {e}", path.display()),
+        conflict_version: None,
     })?;
     let body = String::from_utf8(bytes).map_err(|_| ApiError {
         class: "artifact-unavailable".into(),
@@ -1704,12 +1704,7 @@ async fn asset_css() -> Response {
 
 async fn serve_asset(name: &str) -> Response {
     match read_asset(name) {
-        Ok((body, kind)) => (
-            StatusCode::OK,
-            [("content-type", kind)],
-            body,
-        )
-            .into_response(),
+        Ok((body, kind)) => (StatusCode::OK, [("content-type", kind)], body).into_response(),
         Err(e) => e.into_response(),
     }
 }

@@ -4,8 +4,8 @@ use crate::context::EvalEngine;
 use crate::env::Env;
 use crate::error::EvalError;
 use crate::sexp::Sexp;
-use crate::special::{eval_last_body, TailResult};
-use crate::value::{is_truthy, Value};
+use crate::special::{TailResult, eval_last_body};
+use crate::value::{Value, is_truthy};
 
 // ── if ────────────────────────────────────────────────────────────
 
@@ -28,7 +28,13 @@ pub fn do_if(
         let taken = taken;
         observation.report(
             crate::observer::EventKind::Branch,
-            || if taken { "then".to_string() } else { "else".to_string() },
+            || {
+                if taken {
+                    "then".to_string()
+                } else {
+                    "else".to_string()
+                }
+            },
             args[0].span(),
         );
     }
@@ -114,9 +120,10 @@ pub fn do_cond(
         let list = match clause {
             Sexp::List(list, _) => list,
             other => {
-                return Err(EvalError::invalid_form(
-                    format!("cond clause must be a list, got {}", other.kind()),
-                ));
+                return Err(EvalError::invalid_form(format!(
+                    "cond clause must be a list, got {}",
+                    other.kind()
+                )));
             }
         };
         if list.is_empty() {
@@ -141,9 +148,9 @@ pub fn do_cond(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::builtins;
     use crate::context::EvalContext;
     use crate::env::Env;
-    use crate::builtins;
     use crate::eval;
     use crate::sexp::Sexp;
 
@@ -168,19 +175,45 @@ mod tests {
                         let mut s = String::new();
                         s.push(chars.next().unwrap());
                         while let Some(&c) = chars.peek() {
-                            match c { '\\' => { s.push(chars.next().unwrap()); if let Some(nc) = chars.next() { s.push(nc); } } '"' => { s.push(chars.next().unwrap()); break; } _ => { s.push(chars.next().unwrap()); } }
+                            match c {
+                                '\\' => {
+                                    s.push(chars.next().unwrap());
+                                    if let Some(nc) = chars.next() {
+                                        s.push(nc);
+                                    }
+                                }
+                                '"' => {
+                                    s.push(chars.next().unwrap());
+                                    break;
+                                }
+                                _ => {
+                                    s.push(chars.next().unwrap());
+                                }
+                            }
                         }
                         tokens.push(s);
                     }
-                    _ if c.is_whitespace() => { chars.next(); }
-                    ';' => { while let Some(c) = chars.next() { if c == '\n' { break; } } }
+                    _ if c.is_whitespace() => {
+                        chars.next();
+                    }
+                    ';' => {
+                        while let Some(c) = chars.next() {
+                            if c == '\n' {
+                                break;
+                            }
+                        }
+                    }
                     _ => {
                         let mut atom = String::new();
                         while let Some(&c) = chars.peek() {
-                            if c.is_whitespace() || "()[]{}'\"".contains(c) || c == ';' { break; }
+                            if c.is_whitespace() || "()[]{}'\"".contains(c) || c == ';' {
+                                break;
+                            }
                             atom.push(chars.next().unwrap());
                         }
-                        if !atom.is_empty() { tokens.push(atom); }
+                        if !atom.is_empty() {
+                            tokens.push(atom);
+                        }
                     }
                 }
             }
@@ -194,24 +227,90 @@ mod tests {
                 while let Some(c) = chars.next() {
                     if c == '\\' {
                         if let Some(nc) = chars.next() {
-                            match nc { 'n' => unescaped.push('\n'), 'r' => unescaped.push('\r'), 't' => unescaped.push('\t'), '\\' => unescaped.push('\\'), '"' => unescaped.push('"'), _ => unescaped.push(nc), }
+                            match nc {
+                                'n' => unescaped.push('\n'),
+                                'r' => unescaped.push('\r'),
+                                't' => unescaped.push('\t'),
+                                '\\' => unescaped.push('\\'),
+                                '"' => unescaped.push('"'),
+                                _ => unescaped.push(nc),
+                            }
                         }
-                    } else { unescaped.push(c); }
+                    } else {
+                        unescaped.push(c);
+                    }
                 }
                 Sexp::String(unescaped, None)
-            } else if token.starts_with(':') { Sexp::Keyword(token[1..].to_string(), None) }
-            else { match token { "nil" => Sexp::Nil, "true" => Sexp::Boolean(true), "false" => Sexp::Boolean(false), _ => { if let Ok(i) = token.parse::<i64>() { Sexp::Integer(i, None) } else if let Ok(f) = token.parse::<f64>() { Sexp::Float(f, None) } else { Sexp::Symbol(token.to_string(), None) } } } }
+            } else if token.starts_with(':') {
+                Sexp::Keyword(token.strip_prefix(':').unwrap_or(token).to_string(), None)
+            } else {
+                match token {
+                    "nil" => Sexp::Nil,
+                    "true" => Sexp::Boolean(true),
+                    "false" => Sexp::Boolean(false),
+                    _ => {
+                        if let Ok(i) = token.parse::<i64>() {
+                            Sexp::Integer(i, None)
+                        } else if let Ok(f) = token.parse::<f64>() {
+                            Sexp::Float(f, None)
+                        } else {
+                            Sexp::Symbol(token.to_string(), None)
+                        }
+                    }
+                }
+            }
         }
-        fn read_sexp(tokens: &mut std::iter::Peekable<std::vec::IntoIter<String>>) -> Result<Sexp, ()> {
+        fn read_sexp(
+            tokens: &mut std::iter::Peekable<std::vec::IntoIter<String>>,
+        ) -> Result<Sexp, ()> {
             let mut stack: Vec<(String, im::Vector<Sexp>)> = Vec::new();
             while let Some(token) = tokens.next() {
                 match token.as_str() {
-                    "'" => { let inner = read_sexp(tokens)?; let quoted = Sexp::List(im::vector![Sexp::Symbol("quote".into(), None), inner], None); if let Some(parent) = stack.last_mut() { parent.1.push_back(quoted); } else { return Ok(quoted); } }
-                    "(" | "[" | "{" => { stack.push((token, im::Vector::new())); }
-                    ")" => { let (_, items) = stack.pop().ok_or(())?; let val = Sexp::List(items, None); if let Some(parent) = stack.last_mut() { parent.1.push_back(val); } else { return Ok(val); } }
-                    "]" => { let (_, items) = stack.pop().ok_or(())?; let val = Sexp::Vector(items, None); if let Some(parent) = stack.last_mut() { parent.1.push_back(val); } else { return Ok(val); } }
-                    "}" => { let _ = stack.pop().ok_or(())?; return Err(()); }
-                    _ => { let val = test_parse_atom(&token); if let Some(parent) = stack.last_mut() { parent.1.push_back(val); } else { return Ok(val); } }
+                    "'" => {
+                        let inner = read_sexp(tokens)?;
+                        let quoted = Sexp::List(
+                            im::vector![Sexp::Symbol("quote".into(), None), inner],
+                            None,
+                        );
+                        if let Some(parent) = stack.last_mut() {
+                            parent.1.push_back(quoted);
+                        } else {
+                            return Ok(quoted);
+                        }
+                    }
+                    "(" | "[" | "{" => {
+                        stack.push((token, im::Vector::new()));
+                    }
+                    ")" => {
+                        let (_, items) = stack.pop().ok_or(())?;
+                        let val = Sexp::List(items, None);
+                        if let Some(parent) = stack.last_mut() {
+                            parent.1.push_back(val);
+                        } else {
+                            return Ok(val);
+                        }
+                    }
+                    "]" => {
+                        let (_, items) = stack.pop().ok_or(())?;
+                        let val = Sexp::Vector(items, None);
+                        if let Some(parent) = stack.last_mut() {
+                            parent.1.push_back(val);
+                        } else {
+                            return Ok(val);
+                        }
+                    }
+                    "}" => {
+                        let _ = stack.pop().ok_or(())?;
+                        return Err(());
+                    }
+                    _ => {
+                        let val = test_parse_atom(&token);
+                        if let Some(parent) = stack.last_mut() {
+                            parent.1.push_back(val);
+                        } else {
+                            return Ok(val);
+                        }
+                    }
                 }
             }
             Err(())

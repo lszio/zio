@@ -27,12 +27,21 @@ pub fn slot_value_fn(args: Vector<Value>, _engine: &dyn EvalEngine) -> Result<Va
     let slot_name = match &args[1] {
         Value::Keyword(k) => k.clone(),
         Value::Symbol(s) => s.clone(),
-        other => return Err(EvalError::type_error("keyword or symbol", other.value_type())),
+        other => {
+            return Err(EvalError::type_error(
+                "keyword or symbol",
+                other.value_type(),
+            ));
+        }
     };
-    if let Some(inst) = instance.as_any().downcast_ref::<crate::value::ZosInstance>() {
-        inst.slots.get(&slot_name).cloned().ok_or_else(|| {
-            EvalError::custom(format!("slot not found: {slot_name}"))
-        })
+    if let Some(inst) = instance
+        .as_any()
+        .downcast_ref::<crate::value::ZosInstance>()
+    {
+        inst.slots
+            .get(&slot_name)
+            .cloned()
+            .ok_or_else(|| EvalError::custom(format!("slot not found: {slot_name}")))
     } else {
         Err(EvalError::type_error("ZosInstance", "non-instance object"))
     }
@@ -48,12 +57,18 @@ pub fn make_instance_fn(args: Vector<Value>, engine: &dyn EvalEngine) -> Result<
     let class_ref = match &args[0] {
         Value::Object(o) => o.header().class.clone(),
         Value::Symbol(s) => {
-            let class_val = engine.env().get(s).ok_or_else(|| {
-                EvalError::custom(format!("class not found: {s}"))
-            })?;
+            let class_val = engine
+                .env()
+                .get(s)
+                .ok_or_else(|| EvalError::custom(format!("class not found: {s}")))?;
             match &class_val {
                 Value::Object(o) => o.header().class.clone(),
-                _ => return Err(EvalError::type_error("class object", class_val.value_type())),
+                _ => {
+                    return Err(EvalError::type_error(
+                        "class object",
+                        class_val.value_type(),
+                    ));
+                }
             }
         }
         other => return Err(EvalError::type_error("class object", other.value_type())),
@@ -67,7 +82,12 @@ pub fn make_instance_fn(args: Vector<Value>, engine: &dyn EvalEngine) -> Result<
         let key = match &args[i] {
             Value::Keyword(k) => k.clone(),
             Value::Symbol(s) => s.clone(),
-            other => return Err(EvalError::type_error("keyword or symbol", other.value_type())),
+            other => {
+                return Err(EvalError::type_error(
+                    "keyword or symbol",
+                    other.value_type(),
+                ));
+            }
         };
         i += 1;
         if i < args.len() {
@@ -118,24 +138,34 @@ pub fn class_name_fn(args: Vector<Value>, _engine: &dyn EvalEngine) -> Result<Va
     Ok(Value::Symbol(class_ref.name.clone()))
 }
 /// (class-direct-superclasses class) → list
-pub fn class_direct_superclasses_fn(args: Vector<Value>, _engine: &dyn EvalEngine) -> Result<Value, EvalError> {
+pub fn class_direct_superclasses_fn(
+    args: Vector<Value>,
+    _engine: &dyn EvalEngine,
+) -> Result<Value, EvalError> {
     if args.len() != 1 {
         return Err(EvalError::wrong_arg_count(1, args.len()));
     }
     let class_ref = value_to_class_ref(&args[0])?;
-    let supers: im::Vector<Value> = class_ref.superclasses.iter()
+    let supers: im::Vector<Value> = class_ref
+        .superclasses
+        .iter()
         .map(|c| Value::Symbol(c.name.clone()))
         .collect();
     Ok(Value::List(supers))
 }
 
 /// (class-precedence-list class) → list of symbols
-pub fn class_precedence_list_fn(args: Vector<Value>, _engine: &dyn EvalEngine) -> Result<Value, EvalError> {
+pub fn class_precedence_list_fn(
+    args: Vector<Value>,
+    _engine: &dyn EvalEngine,
+) -> Result<Value, EvalError> {
     if args.len() != 1 {
         return Err(EvalError::wrong_arg_count(1, args.len()));
     }
     let class_ref = value_to_class_ref(&args[0])?;
-    let cpl: im::Vector<Value> = class_ref.cpl.iter()
+    let cpl: im::Vector<Value> = class_ref
+        .cpl
+        .iter()
         .map(|name| Value::Symbol(name.clone()))
         .collect();
     Ok(Value::List(cpl))
@@ -147,7 +177,9 @@ pub fn class_slots_fn(args: Vector<Value>, _engine: &dyn EvalEngine) -> Result<V
         return Err(EvalError::wrong_arg_count(1, args.len()));
     }
     let class_ref = value_to_class_ref(&args[0])?;
-    let slots: im::Vector<Value> = class_ref.slots.iter()
+    let slots: im::Vector<Value> = class_ref
+        .slots
+        .iter()
         .map(|s| Value::Symbol(s.name.clone()))
         .collect();
     Ok(Value::List(slots))
@@ -182,22 +214,23 @@ pub fn gf_methods_fn(args: Vector<Value>, _engine: &dyn EvalEngine) -> Result<Va
                 let gf = gf.borrow();
                 let mut methods: im::Vector<Value> = im::Vector::new();
                 for m in &gf.methods {
-                    let specializers: im::Vector<Value> = m.specializers.iter()
+                    let specializers: im::Vector<Value> = m
+                        .specializers
+                        .iter()
                         .map(|s| match s {
                             crate::zos::gf::Specializer::T => Value::Keyword("t".into()),
                             crate::zos::gf::Specializer::Exact(name) => Value::Symbol(name.clone()),
                         })
                         .collect();
                     let qual = match m.qualifier {
-                        crate::zos::gf::MethodQualifier::Primary => Value::Keyword("primary".into()),
+                        crate::zos::gf::MethodQualifier::Primary => {
+                            Value::Keyword("primary".into())
+                        }
                         crate::zos::gf::MethodQualifier::Before => Value::Keyword("before".into()),
                         crate::zos::gf::MethodQualifier::After => Value::Keyword("after".into()),
                         crate::zos::gf::MethodQualifier::Around => Value::Keyword("around".into()),
                     };
-                    let method_desc: im::Vector<Value> = vector![
-                        Value::List(specializers),
-                        qual,
-                    ];
+                    let method_desc: im::Vector<Value> = vector![Value::List(specializers), qual,];
                     methods.push_back(Value::List(method_desc));
                 }
                 Ok(Value::List(methods))
@@ -218,14 +251,50 @@ fn value_to_class_ref(v: &Value) -> Result<crate::zos::object::ClassRef, EvalErr
 }
 
 pub fn register(env: &Arc<Env>) {
-    env.set("slot-value".into(), Value::NativeFunction(NativeFn::new("slot-value", slot_value_fn)));
-    env.set("make-instance".into(), Value::NativeFunction(NativeFn::new("make-instance", make_instance_fn)));
-    env.set("class-of".into(), Value::NativeFunction(NativeFn::new("class-of", class_of_fn)));
-    env.set("class-name".into(), Value::NativeFunction(NativeFn::new("class-name", class_name_fn)));
-    env.set("class-direct-superclasses".into(), Value::NativeFunction(NativeFn::new("class-direct-superclasses", class_direct_superclasses_fn)));
-    env.set("class-precedence-list".into(), Value::NativeFunction(NativeFn::new("class-precedence-list", class_precedence_list_fn)));
-    env.set("class-slots".into(), Value::NativeFunction(NativeFn::new("class-slots", class_slots_fn)));
-    env.set("slot-definitions".into(), Value::NativeFunction(NativeFn::new("slot-definitions", class_slots_fn)));
-    env.set("generic-function-name".into(), Value::NativeFunction(NativeFn::new("generic-function-name", gf_name_fn)));
-    env.set("generic-function-methods".into(), Value::NativeFunction(NativeFn::new("generic-function-methods", gf_methods_fn)));
+    env.set(
+        "slot-value".into(),
+        Value::NativeFunction(NativeFn::new("slot-value", slot_value_fn)),
+    );
+    env.set(
+        "make-instance".into(),
+        Value::NativeFunction(NativeFn::new("make-instance", make_instance_fn)),
+    );
+    env.set(
+        "class-of".into(),
+        Value::NativeFunction(NativeFn::new("class-of", class_of_fn)),
+    );
+    env.set(
+        "class-name".into(),
+        Value::NativeFunction(NativeFn::new("class-name", class_name_fn)),
+    );
+    env.set(
+        "class-direct-superclasses".into(),
+        Value::NativeFunction(NativeFn::new(
+            "class-direct-superclasses",
+            class_direct_superclasses_fn,
+        )),
+    );
+    env.set(
+        "class-precedence-list".into(),
+        Value::NativeFunction(NativeFn::new(
+            "class-precedence-list",
+            class_precedence_list_fn,
+        )),
+    );
+    env.set(
+        "class-slots".into(),
+        Value::NativeFunction(NativeFn::new("class-slots", class_slots_fn)),
+    );
+    env.set(
+        "slot-definitions".into(),
+        Value::NativeFunction(NativeFn::new("slot-definitions", class_slots_fn)),
+    );
+    env.set(
+        "generic-function-name".into(),
+        Value::NativeFunction(NativeFn::new("generic-function-name", gf_name_fn)),
+    );
+    env.set(
+        "generic-function-methods".into(),
+        Value::NativeFunction(NativeFn::new("generic-function-methods", gf_methods_fn)),
+    );
 }

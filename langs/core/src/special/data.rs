@@ -21,15 +21,22 @@ pub fn do_quote(args: &[Sexp]) -> Result<TailResult, EvalError> {
 /// (set! symbol expr) — mutate the binding of `symbol` in the nearest scope
 /// where it is defined, or create a new binding in the current scope if none
 /// exists.
-pub fn do_set(args: &[Sexp], env: &Arc<Env>, engine: &dyn EvalEngine) -> Result<TailResult, EvalError> {
+pub fn do_set(
+    args: &[Sexp],
+    env: &Arc<Env>,
+    engine: &dyn EvalEngine,
+) -> Result<TailResult, EvalError> {
     if args.len() != 2 {
         return Err(EvalError::wrong_arg_count(2, args.len()));
     }
     let name = match &args[0] {
         Sexp::Symbol(s, _) => s.clone(),
-        other => return Err(EvalError::invalid_form(
-            format!("set! requires a symbol, got {}", other.kind()),
-        )),
+        other => {
+            return Err(EvalError::invalid_form(format!(
+                "set! requires a symbol, got {}",
+                other.kind()
+            )));
+        }
     };
     let val = engine.eval_expr(&args[1], env, false)?.into_value();
     if !env.set_global(&name, val.clone()) {

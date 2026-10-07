@@ -6,8 +6,8 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use loom::mock::{RecordingLlmHost, ScriptedLlmHost};
 use loom::install;
+use loom::mock::{RecordingLlmHost, ScriptedLlmHost};
 use zio_core::context::{EvalContext, EvalRuntime};
 use zio_core::env::Env;
 use zio_core::error::EvalError;
@@ -15,13 +15,16 @@ use zio_core::value::Value;
 
 fn workspace_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .ancestors().nth(3)
+        .ancestors()
+        .nth(3)
         .expect("crate lives in the repository layout")
         .to_path_buf()
 }
 
 fn eval_str(ctx: &EvalContext, src: &str) -> Result<Value, EvalError> {
-    let source_id = ctx.source_map().register("learn3-test".into(), src.to_string());
+    let source_id = ctx
+        .source_map()
+        .register("learn3-test".into(), src.to_string());
     let forms = zio_core::reader::reader::read_program_with_source(src, source_id)
         .map_err(|e| EvalError::custom(format!("parse error: {e}")))?;
     let mut last = Value::Nil;
@@ -170,7 +173,10 @@ fn generation_budget_caps_proposer_calls() {
         "(* (* x x) x)".into(),
     ]));
     let expr = learn_with_proposer(&ctx, "[[1 3] [2 5] [3 7]]", ":max-generations 2").unwrap();
-    assert!(matches!(expr, Value::List(_)), "best-effort form, got {expr:?}");
+    assert!(
+        matches!(expr, Value::List(_)),
+        "best-effort form, got {expr:?}"
+    );
     assert_eq!(recorder.calls(), 2);
 }
 
@@ -184,17 +190,19 @@ fn eval_budget_stops_the_loop() {
         "(* (* (* x x) x) x)".into(),
     ]));
     let _ = learn_with_proposer(&ctx, "[[1 3] [2 5]]", ":max-evals 4").unwrap();
-    assert_eq!(recorder.calls(), 2, "eval budget must stop after generation 2");
+    assert_eq!(
+        recorder.calls(),
+        2,
+        "eval budget must stop after generation 2"
+    );
 }
 
 #[test]
 fn whitelist_rejects_undeclared_constants_from_the_proposer() {
     // 99 is not a declared constant: every candidate dies at the gate,
     // the run returns nil, and both generations still ask the proposer
-    let (ctx, recorder, _) = learn_ctx(ScriptedLlmHost::new([
-        "(+ x 99)".into(),
-        "(* x 99)".into(),
-    ]));
+    let (ctx, recorder, _) =
+        learn_ctx(ScriptedLlmHost::new(["(+ x 99)".into(), "(* x 99)".into()]));
     let got = learn_with_proposer(&ctx, "[[1 3] [2 5]]", ":max-generations 2").unwrap();
     assert_eq!(got, Value::Nil, "no candidate may survive the gate");
     assert_eq!(recorder.calls(), 2);
@@ -206,7 +214,10 @@ fn candidate_eval_errors_are_isolated() {
     // candidate worst, and return its best-effort form instead of an error
     let (ctx, _, _) = learn_ctx(ScriptedLlmHost::new(["(+ (/ 0 0) x)".into()]));
     let got = learn_with_proposer(&ctx, "[[1 3] [2 5]]", ":max-generations 2");
-    assert!(got.is_ok(), "candidate crash must not kill the run: {got:?}");
+    assert!(
+        got.is_ok(),
+        "candidate crash must not kill the run: {got:?}"
+    );
 }
 
 #[test]

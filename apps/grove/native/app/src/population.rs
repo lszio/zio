@@ -10,15 +10,15 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use grove::contracts::{
-    require_finite_metrics, Error, ErrorKind, EvaluationRecord, Population,
-    Result, Run, RunState, SCHEMA_VERSION,
+    Error, ErrorKind, EvaluationRecord, Population, Result, Run, RunState, SCHEMA_VERSION,
+    require_finite_metrics,
 };
 use grove::coordinator::{Attempt, Coordinator};
 use grove::evaluation::{self, EvaluationProtocol};
 use grove::store::Store;
 use grove::worker::{Frame, Isolation, Worker, WorkerConfig};
 
-use crate::{operator, Paths};
+use crate::{Paths, operator};
 
 /// Both branches train the same nonlinear candidate with different seeds:
 /// the point is the coordination, so the graph is fixed and the seeds
@@ -64,8 +64,12 @@ fn train_branch(
     let seed_weights = scratch.join(format!("seed-{lineage}-{seed}.json"));
     std::fs::write(&seed_weights, "{}").unwrap();
     let out = scratch.join(format!("out-{lineage}-{seed}.json"));
-    let state_out = checkpoint_at
-        .map(|_| scratch.join(format!("state-{lineage}.json")).to_string_lossy().into_owned());
+    let state_out = checkpoint_at.map(|_| {
+        scratch
+            .join(format!("state-{lineage}.json"))
+            .to_string_lossy()
+            .into_owned()
+    });
     let deadline = Instant::now() + Duration::from_secs(240);
     worker
         .send(&Frame::Train {
@@ -97,10 +101,15 @@ fn train_branch(
         let remaining = deadline.saturating_duration_since(Instant::now());
         if remaining.is_zero() {
             worker.kill();
-            return Err(Error::new(ErrorKind::Timeout, format!("{lineage} never finished")));
+            return Err(Error::new(
+                ErrorKind::Timeout,
+                format!("{lineage} never finished"),
+            ));
         }
         match worker.next_frame(remaining)? {
-            Frame::Done { loss, val_accuracy, .. } => {
+            Frame::Done {
+                loss, val_accuracy, ..
+            } => {
                 let accuracy = val_accuracy.unwrap_or(0.0);
                 require_finite_metrics(&[("accuracy".into(), accuracy)])?;
                 worker.kill();
@@ -192,10 +201,26 @@ pub fn run_population(root: &Path, paths: &Paths, device: &str, workers: usize) 
 
     // attempts open through the coordinator: the shared ledger is debited
     // before any process starts (300 + 600 lands exactly on the grant)
-    let att_a: Attempt =
-        coordinator.start_attempt(&operator, "pop-1", "branch-a", "run-branch-a", 300, 600_000, now(), "att-a")?;
-    let att_b: Attempt =
-        coordinator.start_attempt(&operator, "pop-1", "branch-b", "run-branch-b", 600, 600_000, now(), "att-b")?;
+    let att_a: Attempt = coordinator.start_attempt(
+        &operator,
+        "pop-1",
+        "branch-a",
+        "run-branch-a",
+        300,
+        600_000,
+        now(),
+        "att-a",
+    )?;
+    let att_b: Attempt = coordinator.start_attempt(
+        &operator,
+        "pop-1",
+        "branch-b",
+        "run-branch-b",
+        600,
+        600_000,
+        now(),
+        "att-b",
+    )?;
     report.push_str(&format!(
         "  attempts att-a (300 steps) + att-b (600 steps) → ledger {}/1000\n",
         store.get_population("pop-1")?.spent_steps
@@ -216,23 +241,29 @@ pub fn run_population(root: &Path, paths: &Paths, device: &str, workers: usize) 
         let config = config.clone();
         let iso = iso.clone();
         let scratch = scratch.clone();
-        std::thread::spawn(move || train_branch(&config, &iso, &scratch, "run-branch-b", 600, 4, None))
+        std::thread::spawn(move || {
+            train_branch(&config, &iso, &scratch, "run-branch-b", 600, 4, None)
+        })
     };
 
     // branch A pauses at its checkpoint and its process dies (train_branch
     // kills the worker after the safe point); branch B keeps running
-    let result_a = leg_a.join().map_err(|_| {
-        Error::new(ErrorKind::BackendFailed, "branch a's worker panicked")
-    })??;
-    let result_b = leg_b.join().map_err(|_| {
-        Error::new(ErrorKind::BackendFailed, "branch b's worker panicked")
-    })??;
+    let result_a = leg_a
+        .join()
+        .map_err(|_| Error::new(ErrorKind::BackendFailed, "branch a's worker panicked"))??;
+    let result_b = leg_b
+        .join()
+        .map_err(|_| Error::new(ErrorKind::BackendFailed, "branch b's worker panicked"))??;
 
     // overlap proof: both windows genuinely intersect
     let overlap = result_b
         .finished
         .saturating_duration_since(result_a.started)
-        .max(result_a.finished.saturating_duration_since(result_b.started));
+        .max(
+            result_a
+                .finished
+                .saturating_duration_since(result_b.started),
+        );
     report.push_str(&format!(
         "  parallel windows overlapped {overlap:?} (both branches trained concurrently)\n"
     ));
@@ -263,7 +294,16 @@ pub fn run_population(root: &Path, paths: &Paths, device: &str, workers: usize) 
     // a zombie worker: its lease expired while it was training, so the
     // result it finally produces must not overwrite A's new head
     coordinator
-        .start_attempt(&operator, "pop-1", "branch-a", "run-branch-a", 0, -1, now(), "att-zombie")
+        .start_attempt(
+            &operator,
+            "pop-1",
+            "branch-a",
+            "run-branch-a",
+            0,
+            -1,
+            now(),
+            "att-zombie",
+        )
         .ok();
     let zombie_refused = coordinator
         .commit_attempt(&operator, "att-zombie", "ckpt-forged", 1, now())
@@ -277,9 +317,7 @@ pub fn run_population(root: &Path, paths: &Paths, device: &str, workers: usize) 
     // moves through a branch advance on the same lease, not a fake
     // checkpoint built from its weights file.
     let weights_b = scratch.join("out-run-branch-b-4.json");
-    let digest_b = grove::contracts::digest_bytes(
-        &std::fs::read(&weights_b).unwrap_or_default(),
-    );
+    let digest_b = grove::contracts::digest_bytes(&std::fs::read(&weights_b).unwrap_or_default());
     coordinator.cancel_attempt(&operator, &att_b.id)?;
     store.advance_head(&operator, "branch-b", &digest_b.to_hex(), 0)?;
 
@@ -296,10 +334,24 @@ pub fn run_population(root: &Path, paths: &Paths, device: &str, workers: usize) 
 
     // the shared grant refuses work it cannot cover (900 spent, 100 left)
     let refused = coordinator.start_attempt(
-        &operator, "pop-1", "branch-a", "run-branch-a", 200, 60_000, now(), "att-a2",
+        &operator,
+        "pop-1",
+        "branch-a",
+        "run-branch-a",
+        200,
+        60_000,
+        now(),
+        "att-a2",
     );
     let fits = coordinator.start_attempt(
-        &operator, "pop-1", "branch-b", "run-branch-b", 100, 60_000, now(), "att-b2",
+        &operator,
+        "pop-1",
+        "branch-b",
+        "run-branch-b",
+        100,
+        60_000,
+        now(),
+        "att-b2",
     );
     report.push_str(&format!(
         "  ledger {}: over-grant refused={}, exactly-fitting attempt started={}\n",
@@ -356,7 +408,10 @@ pub fn run_population(root: &Path, paths: &Paths, device: &str, workers: usize) 
             "branch accuracy {:.3} cleared the gates; awaiting human approval",
             result_b.accuracy
         ),
-        Some(row) => format!("no branch cleared the frozen gates: {:?}", row.gate_failures),
+        Some(row) => format!(
+            "no branch cleared the frozen gates: {:?}",
+            row.gate_failures
+        ),
         None => "no evaluation under this protocol; it cannot be approved".to_string(),
     };
     report.push_str(&format!(

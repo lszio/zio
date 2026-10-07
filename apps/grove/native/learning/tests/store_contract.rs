@@ -57,7 +57,13 @@ fn seed_snapshot(store: &Store, owner: &str) -> ArtifactRef {
         .unwrap()
 }
 
-fn signal(id: &str, key: &str, kind: SignalKind, target: &str, field: Option<&str>) -> LearningSignal {
+fn signal(
+    id: &str,
+    key: &str,
+    kind: SignalKind,
+    target: &str,
+    field: Option<&str>,
+) -> LearningSignal {
     LearningSignal {
         schema: SCHEMA_VERSION,
         id: id.to_string(),
@@ -86,12 +92,19 @@ fn corrupted_artifact_body_is_rejected() {
 
     // Reach into the store the way a corrupted disk or a bad copy would.
     let hex = digest.to_hex();
-    let path = root.join("artifacts").join("objects").join(&hex[..2]).join(&hex);
+    let path = root
+        .join("artifacts")
+        .join("objects")
+        .join(&hex[..2])
+        .join(&hex);
     std::fs::write(&path, b"weights-V2").unwrap();
 
     let err = store.get(&digest).unwrap_err();
     assert_eq!(err.kind, ErrorKind::ArtifactUnavailable);
-    assert!(err.to_string().contains("digest check"), "unhelpful error: {err}");
+    assert!(
+        err.to_string().contains("digest check"),
+        "unhelpful error: {err}"
+    );
 }
 
 #[test]
@@ -109,7 +122,10 @@ fn missing_artifact_is_reported_not_invented() {
 fn commit_is_idempotent_for_identical_content() {
     let root = temp_root("idem");
     let store = ArtifactStore::open(root.join("artifacts")).unwrap();
-    assert_eq!(store.put(b"same bytes").unwrap(), store.put(b"same bytes").unwrap());
+    assert_eq!(
+        store.put(b"same bytes").unwrap(),
+        store.put(b"same bytes").unwrap()
+    );
 }
 
 #[test]
@@ -118,7 +134,8 @@ fn non_finite_manifests_are_refused() {
     // process, so it can never be a stable identity.
     let err = require_finite_metrics(&[("holdout_accuracy".to_string(), f64::NAN)]).unwrap_err();
     assert_eq!(err.kind, ErrorKind::InvalidInput);
-    let err = require_finite_metrics(&[("holdout_accuracy".to_string(), f64::INFINITY)]).unwrap_err();
+    let err =
+        require_finite_metrics(&[("holdout_accuracy".to_string(), f64::INFINITY)]).unwrap_err();
     assert_eq!(err.kind, ErrorKind::InvalidInput);
     assert!(require_finite_metrics(&[("holdout_accuracy".to_string(), 0.91)]).is_ok());
 }
@@ -158,7 +175,9 @@ fn snapshot_with_a_missing_parameter_artifact_is_refused() {
         ensemble: None,
         graph: None,
     };
-    let err = store.put_snapshot(&actor(ActorRole::Operator), &snapshot).unwrap_err();
+    let err = store
+        .put_snapshot(&actor(ActorRole::Operator), &snapshot)
+        .unwrap_err();
     assert_eq!(err.kind, ErrorKind::ArtifactUnavailable);
 }
 
@@ -170,14 +189,21 @@ fn reader_cannot_commit_a_snapshot() {
         schema: SCHEMA_VERSION,
         owner: "viewer".to_string(),
         entrypoint: "predict".to_string(),
-        params: vec![ParamRef { module: "m".into(), shape: vec![1], dtype: "f32".into(), artifact: weights }],
+        params: vec![ParamRef {
+            module: "m".into(),
+            shape: vec![1],
+            dtype: "f32".into(),
+            artifact: weights,
+        }],
         libraries: vec![],
         preprocessing_version: "v1".to_string(),
         modules: vec![],
         ensemble: None,
         graph: None,
     };
-    let err = store.put_snapshot(&Actor::new("viewer", ActorRole::Reader), &snapshot).unwrap_err();
+    let err = store
+        .put_snapshot(&Actor::new("viewer", ActorRole::Reader), &snapshot)
+        .unwrap_err();
     assert_eq!(err.kind, ErrorKind::CapabilityDenied);
 }
 
@@ -186,10 +212,26 @@ fn reader_cannot_commit_a_snapshot() {
 #[test]
 fn repeated_signal_is_a_duplicate_not_a_second_sample() {
     let (_root, store) = sample_store("signal-idem");
-    let s = signal("sig-1", "teacher-batch-7", SignalKind::TeacherLabel, "obs-1", None);
+    let s = signal(
+        "sig-1",
+        "teacher-batch-7",
+        SignalKind::TeacherLabel,
+        "obs-1",
+        None,
+    );
 
-    assert_eq!(store.submit_signal(&actor(ActorRole::Operator), &s).unwrap(), Receipt::Accepted);
-    assert_eq!(store.submit_signal(&actor(ActorRole::Operator), &s).unwrap(), Receipt::Duplicate);
+    assert_eq!(
+        store
+            .submit_signal(&actor(ActorRole::Operator), &s)
+            .unwrap(),
+        Receipt::Accepted
+    );
+    assert_eq!(
+        store
+            .submit_signal(&actor(ActorRole::Operator), &s)
+            .unwrap(),
+        Receipt::Duplicate
+    );
     assert_eq!(store.active_signals("obs-1").unwrap().len(), 1);
 }
 
@@ -197,7 +239,9 @@ fn repeated_signal_is_a_duplicate_not_a_second_sample() {
 fn a_reader_cannot_submit_a_teacher_label() {
     let (_root, store) = sample_store("signal-role");
     let s = signal("sig-1", "k", SignalKind::TeacherLabel, "obs-1", None);
-    let err = store.submit_signal(&Actor::new("viewer", ActorRole::Reader), &s).unwrap_err();
+    let err = store
+        .submit_signal(&Actor::new("viewer", ActorRole::Reader), &s)
+        .unwrap_err();
     assert_eq!(err.kind, ErrorKind::CapabilityDenied);
 }
 
@@ -206,7 +250,9 @@ fn a_retraction_must_name_an_existing_signal() {
     let (_root, store) = sample_store("signal-retract");
     let mut s = signal("sig-x", "k", SignalKind::Retraction, "obs-1", None);
     s.revises = Some("sig-never-existed".to_string());
-    let err = store.submit_signal(&actor(ActorRole::Operator), &s).unwrap_err();
+    let err = store
+        .submit_signal(&actor(ActorRole::Operator), &s)
+        .unwrap_err();
     assert_eq!(err.kind, ErrorKind::IncompatibleState);
 }
 
@@ -248,7 +294,9 @@ fn a_fork_does_not_double_the_population_budget() {
         spent_steps: 90,
         policy: "explore-and-exploit@1".to_string(),
     };
-    store.put_population(&actor(ActorRole::Operator), &population).unwrap();
+    store
+        .put_population(&actor(ActorRole::Operator), &population)
+        .unwrap();
 
     let after_a = store.spend_population(&population, 5).unwrap();
     assert_eq!(after_a.spent_steps, 95);
@@ -273,9 +321,13 @@ fn a_stale_writer_cannot_overwrite_a_newer_head() {
         policy: "default".to_string(),
         budget_quota: 50,
     };
-    store.put_branch(&actor(ActorRole::Operator), &branch).unwrap();
+    store
+        .put_branch(&actor(ActorRole::Operator), &branch)
+        .unwrap();
 
-    let v = store.advance_head(&actor(ActorRole::Operator), "branch-1", &second.to_hex(), 0).unwrap();
+    let v = store
+        .advance_head(&actor(ActorRole::Operator), "branch-1", &second.to_hex(), 0)
+        .unwrap();
     assert_eq!(v, 1);
 
     // The worker that still believes the head is at 0 must be refused.
@@ -283,7 +335,10 @@ fn a_stale_writer_cannot_overwrite_a_newer_head() {
         .advance_head(&actor(ActorRole::Operator), "branch-1", &first.to_hex(), 0)
         .unwrap_err();
     assert_eq!(err.kind, ErrorKind::Conflict);
-    assert_eq!(store.get_branch("branch-1").unwrap().head, Some(second.to_hex()));
+    assert_eq!(
+        store.get_branch("branch-1").unwrap().head,
+        Some(second.to_hex())
+    );
 }
 
 #[test]
@@ -299,7 +354,10 @@ fn a_stale_publication_does_not_replace_the_active_model() {
     // drive. The CAS being tested lives below the boundary and is the
     // same CAS either way.
     assert_eq!(publish(&store, &publisher, &protocol, &a, None).unwrap(), 1);
-    assert_eq!(publish(&store, &publisher, &protocol, &b, Some(1)).unwrap(), 2);
+    assert_eq!(
+        publish(&store, &publisher, &protocol, &b, Some(1)).unwrap(),
+        2
+    );
 
     let err = publish(&store, &publisher, &protocol, &a, Some(1)).unwrap_err();
     assert_eq!(err.kind, ErrorKind::Conflict, "{err}");
@@ -311,14 +369,7 @@ fn an_operator_cannot_publish() {
     let (_root, store) = sample_store("publish-role");
     let a = seed_snapshot(&store, "trainer");
     let protocol = publishable_protocol(&store);
-    let err = publish(
-        &store,
-        &actor(ActorRole::Operator),
-        &protocol,
-        &a,
-        None,
-    )
-    .unwrap_err();
+    let err = publish(&store, &actor(ActorRole::Operator), &protocol, &a, None).unwrap_err();
     assert_eq!(err.kind, ErrorKind::CapabilityDenied);
 }
 
@@ -425,7 +476,10 @@ fn a_writer_killed_mid_write_leaves_no_committed_object() {
     // it hard (SIGKILL: no unwinding, no flush, no cleanup).
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
     while std::time::Instant::now() < deadline {
-        if std::fs::read(&digest_log).map(|b| !b.is_empty()).unwrap_or(false) {
+        if std::fs::read(&digest_log)
+            .map(|b| !b.is_empty())
+            .unwrap_or(false)
+        {
             break;
         }
         std::thread::sleep(std::time::Duration::from_millis(20));
@@ -451,7 +505,12 @@ fn a_writer_killed_mid_write_leaves_no_committed_object() {
         );
     }
     // The record committed before the kill is still readable and verified.
-    assert_eq!(store.load_manifest(&seed_snapshot(&store, "trainer")).unwrap(), committed_before);
+    assert_eq!(
+        store
+            .load_manifest(&seed_snapshot(&store, "trainer"))
+            .unwrap(),
+        committed_before
+    );
     // Sweeping removes the interrupted temporaries; committed objects stay.
     let swept = store.artifacts().sweep_temp().unwrap();
     assert!(
@@ -486,9 +545,15 @@ fn a_checkpoint_needs_a_durable_state_artifact() {
     assert!(store.get_checkpoint("ckpt-1").is_err());
 
     let state = store.artifacts().put(b"optimizer-state").unwrap();
-    let ok = Checkpoint { state_artifact: state, ..cp };
+    let ok = Checkpoint {
+        state_artifact: state,
+        ..cp
+    };
     store.commit_checkpoint(&operator, &ok).unwrap();
-    assert_eq!(store.get_checkpoint("ckpt-1").unwrap().budget_spent_steps, 12);
+    assert_eq!(
+        store.get_checkpoint("ckpt-1").unwrap().budget_spent_steps,
+        12
+    );
 }
 
 // ── schema version gate ────────────────────────────────────────────
@@ -526,15 +591,21 @@ fn a_record_from_an_unknown_schema_is_not_executed() {
         modality_mask: vec![true],
         training_permitted: true,
     };
-    store.put_observation(&actor(ActorRole::Reader), &observation).unwrap();
+    store
+        .put_observation(&actor(ActorRole::Reader), &observation)
+        .unwrap();
     drop(store);
 
     let conn = rusqlite::Connection::open(root.join("grove.db")).unwrap();
-    conn.execute("UPDATE observations SET schema = 99", []).unwrap();
+    conn.execute("UPDATE observations SET schema = 99", [])
+        .unwrap();
     drop(conn);
 
     let store = Store::open(&root).unwrap();
-    assert_eq!(store.get_observation("obs-1").unwrap_err().kind, ErrorKind::IncompatibleState);
+    assert_eq!(
+        store.get_observation("obs-1").unwrap_err().kind,
+        ErrorKind::IncompatibleState
+    );
 }
 
 #[test]
@@ -560,9 +631,9 @@ fn observations_cannot_be_attributed_to_another_actor() {
 
 #[test]
 fn grove_attach_registers_artifact_bindings() {
+    use std::sync::Arc;
     use zio_core::context::EvalContext;
     use zio_core::env::Env;
-    use std::sync::Arc;
 
     let ctx = EvalContext::new(Arc::new(Env::new(None)));
     grove::install(&ctx, None);
@@ -575,4 +646,3 @@ fn grove_attach_registers_artifact_bindings() {
     grove::install(&ctx2, None);
     assert!(ctx2.env.get("grove-artifact-get").is_some());
 }
-

@@ -6,7 +6,7 @@ use crate::context::EvalEngine;
 use crate::env::Env;
 use crate::error::EvalError;
 use crate::sexp::Sexp;
-use crate::special::{eval_last_body, parse_bindings, TailResult};
+use crate::special::{TailResult, eval_last_body, parse_bindings};
 use crate::value::Value;
 
 // ── let / let* ────────────────────────────────────────────────────
@@ -17,7 +17,12 @@ pub fn do_let(
     tail: bool,
     engine: &dyn EvalEngine,
 ) -> Result<TailResult, EvalError> {
-    do_let_inner(args, env, tail, false, engine)
+    // Sequential, like every Clojure `let`: a binding's initializer sees
+    // the bindings before it. The Grove sources (and any Clojure-style
+    // program) write `(let [opts ... :x (get opts :k)])` and depend on
+    // it; a parallel `let` is Scheme's, and `let*` exists here as the
+    // explicit spelling of the same thing.
+    do_let_inner(args, env, tail, true, engine)
 }
 
 pub fn do_let_star(
@@ -159,11 +164,54 @@ mod tests {
             let mut chars = input.chars().peekable();
             while let Some(&c) = chars.peek() {
                 match c {
-                    '(' | ')' | '[' | ']' | '{' | '}' | '\'' => { tokens.push(c.to_string()); chars.next(); }
-                    '"' => { let mut s = String::new(); s.push(chars.next().unwrap()); while let Some(&c) = chars.peek() { match c { '\\' => { s.push(chars.next().unwrap()); if let Some(nc) = chars.next() { s.push(nc); } } '"' => { s.push(chars.next().unwrap()); break; } _ => { s.push(chars.next().unwrap()); } } } tokens.push(s); }
-                    _ if c.is_whitespace() => { chars.next(); }
-                    ';' => { while let Some(c) = chars.next() { if c == '\n' { break; } } }
-                    _ => { let mut atom = String::new(); while let Some(&c) = chars.peek() { if c.is_whitespace() || "()[]{}'\"".contains(c) || c == ';' { break; } atom.push(chars.next().unwrap()); } if !atom.is_empty() { tokens.push(atom); } }
+                    '(' | ')' | '[' | ']' | '{' | '}' | '\'' => {
+                        tokens.push(c.to_string());
+                        chars.next();
+                    }
+                    '"' => {
+                        let mut s = String::new();
+                        s.push(chars.next().unwrap());
+                        while let Some(&c) = chars.peek() {
+                            match c {
+                                '\\' => {
+                                    s.push(chars.next().unwrap());
+                                    if let Some(nc) = chars.next() {
+                                        s.push(nc);
+                                    }
+                                }
+                                '"' => {
+                                    s.push(chars.next().unwrap());
+                                    break;
+                                }
+                                _ => {
+                                    s.push(chars.next().unwrap());
+                                }
+                            }
+                        }
+                        tokens.push(s);
+                    }
+                    _ if c.is_whitespace() => {
+                        chars.next();
+                    }
+                    ';' => {
+                        while let Some(c) = chars.next() {
+                            if c == '\n' {
+                                break;
+                            }
+                        }
+                    }
+                    _ => {
+                        let mut atom = String::new();
+                        while let Some(&c) = chars.peek() {
+                            if c.is_whitespace() || "()[]{}'\"".contains(c) || c == ';' {
+                                break;
+                            }
+                            atom.push(chars.next().unwrap());
+                        }
+                        if !atom.is_empty() {
+                            tokens.push(atom);
+                        }
+                    }
                 }
             }
             tokens
@@ -174,23 +222,92 @@ mod tests {
                 let mut unescaped = String::new();
                 let mut chars = s.chars();
                 while let Some(c) = chars.next() {
-                    if c == '\\' { if let Some(nc) = chars.next() { match nc { 'n' => unescaped.push('\n'), 'r' => unescaped.push('\r'), 't' => unescaped.push('\t'), '\\' => unescaped.push('\\'), '"' => unescaped.push('"'), _ => unescaped.push(nc), } } }
-                    else { unescaped.push(c); }
+                    if c == '\\' {
+                        if let Some(nc) = chars.next() {
+                            match nc {
+                                'n' => unescaped.push('\n'),
+                                'r' => unescaped.push('\r'),
+                                't' => unescaped.push('\t'),
+                                '\\' => unescaped.push('\\'),
+                                '"' => unescaped.push('"'),
+                                _ => unescaped.push(nc),
+                            }
+                        }
+                    } else {
+                        unescaped.push(c);
+                    }
                 }
                 Sexp::String(unescaped, None)
-            } else if token.starts_with(':') { Sexp::Keyword(token[1..].to_string(), None) }
-            else { match token { "nil" => Sexp::Nil, "true" => Sexp::Boolean(true), "false" => Sexp::Boolean(false), _ => { if let Ok(i) = token.parse::<i64>() { Sexp::Integer(i, None) } else if let Ok(f) = token.parse::<f64>() { Sexp::Float(f, None) } else { Sexp::Symbol(token.to_string(), None) } } } }
+            } else if token.starts_with(':') {
+                Sexp::Keyword(token.strip_prefix(':').unwrap_or(token).to_string(), None)
+            } else {
+                match token {
+                    "nil" => Sexp::Nil,
+                    "true" => Sexp::Boolean(true),
+                    "false" => Sexp::Boolean(false),
+                    _ => {
+                        if let Ok(i) = token.parse::<i64>() {
+                            Sexp::Integer(i, None)
+                        } else if let Ok(f) = token.parse::<f64>() {
+                            Sexp::Float(f, None)
+                        } else {
+                            Sexp::Symbol(token.to_string(), None)
+                        }
+                    }
+                }
+            }
         }
-        fn read_sexp(tokens: &mut std::iter::Peekable<std::vec::IntoIter<String>>) -> Result<Sexp, ()> {
+        fn read_sexp(
+            tokens: &mut std::iter::Peekable<std::vec::IntoIter<String>>,
+        ) -> Result<Sexp, ()> {
             let mut stack: Vec<(String, im::Vector<Sexp>)> = Vec::new();
             while let Some(token) = tokens.next() {
                 match token.as_str() {
-                    "'" => { let inner = read_sexp(tokens)?; let quoted = Sexp::List(im::vector![Sexp::Symbol("quote".into(), None), inner], None); if let Some(parent) = stack.last_mut() { parent.1.push_back(quoted); } else { return Ok(quoted); } }
-                    "(" | "[" | "{" => { stack.push((token, im::Vector::new())); }
-                    ")" => { let (_, items) = stack.pop().ok_or(())?; let val = Sexp::List(items, None); if let Some(parent) = stack.last_mut() { parent.1.push_back(val); } else { return Ok(val); } }
-                    "]" => { let (_, items) = stack.pop().ok_or(())?; let val = Sexp::Vector(items, None); if let Some(parent) = stack.last_mut() { parent.1.push_back(val); } else { return Ok(val); } }
-                    "}" => { let _ = stack.pop().ok_or(())?; return Err(()); }
-                    _ => { let val = test_parse_atom(&token); if let Some(parent) = stack.last_mut() { parent.1.push_back(val); } else { return Ok(val); } }
+                    "'" => {
+                        let inner = read_sexp(tokens)?;
+                        let quoted = Sexp::List(
+                            im::vector![Sexp::Symbol("quote".into(), None), inner],
+                            None,
+                        );
+                        if let Some(parent) = stack.last_mut() {
+                            parent.1.push_back(quoted);
+                        } else {
+                            return Ok(quoted);
+                        }
+                    }
+                    "(" | "[" | "{" => {
+                        stack.push((token, im::Vector::new()));
+                    }
+                    ")" => {
+                        let (_, items) = stack.pop().ok_or(())?;
+                        let val = Sexp::List(items, None);
+                        if let Some(parent) = stack.last_mut() {
+                            parent.1.push_back(val);
+                        } else {
+                            return Ok(val);
+                        }
+                    }
+                    "]" => {
+                        let (_, items) = stack.pop().ok_or(())?;
+                        let val = Sexp::Vector(items, None);
+                        if let Some(parent) = stack.last_mut() {
+                            parent.1.push_back(val);
+                        } else {
+                            return Ok(val);
+                        }
+                    }
+                    "}" => {
+                        let _ = stack.pop().ok_or(())?;
+                        return Err(());
+                    }
+                    _ => {
+                        let val = test_parse_atom(&token);
+                        if let Some(parent) = stack.last_mut() {
+                            parent.1.push_back(val);
+                        } else {
+                            return Ok(val);
+                        }
+                    }
                 }
             }
             Err(())

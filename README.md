@@ -58,6 +58,23 @@ zio> (load "program.zio")
 zio> (require :my.module)
 ```
 
+## 安装与发布
+
+```bash
+# 从源码构建独立发行版（不依赖 checkout）
+tools/install.sh /tmp/zio          # 调试构建
+ZIO_PROFILE=release tools/install.sh /opt/zio
+
+source /tmp/zio/bin/zio-env.sh    # PATH 与 ZIO_PATH
+/tmp/zio/bin/zio program.zio      # 语言
+/tmp/zio/bin/grove --help         # 产品
+```
+
+`docs/release.md` 记录打标签、GitHub Actions 发布流水线与 crates.io 发布流程。
+`push v*` 标签触发 `.github/workflows/release.yml`：先校验标签与 workspace
+版本一致，再跑完整测试与自举契约，通过后构建五个平台目标、发布四个 crate、
+并附带校验和与 WASM 产物创建 GitHub Release。
+
 ## 落地页
 
 `apps/site/` 是语言介绍、文档和 WASM playground，采用 Astro 静态构建；站点中的 Grove 介绍路由不等于独立 `apps/grove/` 产品。
@@ -80,9 +97,35 @@ bun run build      # 产出 apps/site/dist
 
 ## grove 自学习产品
 
-Grove 是 `apps/grove/` 的独立应用。`apps/grove/main.zio` 是实际 Zio 入口，按宿主的 keyword 授权预算组合 `libs/loom/agent.zio` 的通用循环；库不再定义 Grove 的 `agent-entry` 或默认轮数。
-`apps/grove/selection.zio` 已接管 accuracy 指标选择、硬门槛失败候选排除和质量／成本非支配筛选，CLI 与 HTTP 共用这一策略；native 只传递评估行并检查返回索引。策略构建时嵌入宿主，尚不是可热更新的策略发布功能。成本仍统一为 1，同质量同成本候选仍按原弱比较规则互相排除。
-存储、调度、评价、CLI/HTTP 等 Rust 业务仍在 `native/learning/` 与 `native/app/`，CPU worker 在 `workers/torch/`，尚未整体迁为 Zio。普通 `cargo run -p zio-cli` REPL 不依赖这些学习组件。
+Grove 是 `apps/grove/` 的独立应用。`apps/grove/main.zio` 是实际 Zio 入口，
+由宿主按 keyword 授权预算后显式调用；CLI 分发走 `libs/rill/cli.zio`，
+HTTP 路由在 `apps/grove/api.zio`。
+
+```bash
+# 用语言 CLI 直接运行（开发）
+./target/debug/zio --app apps/grove/main.zio \
+    --app-root apps/grove --app-share . \
+    --app-root-dir /tmp/grove --args --help
+
+# 用安装后的发行版（无 checkout 依赖）
+tools/install.sh /tmp/zio
+GROVE_ROOT=/tmp/grove /tmp/zio/bin/grove --help
+```
+
+产品命令：`demo`（dual/population/modular）、`inspect`、`checkpoint`、`fork`、
+`resume`、`compare`、`select`、`approve`、`decline`、`run`、`serve`。
+
+能力边界由 `tools/install.sh` 生成的 `bin/grove` 启动器显式授予，
+并作为一张 keyword map 交给 Zio 入口；启动器不会从它即将运行的源码里
+读取任何授权信息——否则候选程序指定自己的张量后端会让隔离形同虚设。
+
+### 迁移状态
+
+存储、审批、记录与 HTTP 路由已在 Zio 中实现（`apps/grove/{store,codec,
+contracts,artifacts,feedback,api}.zio`），宿主能力经
+`contribs/native/host` 通用机制提供。历史 Rust crate
+`apps/grove/native/{learning,app}` 仍在，测试覆盖其既有契约，
+待新路径完全替代后删除。
 
 三种运行形态，各自的能力边界是显式的：
 

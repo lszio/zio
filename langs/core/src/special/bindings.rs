@@ -4,7 +4,7 @@ use crate::context::EvalEngine;
 use crate::env::Env;
 use crate::error::EvalError;
 use crate::sexp::Sexp;
-use crate::special::{parse_params, TailResult};
+use crate::special::{TailResult, parse_params};
 use crate::value::{Function, Macro, Value};
 
 // ── def ────────────────────────────────────────────────────────────
@@ -19,9 +19,12 @@ pub fn do_def(
     }
     let name = match &args[0] {
         Sexp::Symbol(s, _) => s.clone(),
-        other => return Err(EvalError::invalid_form(
-            format!("def requires a symbol, got {}", other.kind()),
-        )),
+        other => {
+            return Err(EvalError::invalid_form(format!(
+                "def requires a symbol, got {}",
+                other.kind()
+            )));
+        }
     };
     let val = engine.eval_expr(&args[1], env, false)?.into_value();
     env.set(name, val.clone());
@@ -30,15 +33,22 @@ pub fn do_def(
 
 // ── defn ──────────────────────────────────────────────────────────
 
-pub fn do_defn(args: &[Sexp], env: &Arc<Env>, _engine: &dyn EvalEngine) -> Result<TailResult, EvalError> {
+pub fn do_defn(
+    args: &[Sexp],
+    env: &Arc<Env>,
+    _engine: &dyn EvalEngine,
+) -> Result<TailResult, EvalError> {
     if args.len() < 3 {
         return Err(EvalError::wrong_arg_count_min(3, args.len()));
     }
     let name = match &args[0] {
         Sexp::Symbol(s, _) => s.clone(),
-        other => return Err(EvalError::invalid_form(
-            format!("defn requires a symbol, got {}", other.kind()),
-        )),
+        other => {
+            return Err(EvalError::invalid_form(format!(
+                "defn requires a symbol, got {}",
+                other.kind()
+            )));
+        }
     };
     let (params, rest_param) = parse_params(&args[1])?;
     let body = if args.len() == 3 {
@@ -60,6 +70,7 @@ pub fn do_defn(args: &[Sexp], env: &Arc<Env>, _engine: &dyn EvalEngine) -> Resul
         rest_param,
         body,
         env: env.clone(),
+        compiled: None,
     }));
     env.set(name, fn_val.clone());
     Ok(TailResult::Value(fn_val))
@@ -90,20 +101,28 @@ pub fn do_fn(args: &[Sexp], env: &Arc<Env>) -> Result<TailResult, EvalError> {
         rest_param,
         body,
         env: env.clone(),
+        compiled: None,
     }))))
 }
 
 // ── defmacro ─────────────────────────────────────────────────────
 
-pub fn do_defmacro(args: &[Sexp], env: &Arc<Env>, _engine: &dyn EvalEngine) -> Result<TailResult, EvalError> {
+pub fn do_defmacro(
+    args: &[Sexp],
+    env: &Arc<Env>,
+    _engine: &dyn EvalEngine,
+) -> Result<TailResult, EvalError> {
     if args.len() < 2 {
         return Err(EvalError::wrong_arg_count_min(2, args.len()));
     }
     let name = match &args[0] {
         Sexp::Symbol(s, _) => s.clone(),
-        other => return Err(EvalError::invalid_form(
-            format!("defmacro requires a symbol, got {}", other.kind()),
-        )),
+        other => {
+            return Err(EvalError::invalid_form(format!(
+                "defmacro requires a symbol, got {}",
+                other.kind()
+            )));
+        }
     };
 
     // Check if this is a syntax-rules macro (no explicit params)
@@ -112,7 +131,11 @@ pub fn do_defmacro(args: &[Sexp], env: &Arc<Env>, _engine: &dyn EvalEngine) -> R
 
     let (params, rest_param, body) = if is_syntax_rules {
         // syntax-rules: capture all args as variadic, body is the rules form
-        (im::vector!["_args".into()], Some("_args".into()), args[1].clone())
+        (
+            im::vector!["_args".into()],
+            Some("_args".into()),
+            args[1].clone(),
+        )
     } else {
         if args.len() < 3 {
             return Err(EvalError::wrong_arg_count_min(3, args.len()));
@@ -139,6 +162,7 @@ pub fn do_defmacro(args: &[Sexp], env: &Arc<Env>, _engine: &dyn EvalEngine) -> R
         rest_param,
         body,
         env: env.clone(),
+        compiled: None,
     }));
     env.set(name, macro_val.clone());
     Ok(TailResult::Value(macro_val))

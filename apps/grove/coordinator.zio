@@ -1,0 +1,94 @@
+;; All scheduling facts share the application's one SQLite handle.
+(defn coordinator--init [store]
+  (map (fn [sql] (store--execute store sql []))
+    ["CREATE TABLE IF NOT EXISTS grove_claims (run TEXT PRIMARY KEY, attempt TEXT NOT NULL, epoch INTEGER NOT NULL, reserved INTEGER NOT NULL, cancel INTEGER NOT NULL DEFAULT 0, pause INTEGER NOT NULL DEFAULT 0, population TEXT, branch TEXT, expected_version INTEGER)"
+     "CREATE TABLE IF NOT EXISTS grove_progress (attempt TEXT PRIMARY KEY, step INTEGER NOT NULL DEFAULT 0, checkpoint TEXT, outcome TEXT, result TEXT)"
+     "CREATE TABLE IF NOT EXISTS grove_reservations (attempt TEXT PRIMARY KEY, population TEXT NOT NULL, remaining INTEGER NOT NULL)"
+     "CREATE TABLE IF NOT EXISTS grove_queue_identity (run TEXT PRIMARY KEY, owner TEXT NOT NULL)"])
+  store)
+
+(defn coordinator--owner [store]
+  (let [rows (store--query store "SELECT value FROM meta WHERE key='coordinator.owner'" [])]
+    (if (empty? rows) {:epoch 0 :pid 0}
+      (json-parse (grove--get-key (first rows) :value "{}")))))
+
+(defn coordinator--check-epoch [store epoch]
+  (if (= epoch (grove--get-key (coordinator--owner store) :epoch 0)) true
+    (grove--raise "conflict" "the coordinator ownership epoch was superseded")))
+
+(defn coordinator--claim-owner [store]
+  (store--transaction store (fn []
+    (let* [previous (coordinator--owner store)
+           owner {:epoch (+ 1 (grove--get-key previous :epoch 0)) :pid (host/process-id)}]
+      (store--execute store "UPDATE attempts SET active=0 WHERE active=1" [])
+      (store--execute store "DELETE FROM grove_reservations" [])
+      (store--execute store "INSERT INTO meta(key,value) VALUES('coordinator.owner',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value" [(json-stringify owner)])
+      owner))))
+
+(defn coordinator--live [store claim now]
+  (coordinator--check-epoch store (grove--get-key claim :epoch 0))
+  (let [rows (store--query store "SELECT run,active,lease_ms FROM attempts WHERE id=?1" [(grove--get-key claim :attempt_id nil)])]
+    (if (empty? rows) (grove--raise "conflict" "attempt does not exist")
+      (let [row (first rows)]
+        (if (and (= 1 (grove--get-key row :active 0))
+                 (= (grove--get-key row :run nil) (grove--get-key claim :run_id nil))
+                 (> (grove--get-key row :lease_ms 0) now)) true
+          (grove--raise "conflict" "attempt is inactive, foreign, or its lease expired"))))))
+
+(defn coordinator--renew [store claim lease-ms]
+  (store--transaction store (fn []
+    (coordinator--live store claim (host/clock-ms))
+    (store--execute store "UPDATE attempts SET lease_ms=?1 WHERE id=?2 AND active=1"
+      [(+ (host/clock-ms) lease-ms) (grove--get-key claim :attempt_id nil)]))))
+
+(defn coordinator--reserve [store attempt population steps]
+  (if population
+    (let* [record (grove--get store "Population" population)
+           rows (store--query store "SELECT COALESCE(SUM(remaining),0) AS reserved FROM grove_reservations WHERE population=?1" [population])
+           reserved (grove--get-key (first rows) :reserved 0)]
+      (if (> (+ (grove--get-key record :spent_steps 0) reserved steps)
+             (grove--get-key record :total_budget_steps 0))
+        (grove--raise "budget-exhausted" "population budget cannot admit this attempt")
+        (store--execute store "INSERT INTO grove_reservations(attempt,population,remaining) VALUES(?1,?2,?3)" [attempt population steps])))
+    nil))
+
+(defn coordinator--bill [store claim message-id observed]
+  (store--transaction store (fn []
+    (coordinator--live store claim (host/clock-ms))
+    (if (< observed 0) (grove--raise "protocol-violation" "negative observed spend") nil)
+    (let* [attempt (grove--get-key claim :attempt_id nil)
+           prior (store--query store "SELECT steps FROM billing WHERE message_id=?1" [message-id])]
+      (if (empty? prior)
+        (let* [run (grove--get store "Run" (grove--get-key claim :run_id nil))
+               spent (+ (grove--get-key run :steps_consumed 0) observed)
+               pop-rows (store--query store "SELECT population,remaining FROM grove_reservations WHERE attempt=?1" [attempt])]
+          (if (> spent (grove--get-key run :steps_budget 0))
+            (grove--raise "budget-exhausted" "observed work exceeded the granted run budget") nil)
+          (store--execute store "INSERT INTO billing(message_id,steps,outcome,detail) VALUES(?1,?2,'charged','')" [message-id observed])
+          (runner--write-run store (assoc run :steps_consumed spent))
+          (store--execute store "UPDATE attempts SET billed=billed+?1 WHERE id=?2" [observed attempt])
+          (if (empty? pop-rows) nil
+            (let* [row (first pop-rows)
+                   population (grove--get-key row :population nil)
+                   pop (grove--get store "Population" population)
+                   remaining (grove--get-key row :remaining 0)
+                   next (assoc pop :spent_steps (+ observed (grove--get-key pop :spent_steps 0)))]
+              (if (> observed remaining) (grove--raise "budget-exhausted" "attempt exhausted its population reservation") nil)
+              (store--execute store "UPDATE populations SET body=?1 WHERE id=?2" [(codec--encode "Population" next) population])
+              (store--execute store "UPDATE grove_reservations SET remaining=remaining-?1 WHERE attempt=?2" [observed attempt])))
+          "charged")
+        (if (= observed (grove--get-key (first prior) :steps nil)) "duplicate"
+          (grove--raise "conflict" "billing message was replayed with a different cost")))))))
+
+(defn coordinator--unknown [store message-id steps detail]
+  (store--execute store "INSERT INTO billing(message_id,steps,outcome,detail) VALUES(?1,?2,'unknown',?3) ON CONFLICT(message_id) DO UPDATE SET outcome='unknown',detail=excluded.detail" [message-id steps detail]))
+
+(defn coordinator--advance [store branch-id head expected]
+  (let* [branch (grove--get store "Branch" branch-id)
+         version (grove--get-key branch :head_version 0)]
+    (if (= version expected)
+      (let [next (assoc branch :head head :head_version (+ 1 version))]
+        (if (= 1 (store--execute store "UPDATE branches SET head=?1,version=?2,body=?3 WHERE id=?4 AND version=?5"
+          [head (+ 1 version) (codec--encode "Branch" next) branch-id expected])) (+ 1 version)
+          (grove--raise "conflict" "branch changed while committing")))
+      (error (json-stringify {:class "conflict" :detail "branch head version changed" :conflict_version version})))))

@@ -19,12 +19,12 @@ use grove::contracts::{Actor, ActorRole, Error};
 use grove::execution::ExecutionStatus;
 use grove::store::Store;
 use grove_app::agent::{
-    candidate_grant, load_task, AgentHost, ProviderConfig, RunBudget, TaskSpec,
+    AgentHost, ProviderConfig, RunBudget, TaskSpec, candidate_grant, load_task,
 };
 use loom::harness::{Budget, ChatMessage, ChatRequest, ChatResponse, ModelHost, Usage};
 use loom::{HostError, HostErrorKind};
+use zio_core::bootstrap::{ModuleRoots, language_context};
 use zio_core::context::EvalContext;
-use zio_core::bootstrap::{language_context, ModuleRoots};
 
 /// A provider that answers from a script and remembers what it was
 /// asked. The recorded prompts are how the test shows the failure from
@@ -80,7 +80,8 @@ impl ModelHost for ScriptedModel {
 
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .ancestors().nth(4)
+        .ancestors()
+        .nth(4)
         .unwrap()
         .to_path_buf()
 }
@@ -109,9 +110,7 @@ fn source_reply(body: &str) -> String {
 }
 
 fn working_source() -> String {
-    source_reply(
-        "(defn agent-entry [] (println \"even-sum=-12\") (println \"negative-count=3\"))",
-    )
+    source_reply("(defn agent-entry [] (println \"even-sum=-12\") (println \"negative-count=3\"))")
 }
 
 /// Assemble a host and return the context it installed its bindings
@@ -161,7 +160,10 @@ fn a_first_attempt_that_fails_produces_a_second_attempt() {
         "a run whose second attempt succeeded is a candidate, got {:?} / {:?}",
         report.status, report.last_error
     );
-    assert_eq!(report.turns, 2, "the second turn should be the one that stuck");
+    assert_eq!(
+        report.turns, 2,
+        "the second turn should be the one that stuck"
+    );
     assert_eq!(report.calls_made, 2, "two model calls, one per turn");
 
     // The failure evidence is what the model was shown. A revision that
@@ -310,7 +312,10 @@ fn the_shipped_task_spec_is_loadable_and_consistent() {
     let spec = load_task(&repo_root().join("examples/agent-code/task.json"))
         .expect("the shipped task parses");
     assert_eq!(spec.id, "agent-code/even-sum-negative-count");
-    assert!(!spec.prompt.is_empty(), "a task with no prompt asks nothing");
+    assert!(
+        !spec.prompt.is_empty(),
+        "a task with no prompt asks nothing"
+    );
 
     let inputs: serde_json::Value = serde_json::from_str(
         &std::fs::read_to_string(repo_root().join("examples/agent-code/inputs.json"))
@@ -320,4 +325,3 @@ fn the_shipped_task_spec_is_loadable_and_consistent() {
     assert_eq!(inputs["shape"]["entrypoint"], "agent-entry");
     assert_eq!(inputs["shape"]["arguments"], 0);
 }
-

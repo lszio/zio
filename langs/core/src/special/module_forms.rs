@@ -1,10 +1,10 @@
-use std::sync::Arc;
 use crate::context::EvalEngine;
 use crate::env::Env;
 use crate::error::EvalError;
 use crate::sexp::Sexp;
-use crate::special::{eval_last_body, TailResult};
+use crate::special::{TailResult, eval_last_body};
 use crate::value::Value;
+use std::sync::Arc;
 
 // ── module ────────────────────────────────────────────────────────
 
@@ -23,9 +23,12 @@ pub fn do_module(
     let module_name = match &args[0] {
         Sexp::Keyword(s, _) => s.split('.').map(|p| p.to_string()).collect::<Vec<_>>(),
         Sexp::Symbol(s, _) => s.split('.').map(|p| p.to_string()).collect::<Vec<_>>(),
-        other => return Err(EvalError::invalid_form(
-            format!("module name must be a keyword or symbol, got {}", other.kind()),
-        )),
+        other => {
+            return Err(EvalError::invalid_form(format!(
+                "module name must be a keyword or symbol, got {}",
+                other.kind()
+            )));
+        }
     };
 
     if module_name.is_empty() {
@@ -39,21 +42,29 @@ pub fn do_module(
         if let Sexp::Keyword(k, _) = &args[1] {
             if k == "export" || k == ":export" {
                 if args.len() < 3 {
-                    return Err(EvalError::invalid_form("module :export requires a list of symbols"));
+                    return Err(EvalError::invalid_form(
+                        "module :export requires a list of symbols",
+                    ));
                 }
                 let export_list = match &args[2] {
                     Sexp::List(list, _) | Sexp::Vector(list, _) => list,
-                    other => return Err(EvalError::invalid_form(
-                        format!("module :export must be a list or vector, got {}", other.kind()),
-                    )),
+                    other => {
+                        return Err(EvalError::invalid_form(format!(
+                            "module :export must be a list or vector, got {}",
+                            other.kind()
+                        )));
+                    }
                 };
                 for sym in export_list {
                     match sym {
                         Sexp::Keyword(s, _) => exports.push(s.clone()),
                         Sexp::Symbol(s, _) => exports.push(s.clone()),
-                        other => return Err(EvalError::invalid_form(
-                            format!("module export symbols must be keywords or symbols, got {}", other.kind()),
-                        )),
+                        other => {
+                            return Err(EvalError::invalid_form(format!(
+                                "module export symbols must be keywords or symbols, got {}",
+                                other.kind()
+                            )));
+                        }
                     }
                 }
                 body_start = 3;
@@ -67,12 +78,14 @@ pub fn do_module(
     engine.push_module_exports();
     let body = &args[body_start..];
     let result = if body.is_empty() {
-        TailResult::Value(Value::Nil)
+        Ok(TailResult::Value(Value::Nil))
     } else {
-        eval_last_body(body, &module_env, true, engine)?
+        eval_last_body(body, &module_env, false, engine)
     };
+    let declared = engine.take_module_exports();
+    let result = result?;
     let mut all_exports = exports;
-    for name in engine.take_module_exports() {
+    for name in declared {
         if !all_exports.contains(&name) {
             all_exports.push(name);
         }
@@ -84,6 +97,7 @@ pub fn do_module(
         exports: all_exports,
         source: None,
     };
+    module.validate_exports()?;
     engine.register_module(module);
     Ok(result)
 }
@@ -105,9 +119,12 @@ pub fn do_export(
                 match sym {
                     Sexp::Symbol(s, _) => engine.add_module_export(s.clone()),
                     Sexp::Keyword(k, _) => engine.add_module_export(k.clone()),
-                    other => return Err(EvalError::invalid_form(
-                        format!("export symbols must be symbols or keywords, got {}", other.kind()),
-                    )),
+                    other => {
+                        return Err(EvalError::invalid_form(format!(
+                            "export symbols must be symbols or keywords, got {}",
+                            other.kind()
+                        )));
+                    }
                 }
             }
             return Ok(TailResult::Value(Value::Nil));
@@ -118,9 +135,12 @@ pub fn do_export(
         match arg {
             Sexp::Symbol(s, _) => engine.add_module_export(s.clone()),
             Sexp::Keyword(k, _) => engine.add_module_export(k.clone()),
-            other => return Err(EvalError::invalid_form(
-                format!("export symbols must be symbols or keywords, got {}", other.kind()),
-            )),
+            other => {
+                return Err(EvalError::invalid_form(format!(
+                    "export symbols must be symbols or keywords, got {}",
+                    other.kind()
+                )));
+            }
         }
     }
     Ok(TailResult::Value(Value::Nil))
@@ -148,9 +168,12 @@ pub fn do_require(
     let module_name = match &args[0] {
         Sexp::Keyword(s, _) => s.split('.').map(|p| p.to_string()).collect::<Vec<_>>(),
         Sexp::Symbol(s, _) => s.split('.').map(|p| p.to_string()).collect::<Vec<_>>(),
-        other => return Err(EvalError::invalid_form(
-            format!("require requires a module name (keyword or symbol), got {}", other.kind()),
-        )),
+        other => {
+            return Err(EvalError::invalid_form(format!(
+                "require requires a module name (keyword or symbol), got {}",
+                other.kind()
+            )));
+        }
     };
 
     // Parse :as and :refer
@@ -166,46 +189,59 @@ pub fn do_require(
                 }
                 alias = Some(match &args[i] {
                     Sexp::Symbol(s, _) => s.clone(),
-                    other => return Err(EvalError::invalid_form(
-                        format!("require :as expects a symbol, got {}", other.kind()),
-                    )),
+                    other => {
+                        return Err(EvalError::invalid_form(format!(
+                            "require :as expects a symbol, got {}",
+                            other.kind()
+                        )));
+                    }
                 });
                 i += 1;
             }
             Sexp::Keyword(k, _) | Sexp::Symbol(k, _) if k == "refer" || k == ":refer" => {
                 i += 1;
                 if i >= args.len() {
-                    return Err(EvalError::invalid_form("require :refer expects a list of symbols"));
+                    return Err(EvalError::invalid_form(
+                        "require :refer expects a list of symbols",
+                    ));
                 }
                 let sym_list = match &args[i] {
                     Sexp::List(list, _) | Sexp::Vector(list, _) => list,
-                    other => return Err(EvalError::invalid_form(
-                        format!("require :refer expects a list or vector, got {}", other.kind()),
-                    )),
+                    other => {
+                        return Err(EvalError::invalid_form(format!(
+                            "require :refer expects a list or vector, got {}",
+                            other.kind()
+                        )));
+                    }
                 };
                 let mut syms = Vec::new();
                 for sym in sym_list {
                     match sym {
                         Sexp::Keyword(s, _) => syms.push(s.clone()),
                         Sexp::Symbol(s, _) => syms.push(s.clone()),
-                        _other => return Err(EvalError::invalid_form(
-                            format!("require :refer list items must be symbols or keywords"),
-                        )),
+                        _other => {
+                            return Err(EvalError::invalid_form(format!(
+                                "require :refer list items must be symbols or keywords"
+                            )));
+                        }
                     }
                 }
                 refer = Some(syms);
                 i += 1;
             }
-            other => return Err(EvalError::invalid_form(
-                format!("require: unexpected argument {}, expected :as or :refer", other.kind()),
-            )),
+            other => {
+                return Err(EvalError::invalid_form(format!(
+                    "require: unexpected argument {}, expected :as or :refer",
+                    other.kind()
+                )));
+            }
         }
     }
 
     // Auto-load from disk if not already loaded
     if !engine.is_module_loaded(&module_name) {
         let name_str = module_name.join(".");
-        let result = engine.call_loader(&module_name, &name_str, env);
+        let result = engine.call_loader(&module_name, &name_str, engine.env());
         match result {
             None => {
                 return Err(EvalError::custom(format!(
@@ -220,46 +256,33 @@ pub fn do_require(
     }
 
     let module = engine.find_module(&module_name).ok_or_else(|| {
-        EvalError::custom(format!("module not found after load: {}", module_name.join(".")))
+        EvalError::custom(format!(
+            "module not found after load: {}",
+            module_name.join(".")
+        ))
     })?;
 
-    // :refer — import specific symbols into current env.
-    // When the module declares exports, refer is enforced against them.
-    let explicit_refer = refer.clone();
+    // An empty export list exposes nothing, including explicit :refer.
     let target_syms = refer.unwrap_or_else(|| module.exports.clone());
-    if let Some(refer_list) = explicit_refer {
-        if !module.exports.is_empty() {
-            for sym_name in &refer_list {
-                if !module.exports.contains(sym_name) {
-                    return Err(EvalError::custom(format!(
-                        "module {} does not export {}",
-                        module.display_name(),
-                        sym_name
-                    )));
-                }
-            }
-        }
+    for name in &target_syms {
+        let value = module.exported(name).ok_or_else(|| {
+            EvalError::custom(format!(
+                "module {} does not export owned binding {name}",
+                module.display_name()
+            ))
+        })?;
+        env.set(name.clone(), value);
     }
-    for sym_name in &target_syms {
-        if let Some(val) = module.env.get(sym_name) {
-            env.set(sym_name.clone(), val);
-        }
-    }
-
-    // :as — create an alias map
     if let Some(alias_name) = alias {
-        let alias_syms = if module.exports.is_empty() {
-            // No explicit exports — make all module symbols available
-            // We use a placeholder; for now, just use target_syms
-            target_syms.clone()
-        } else {
-            module.exports.clone()
-        };
         let mut map = im::HashMap::new();
-        for sym_name in &alias_syms {
-            if let Some(val) = module.env.get(sym_name) {
-                map.insert(Value::Keyword(sym_name.clone()), val);
-            }
+        for name in &module.exports {
+            let value = module.exported(name).ok_or_else(|| {
+                EvalError::custom(format!(
+                    "module {} does not export owned binding {name}",
+                    module.display_name()
+                ))
+            })?;
+            map.insert(Value::Keyword(name.clone()), value);
         }
         env.set(alias_name, Value::Map(map));
     }
@@ -268,8 +291,8 @@ pub fn do_require(
 }
 
 /// Resolve a `ns/name` symbol against loaded modules, used as a fallback
-/// when plain environment lookup fails. Only exported symbols are visible
-/// unless the module declares no exports (legacy modules expose all).
+/// when plain environment lookup fails. Only owned, explicitly exported
+/// symbols are visible; an empty export set exposes nothing.
 pub fn resolve_qualified(engine: &dyn EvalEngine, symbol: &str) -> Option<Value> {
     let (ns, name) = symbol.rsplit_once('/')?;
     if ns.is_empty() || name.is_empty() || ns.contains('/') {
@@ -277,8 +300,5 @@ pub fn resolve_qualified(engine: &dyn EvalEngine, symbol: &str) -> Option<Value>
     }
     let module_path: Vec<String> = ns.split('.').map(|p| p.to_string()).collect();
     let module = engine.find_module(&module_path)?;
-    if !module.exports.is_empty() && !module.exports.iter().any(|e| e == name) {
-        return None;
-    }
-    module.env.get(name)
+    module.exported(name)
 }

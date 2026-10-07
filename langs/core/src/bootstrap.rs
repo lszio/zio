@@ -34,15 +34,22 @@ impl ModuleRoots {
     /// Grant explicit roots. Each must be an existing directory: a typo in
     /// a root is a configuration error, not a silently empty search path.
     pub fn new(roots: Vec<PathBuf>) -> Result<Self, EvalError> {
-        for root in &roots {
-            if !root.is_dir() {
+        Self::new_with_io(roots, &crate::io::StdIoHost)
+    }
+
+    pub fn new_with_io(roots: Vec<PathBuf>, io: &dyn IoHost) -> Result<Self, EvalError> {
+        let mut canonical = Vec::new();
+        for root in roots {
+            let path = root.to_string_lossy();
+            if !io.is_directory(&path)? {
                 return Err(EvalError::custom(format!(
                     "module root is not a directory: {}",
                     root.display()
                 )));
             }
+            canonical.push(PathBuf::from(io.canonicalize_path(&path)?));
         }
-        Ok(ModuleRoots { roots })
+        Ok(ModuleRoots { roots: canonical })
     }
 
     /// No roots at all: only inline `(module ...)` forms work.
@@ -59,25 +66,34 @@ impl ModuleRoots {
     /// A candidate outside the root is refused, including when a symlink
     /// points out: the path is canonicalized before the prefix check.
     pub fn resolve(&self, module_path: &str) -> Result<PathBuf, EvalError> {
-        let rel: PathBuf = module_path.split('.').filter(|p| !p.is_empty()).collect();
-        if rel.as_os_str().is_empty() {
-            return Err(EvalError::custom(format!("invalid module name: {module_path}")));
+        self.resolve_with_io(module_path, &crate::io::StdIoHost)
+    }
+
+    pub fn resolve_with_io(
+        &self,
+        module_path: &str,
+        io: &dyn IoHost,
+    ) -> Result<PathBuf, EvalError> {
+        let parts: Vec<_> = module_path.split('.').collect();
+        if parts
+            .iter()
+            .any(|p| p.is_empty() || p.contains('/') || p.contains('\\') || p.contains(':'))
+        {
+            return Err(EvalError::custom(format!(
+                "invalid module name: {module_path}"
+            )));
         }
+        let rel: PathBuf = parts.iter().collect();
         for root in &self.roots {
             let candidate = root.join(&rel).with_extension("zio");
-            if !candidate.exists() {
+            if !io.file_exists(&candidate.to_string_lossy())? {
                 continue;
             }
-            let real_root = root
-                .canonicalize()
-                .map_err(|e| EvalError::custom(format!("root {}: {e}", root.display())))?;
-            let real_file = candidate
-                .canonicalize()
-                .map_err(|e| EvalError::custom(format!("{}: {e}", candidate.display())))?;
+            let real_root = PathBuf::from(io.canonicalize_path(&root.to_string_lossy())?);
+            let real_file = PathBuf::from(io.canonicalize_path(&candidate.to_string_lossy())?);
             if !real_file.starts_with(&real_root) {
                 return Err(EvalError::custom(format!(
-                    "module {module_path} resolves to {} which is outside the granted roots",
-                    real_file.display()
+                    "module {module_path} resolves outside the granted roots"
                 )));
             }
             if real_file.extension().and_then(|e| e.to_str()) != Some("zio") {
@@ -101,59 +117,83 @@ pub struct LoadProfile {
     roots: ModuleRoots,
     source_map: Arc<SourceMap>,
     io: Arc<dyn IoHost>,
+    modules: std::rc::Rc<std::cell::RefCell<crate::module::ModuleTable>>,
+    evaluator: SourceEvaluator,
 }
+
+pub type SourceEvaluator = fn(&EvalContext, &str, &str) -> Result<Value, EvalError>;
 
 impl LoadProfile {
     pub fn new(roots: ModuleRoots, source_map: Arc<SourceMap>, io: Arc<dyn IoHost>) -> Self {
-        LoadProfile { roots, source_map, io }
+        LoadProfile {
+            roots,
+            source_map,
+            io,
+            modules: std::rc::Rc::new(std::cell::RefCell::new(crate::module::ModuleTable::new())),
+            evaluator: eval_source,
+        }
     }
 
     pub fn source_map(&self) -> &Arc<SourceMap> {
         &self.source_map
     }
 
+    pub fn with_evaluator(mut self, evaluator: SourceEvaluator) -> Self {
+        self.evaluator = evaluator;
+        self
+    }
+
+    pub fn with_modules(
+        mut self,
+        modules: std::rc::Rc<std::cell::RefCell<crate::module::ModuleTable>>,
+    ) -> Self {
+        self.modules = modules;
+        self
+    }
+
     /// Build the `require` loader for this profile.
     pub fn loader(&self) -> Box<ModuleLoader> {
         let profile = self.clone();
-        Box::new(move |mod_name: &[String], _source: &str, parent_env: &Arc<Env>| {
-            let name_str = mod_name.join(".");
-            let path = profile.roots.resolve(&name_str)?;
-
-            let source = std::fs::read_to_string(&path)
-                .map_err(|e| EvalError::custom(format!("cannot read {}: {e}", path.display())))?;
-
-            // Register into the shared SourceMap: an error inside the
-            // module resolves to this file, not a private registry.
-            let source_id = profile
-                .source_map
-                .register(path.to_string_lossy().into_owned(), source.clone());
-            let forms = crate::reader::reader::read_program_with_source(&source, source_id)
-                .map_err(|e| EvalError::custom(format!("parse error in {}: {e}", path.display())))?;
-
-            let module_env = Arc::new(Env::new(Some(parent_env.clone())));
-            let ctx = EvalContext::with_loader_and_io(
-                module_env.clone(),
-                profile.loader(),
-                Arc::clone(&profile.io),
-                Arc::clone(&profile.source_map),
-            );
-
-            // Collect (export ...) declarations from the module body.
-            ctx.push_module_exports();
-            for sexp in forms {
-                crate::eval::eval_in_context(&sexp, &ctx).map_err(|e| {
-                    EvalError::custom(format!("error loading module {name_str}: {e}"))
-                })?;
-            }
-            let exports = ctx.take_module_exports();
-
-            Ok(Module {
-                name: mod_name.to_vec(),
-                env: module_env,
-                exports,
-                source: Some(source_id),
-            })
-        })
+        Box::new(
+            move |mod_name: &[String], _source: &str, parent_env: &Arc<Env>| {
+                let name_str = mod_name.join(".");
+                if let Some(module) = profile.modules.borrow().find(mod_name).cloned() {
+                    return Ok(module);
+                }
+                let path = profile
+                    .roots
+                    .resolve_with_io(&name_str, profile.io.as_ref())?;
+                profile.modules.borrow_mut().begin_loading(&path)?;
+                let result = (|| {
+                    let source = profile.io.read_file(&path.to_string_lossy())?;
+                    let module_env = Arc::new(Env::new(Some(parent_env.clone())));
+                    let ctx = EvalContext::with_shared_modules(
+                        module_env.clone(),
+                        profile.loader(),
+                        Arc::clone(&profile.io),
+                        Arc::clone(&profile.source_map),
+                        profile.modules.clone(),
+                    );
+                    ctx.push_module_exports();
+                    let evaluation = (profile.evaluator)(&ctx, &path.to_string_lossy(), &source);
+                    let exports = ctx.take_module_exports();
+                    evaluation?;
+                    let module = Module {
+                        name: mod_name.to_vec(),
+                        env: module_env,
+                        exports,
+                        source: ctx.source_map.get_latest_id(&path.to_string_lossy()),
+                    };
+                    module.validate_exports()?;
+                    Ok(module)
+                })();
+                profile.modules.borrow_mut().end_loading(&path);
+                if let Ok(module) = &result {
+                    profile.modules.borrow_mut().register(module.clone());
+                }
+                result
+            },
+        )
     }
 }
 
@@ -162,20 +202,16 @@ impl LoadProfile {
 /// Errors are returned, never downgraded to warnings: a half-loaded
 /// stdlib makes every later symbol resolution a guess.
 pub fn bootstrap(ctx: &EvalContext) -> Result<(), EvalError> {
-    bootstrap_source(ctx, "core.zio", crate::stdlib_source())
+    bootstrap_source(ctx, "core.zio", crate::stdlib_source())?;
+    crate::syntax::register(&ctx.env);
+    crate::bytecode::register(ctx);
+    crate::bytecode::bootstrap_compiler(ctx)
 }
 
 /// Parse and evaluate every top-level form of `source`, registering it
 /// under `name` in the context's SourceMap.
 pub fn bootstrap_source(ctx: &EvalContext, name: &str, source: &str) -> Result<(), EvalError> {
-    let source_id = ctx.source_map().register(name.to_string(), source.to_string());
-    let forms = crate::reader::reader::read_program_with_source(source, source_id)
-        .map_err(|e| EvalError::custom(format!("parse error in {name}: {e}")))?;
-    for sexp in forms {
-        crate::eval::eval_in_context(&sexp, ctx)
-            .map_err(|e| EvalError::custom(format!("error loading {name}: {e}")))?;
-    }
-    Ok(())
+    eval_source(ctx, name, source).map(|_| ())
 }
 
 /// A language context: builtins, a granted-roots `require` loader sharing
@@ -193,7 +229,9 @@ pub fn language_context_with_io(
     let env = Arc::new(Env::new(None));
     builtins::setup_env(&env);
     let ctx = EvalContext::with_io(env, Arc::clone(&io));
-    let profile = LoadProfile::new(roots, Arc::clone(ctx.source_map()), io);
+    let profile = LoadProfile::new(roots, Arc::clone(ctx.source_map()), io)
+        .with_modules(ctx.modules.clone())
+        .with_evaluator(crate::bytecode::run_source);
     *ctx.loader.borrow_mut() = Some(profile.loader());
     bootstrap(&ctx)?;
     Ok(ctx)
@@ -202,9 +240,7 @@ pub fn language_context_with_io(
 /// Evaluate every top-level form of `source` in `ctx`, returning the last
 /// value. The single entry point for "run this Zio text".
 pub fn eval_source(ctx: &EvalContext, name: &str, source: &str) -> Result<Value, EvalError> {
-    let source_id = ctx.source_map().register(name.to_string(), source.to_string());
-    let forms = crate::reader::reader::read_program_with_source(source, source_id)
-        .map_err(|e| EvalError::custom(format!("parse error in {name}: {e}")))?;
+    let forms = parse_source(ctx, name, source)?;
     let mut last = Value::Nil;
     for sexp in forms {
         last = crate::eval::eval_in_context(&sexp, ctx)?;
@@ -215,7 +251,9 @@ pub fn eval_source(ctx: &EvalContext, name: &str, source: &str) -> Result<Value,
 /// Parse `source` into forms without evaluating, registering the source.
 /// This is the compiler front end's reader boundary (T01).
 pub fn parse_source(ctx: &EvalContext, name: &str, source: &str) -> Result<Vec<Sexp>, EvalError> {
-    let source_id = ctx.source_map().register(name.to_string(), source.to_string());
+    let source_id = ctx
+        .source_map()
+        .register(name.to_string(), source.to_string());
     crate::reader::reader::read_program_with_source(source, source_id)
-        .map_err(|e| EvalError::custom(format!("parse error in {name}: {e}")))
+        .map_err(|e| e.into_eval(name))
 }

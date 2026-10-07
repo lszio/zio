@@ -4,9 +4,9 @@
 //! `grove` crate. It remains under `apps/grove/native/` until migrated to
 //! Zio; it is neither language infrastructure nor the language playground.
 
+pub mod agent;
 #[cfg(feature = "http")]
 pub mod api;
-pub mod agent;
 pub mod container;
 pub mod demo;
 pub mod inference;
@@ -67,10 +67,7 @@ pub fn inspect(store: &Store) -> Result<String> {
     for cp in &checkpoints {
         out.push_str(&format!(
             "  {:<28} run {} at {} steps ({:?})\n",
-            cp.id,
-            cp.run_id,
-            cp.budget_spent_steps,
-            cp.resume_level,
+            cp.id, cp.run_id, cp.budget_spent_steps, cp.resume_level,
         ));
     }
 
@@ -129,55 +126,96 @@ fn count_objects(root: &Path) -> usize {
 pub fn select_candidates(
     rows: &[grove::evaluation::Comparison],
 ) -> Result<Vec<&grove::evaluation::Comparison>> {
-    use zio_core::bootstrap::{eval_source, language_context, ModuleRoots};
+    use zio_core::bootstrap::{ModuleRoots, eval_source, language_context};
     use zio_core::im::vector;
     use zio_core::sexp::Sexp;
     use zio_core::value::Value;
 
     let strategy_error = |e: zio_core::error::EvalError| {
-        Error::new(ErrorKind::BackendFailed, format!("Grove selection strategy failed: {e}"))
+        Error::new(
+            ErrorKind::BackendFailed,
+            format!("Grove selection strategy failed: {e}"),
+        )
     };
     let ctx = language_context(ModuleRoots::empty()).map_err(strategy_error)?;
-    eval_source(&ctx, "apps/grove/selection.zio", include_str!("../../../selection.zio"))
-        .map_err(strategy_error)?;
-    let input = rows.iter().enumerate().map(|(index, row)| {
-        Value::Map([
-            (Value::Keyword("index".into()), Value::Integer(index as i64)),
-            (Value::Keyword("mean".into()), Value::Vector(row.mean.iter().map(|(name, value)| {
-                Value::Vector(vector![Value::String(name.clone()), Value::Float(*value)])
-            }).collect())),
-            // ponytail: uniform cost preserves existing CLI/HTTP semantics; use measured inference cost when available.
-            (Value::Keyword("cost".into()), Value::Float(1.0)),
-            (Value::Keyword("meets-gates".into()), Value::Boolean(row.meets_gates)),
-        ].into_iter().collect())
-    }).collect();
-    ctx.env.set("grove-selection-rows".into(), Value::Vector(input));
-    let result = zio_core::eval::eval_in_context(
-        &Sexp::List(vector![
-            Sexp::Symbol("grove-select".into(), None),
-            Sexp::Symbol("grove-selection-rows".into(), None),
-        ], None),
+    eval_source(
         &ctx,
-    ).map_err(strategy_error)?;
+        "apps/grove/selection.zio",
+        include_str!("../../../selection.zio"),
+    )
+    .map_err(strategy_error)?;
+    let input = rows
+        .iter()
+        .enumerate()
+        .map(|(index, row)| {
+            Value::Map(
+                [
+                    (Value::Keyword("index".into()), Value::Integer(index as i64)),
+                    (
+                        Value::Keyword("mean".into()),
+                        Value::Vector(
+                            row.mean
+                                .iter()
+                                .map(|(name, value)| {
+                                    Value::Vector(vector![
+                                        Value::String(name.clone()),
+                                        Value::Float(*value)
+                                    ])
+                                })
+                                .collect(),
+                        ),
+                    ),
+                    // ponytail: uniform cost preserves existing CLI/HTTP semantics; use measured inference cost when available.
+                    (Value::Keyword("cost".into()), Value::Float(1.0)),
+                    (
+                        Value::Keyword("meets-gates".into()),
+                        Value::Boolean(row.meets_gates),
+                    ),
+                ]
+                .into_iter()
+                .collect(),
+            )
+        })
+        .collect();
+    ctx.env
+        .set("grove-selection-rows".into(), Value::Vector(input));
+    let result = zio_core::eval::eval_in_context(
+        &Sexp::List(
+            vector![
+                Sexp::Symbol("grove-select".into(), None),
+                Sexp::Symbol("grove-selection-rows".into(), None),
+            ],
+            None,
+        ),
+        &ctx,
+    )
+    .map_err(strategy_error)?;
     let indices = match result {
         Value::List(indices) | Value::Vector(indices) => indices,
-        other => return Err(Error::new(
-            ErrorKind::BackendFailed,
-            format!("Grove selection returned {other}, not row indices"),
-        )),
+        other => {
+            return Err(Error::new(
+                ErrorKind::BackendFailed,
+                format!("Grove selection returned {other}, not row indices"),
+            ));
+        }
     };
-    indices.iter().map(|index| {
-        if let Value::Integer(index) = index {
-            if let Ok(index) = usize::try_from(*index) {
-                if let Some(row) = rows.get(index) {
-                    return Ok(row);
+    indices
+        .iter()
+        .map(|index| {
+            if let Value::Integer(index) = index {
+                if let Ok(index) = usize::try_from(*index) {
+                    if let Some(row) = rows.get(index) {
+                        return Ok(row);
+                    }
                 }
             }
-        }
-        Err(Error::new(ErrorKind::BackendFailed, "Grove selection returned an invalid row index"))
-    }).collect()
+            Err(Error::new(
+                ErrorKind::BackendFailed,
+                "Grove selection returned an invalid row index",
+            ))
+        })
+        .collect()
 }
-
 
 /// `grove select --root PATH --protocol ID --snapshots a,b,c` — run the
 /// protocol comparison and the non-dominated selection, printing the
@@ -197,8 +235,7 @@ pub fn select(
     let mut out = String::new();
     out.push_str(&format!(
         "comparison under {} (gates: {:?}):\n",
-        protocol.id,
-        protocol.gates
+        protocol.id, protocol.gates
     ));
     for row in &rows {
         let metrics = row
@@ -246,7 +283,8 @@ impl Paths {
     pub fn from_repo_root() -> Self {
         // CARGO_MANIFEST_DIR of the app crate → workspace root
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .ancestors().nth(4)
+            .ancestors()
+            .nth(4)
             .unwrap()
             .to_path_buf();
         Self {

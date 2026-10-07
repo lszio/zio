@@ -1,6 +1,6 @@
 use std::hash::{Hash, Hasher};
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::context::EvalEngine;
 use crate::env::Env;
@@ -15,6 +15,8 @@ pub struct Function {
     pub rest_param: Option<String>,
     pub body: Sexp,
     pub env: Arc<Env>,
+    /// Present only for instruction-runtime functions. `body` is never evaluated.
+    pub compiled: Option<Arc<crate::bytecode::Closure>>,
 }
 
 /// Native (Rust-implemented) function.
@@ -86,9 +88,9 @@ pub struct Macro {
     pub rest_param: Option<String>,
     pub body: Sexp,
     pub env: Arc<Env>,
+    /// Procedural macros use the same compiled callable representation.
+    pub compiled: Option<Arc<crate::bytecode::Closure>>,
 }
-
-
 
 /// A ZOS instance — the most common heap object.
 /// Stores slot values keyed by slot name.
@@ -307,10 +309,16 @@ impl std::fmt::Display for Value {
                 write!(f, "]")
             }
             Value::Map(m) => {
+                // `Display` is documented as read syntax, so what it emits
+                // has to read back. A `,` between entries is not a token
+                // the reader produces — it turns the next key into part
+                // of the previous value's form and the reparse fails.
+                // One space separates entries; that is enough, and it
+                // round-trips.
                 write!(f, "{{")?;
                 for (i, (k, v)) in m.iter().enumerate() {
                     if i > 0 {
-                        write!(f, ", ")?;
+                        write!(f, " ")?;
                     }
                     write!(f, "{k} {v}")?;
                 }
@@ -350,14 +358,26 @@ impl Value {
         match self {
             Value::List(l) => {
                 // Check if this is a "short" list (all atoms, ≤5 elements)
-                let is_short = l.len() <= 5 && l.iter().all(|v| matches!(v,
-                    Value::Nil | Value::Boolean(_) | Value::Integer(_)
-                    | Value::Float(_) | Value::String(_) | Value::Symbol(_)
-                    | Value::Keyword(_) | Value::Char(_)));
+                let is_short = l.len() <= 5
+                    && l.iter().all(|v| {
+                        matches!(
+                            v,
+                            Value::Nil
+                                | Value::Boolean(_)
+                                | Value::Integer(_)
+                                | Value::Float(_)
+                                | Value::String(_)
+                                | Value::Symbol(_)
+                                | Value::Keyword(_)
+                                | Value::Char(_)
+                        )
+                    });
                 if is_short {
                     write!(f, "(")?;
                     for (i, val) in l.iter().enumerate() {
-                        if i > 0 { write!(f, " ")?; }
+                        if i > 0 {
+                            write!(f, " ")?;
+                        }
                         val.pretty_print(f, indent + 1)?;
                     }
                     write!(f, ")")
@@ -372,14 +392,26 @@ impl Value {
                 }
             }
             Value::Vector(v) => {
-                let is_short = v.len() <= 5 && v.iter().all(|val| matches!(val,
-                    Value::Nil | Value::Boolean(_) | Value::Integer(_)
-                    | Value::Float(_) | Value::String(_) | Value::Symbol(_)
-                    | Value::Keyword(_) | Value::Char(_)));
+                let is_short = v.len() <= 5
+                    && v.iter().all(|val| {
+                        matches!(
+                            val,
+                            Value::Nil
+                                | Value::Boolean(_)
+                                | Value::Integer(_)
+                                | Value::Float(_)
+                                | Value::String(_)
+                                | Value::Symbol(_)
+                                | Value::Keyword(_)
+                                | Value::Char(_)
+                        )
+                    });
                 if is_short {
                     write!(f, "[")?;
                     for (i, val) in v.iter().enumerate() {
-                        if i > 0 { write!(f, " ")?; }
+                        if i > 0 {
+                            write!(f, " ")?;
+                        }
                         val.pretty_print(f, indent + 1)?;
                     }
                     write!(f, "]")
@@ -399,7 +431,9 @@ impl Value {
                 } else if m.len() <= 3 {
                     write!(f, "{{")?;
                     for (i, (k, v)) in m.iter().enumerate() {
-                        if i > 0 { write!(f, " ")?; }
+                        if i > 0 {
+                            write!(f, " ")?;
+                        }
                         k.pretty_print(f, indent + 1)?;
                         write!(f, " ")?;
                         v.pretty_print(f, indent + 1)?;
@@ -485,11 +519,14 @@ mod tests {
 
     #[test]
     fn test_from_sexp() {
-        let s = Sexp::List(vector![
-            Sexp::Symbol("+".into(), None),
-            Sexp::Integer(1, None),
-            Sexp::Integer(2, None),
-        ], None);
+        let s = Sexp::List(
+            vector![
+                Sexp::Symbol("+".into(), None),
+                Sexp::Integer(1, None),
+                Sexp::Integer(2, None),
+            ],
+            None,
+        );
         let v: Value = s.into();
         assert_eq!(
             v,

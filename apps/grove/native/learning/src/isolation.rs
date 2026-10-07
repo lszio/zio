@@ -54,12 +54,6 @@ const RUNTIME_FILES: &[&str] = &[
     "/etc/localtime",
 ];
 
-/// The runtime's device directory. It is bound wholesale with `--rbind`
-/// because a char device is not a bind *target* a user namespace can
-/// create (`mknod` is not permitted there), and torch's C extension needs
-/// `/dev/urandom` to seed its RNG. `/dev` is a `devtmpfs` mount point, so
-/// a plain bind of it does not work; the recursive bind does.
-
 /// The read-only side of a profile: everything the worker may *see*.
 ///
 /// Each entry appears in the worker's root read-only. Anything not listed
@@ -100,7 +94,10 @@ impl ReadOnlyRoot {
         out.push((PathBuf::from(MOUNT_LIB), self.lib.clone()));
         out.push((PathBuf::from(MOUNT_STDLIB), self.stdlib.clone()));
         for (index, input) in self.inputs.iter().enumerate() {
-            out.push((PathBuf::from(format!("{MOUNT_INPUT}{index}")), input.clone()));
+            out.push((
+                PathBuf::from(format!("{MOUNT_INPUT}{index}")),
+                input.clone(),
+            ));
         }
         out
     }
@@ -207,7 +204,9 @@ impl IsolationProfile {
             )));
         }
         if self.scratch == Path::new("/") {
-            return Err(Error::denied("worker scratch must not be the filesystem root"));
+            return Err(Error::denied(
+                "worker scratch must not be the filesystem root",
+            ));
         }
         for (label, path) in [
             ("python prefix", &self.read_only.python_prefix),
@@ -254,14 +253,15 @@ impl IsolationProfile {
     /// not something the worker needs to know, and carrying it would
     /// expose whatever else lives alongside the declared entries.
     pub fn to_mount_spec(&self) -> MountSpec {
-        let mut bindings: Vec<Binding> = vec![
-            Binding {
-                target: self.read_only.python_prefix.clone(),
-                source: self.read_only.python_prefix.clone(),
-            },
-        ];
+        let mut bindings: Vec<Binding> = vec![Binding {
+            target: self.read_only.python_prefix.clone(),
+            source: self.read_only.python_prefix.clone(),
+        }];
         for prefix in &self.read_only.interpreter_prefixes {
-            bindings.push(Binding { target: prefix.clone(), source: prefix.clone() });
+            bindings.push(Binding {
+                target: prefix.clone(),
+                source: prefix.clone(),
+            });
         }
         for (target, source) in self.read_only.entry_names() {
             bindings.push(Binding { target, source });
@@ -319,12 +319,7 @@ pub fn worker_shell(
     python: &Path,
     worker_script: &Path,
 ) -> Result<String> {
-    isolation_shell(
-        profile,
-        python,
-        [worker_script.display().to_string()],
-        &[],
-    )
+    isolation_shell(profile, python, [worker_script.display().to_string()], &[])
 }
 
 /// A single-quoted argv element, so a path with a quote in it cannot
@@ -348,7 +343,9 @@ fn chain(target: &Path, source: &Path, ordered: &mut BTreeMap<PathBuf, PathBuf>)
         .collect();
     ancestors.reverse();
     for dir in ancestors {
-        ordered.entry(dir).or_insert_with(|| PathBuf::from(MOUNT_CARRIED));
+        ordered
+            .entry(dir)
+            .or_insert_with(|| PathBuf::from(MOUNT_CARRIED));
     }
     ordered.insert(target.to_path_buf(), source.to_path_buf());
 }
@@ -368,7 +365,6 @@ where
     I: IntoIterator<Item = S>,
     S: AsRef<std::ffi::OsStr>,
 {
-
     let spec = profile.to_mount_spec();
     // The staging tree must not sit inside any granted directory: a
     // scratch under /tmp is itself mounted into the jail, and a stage
@@ -432,7 +428,11 @@ where
         keys
     };
     for target in &by_depth {
-        setup.push_str(&format!("mkdir -p {}{} || exit 90; ", shq(&new_root), target.display()));
+        setup.push_str(&format!(
+            "mkdir -p {}{} || exit 90; ",
+            shq(&new_root),
+            target.display()
+        ));
     }
     setup.push_str(&format!("mount --bind {new_root} {new_root} || exit 91; "));
     // Merged-`/usr` links are created before any bind, so `/lib` and
@@ -450,8 +450,14 @@ where
         }
     }
     for target in &by_depth {
-        setup.push_str(&format!("mkdir -p {}{}; ", shq(&new_root), target.display()));
-        let Some(source) = ordered.get(*target) else { continue };
+        setup.push_str(&format!(
+            "mkdir -p {}{}; ",
+            shq(&new_root),
+            target.display()
+        ));
+        let Some(source) = ordered.get(*target) else {
+            continue;
+        };
         if source.as_os_str().is_empty() {
             // A carried ancestor: the empty directory the mkdir made is
             // the whole point — it carries a mount without carrying the
@@ -481,13 +487,18 @@ where
             ));
         }
     }
-    // A minimal /dev, bound node by node: the host's /dev cannot be bound
-    // wholesale (it is a devtmpfs mount point, not a plain directory).
+    // The runtime's device directory, bound wholesale with --rbind: a char
+    // device is not a bind *target* a user namespace can create (`mknod` is
+    // not permitted there), and torch's C extension needs `/dev/urandom` to
+    // seed its RNG. A plain bind of it would not work either — /dev is a
+    // devtmpfs mount point, not a plain directory.
     setup.push_str(&format!(
         "mkdir -p {new_root}/dev; mount --rbind /dev {new_root}/dev 2>/dev/null; "
     ));
     // A fresh /proc: the worker's view of processes is its own namespace.
-    setup.push_str(&format!("mkdir -p {new_root}/proc; mount -t proc proc {new_root}/proc 2>/dev/null; "));
+    setup.push_str(&format!(
+        "mkdir -p {new_root}/proc; mount -t proc proc {new_root}/proc 2>/dev/null; "
+    ));
     // The one writable path. It is bind-mounted at a path *inside* the
     // jail, not at its own absolute location: a scratch under a carried
     // ancestor (/tmp) would otherwise drag that ancestor's whole contents
@@ -524,7 +535,10 @@ where
     // the one the profile declared. The symlink target is mounted, so
     // `execve` can follow it.
     let argv: Vec<String> = std::iter::once(program.display().to_string())
-        .chain(args.into_iter().map(|a| a.as_ref().to_string_lossy().into_owned()))
+        .chain(
+            args.into_iter()
+                .map(|a| a.as_ref().to_string_lossy().into_owned()),
+        )
         .map(|a| shq(&a))
         .collect();
     let command_line = argv.join(" ");

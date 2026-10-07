@@ -14,12 +14,12 @@ use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::time::Duration;
 
+use loom::HostErrorKind;
 use loom::teacher::http_teacher::HttpTeacherHost;
 use loom::teacher::{
-    validate_request, ContentPart, Modality, OutputKind, ProposedProgram, RecordingTeacher,
-    TeacherCapability, TeacherHost, TeacherRequest, TeacherResponse, UsageLicence,
+    ContentPart, Modality, OutputKind, ProposedProgram, RecordingTeacher, TeacherCapability,
+    TeacherHost, TeacherRequest, TeacherResponse, UsageLicence, validate_request,
 };
-use loom::HostErrorKind;
 
 fn hard_teacher() -> TeacherCapability {
     TeacherCapability {
@@ -38,20 +38,33 @@ fn soft_teacher() -> TeacherCapability {
         teacher_id: "local-teacher".to_string(),
         model_version: Some("local-net-1".to_string()),
         input_modalities: vec![Modality::Image, Modality::Numeric],
-        output_kinds: vec![OutputKind::HardLabel, OutputKind::SoftDistribution, OutputKind::Program],
+        output_kinds: vec![
+            OutputKind::HardLabel,
+            OutputKind::SoftDistribution,
+            OutputKind::Program,
+        ],
         vocabulary: Some(vec!["clear".to_string(), "fault".to_string()]),
         retains_data: false,
         permits_training_use: true,
     }
 }
 
-fn request(capability: TeacherCapability, wants: Vec<OutputKind>, licence: UsageLicence) -> TeacherRequest {
+fn request(
+    capability: TeacherCapability,
+    wants: Vec<OutputKind>,
+    licence: UsageLicence,
+) -> TeacherRequest {
     TeacherRequest {
         request_id: "req-1".to_string(),
         capability,
         parts: vec![
-            ContentPart::Reference { artifact: "sha256:img".to_string(), media_type: "image/png".to_string() },
-            ContentPart::Numbers { values: vec![0.4, -1.2] },
+            ContentPart::Reference {
+                artifact: "sha256:img".to_string(),
+                media_type: "image/png".to_string(),
+            },
+            ContentPart::Numbers {
+                values: vec![0.4, -1.2],
+            },
         ],
         licence,
         wants,
@@ -77,9 +90,15 @@ impl TeacherHost for ScriptedTeacher {
 fn an_undeclared_modality_is_refused_before_any_call() {
     let mut capability = hard_teacher();
     capability.input_modalities = vec![Modality::Image, Modality::Numeric];
-    let mut req = request(capability, vec![OutputKind::HardLabel], UsageLicence::TrainStudent);
+    let mut req = request(
+        capability,
+        vec![OutputKind::HardLabel],
+        UsageLicence::TrainStudent,
+    );
     // Text was never declared as an accepted modality.
-    req.parts.push(ContentPart::Text { text: "notes".to_string() });
+    req.parts.push(ContentPart::Text {
+        text: "notes".to_string(),
+    });
 
     let err = validate_request(&req).unwrap_err();
     assert_eq!(err.kind, HostErrorKind::Config);
@@ -90,7 +109,11 @@ fn an_undeclared_modality_is_refused_before_any_call() {
 fn requesting_an_output_the_teacher_never_declared_is_refused() {
     let capability = hard_teacher();
     // No SoftDistribution in the capability, so the request cannot have it.
-    let req = request(capability, vec![OutputKind::SoftDistribution], UsageLicence::TrainStudent);
+    let req = request(
+        capability,
+        vec![OutputKind::SoftDistribution],
+        UsageLicence::TrainStudent,
+    );
     let err = validate_request(&req).unwrap_err();
     assert_eq!(err.kind, HostErrorKind::Config);
     assert!(err.to_string().contains("SoftDistribution"), "{err}");
@@ -137,7 +160,10 @@ fn a_non_finite_soft_score_is_refused() {
         program: None,
         error: None,
     };
-    assert_eq!(response.soft_targets(&capability).unwrap_err().kind, HostErrorKind::Protocol);
+    assert_eq!(
+        response.soft_targets(&capability).unwrap_err().kind,
+        HostErrorKind::Protocol
+    );
 }
 
 #[test]
@@ -187,7 +213,12 @@ fn a_proposed_program_is_marked_as_a_proposal_with_its_author() {
     assert_eq!(proposal.proposed_by, "local-teacher");
     // The type carries no notion of approval: there is no `approved` field.
     let encoded = serde_json::to_value(&proposal).unwrap();
-    let keys = encoded.as_object().unwrap().keys().cloned().collect::<Vec<_>>();
+    let keys = encoded
+        .as_object()
+        .unwrap()
+        .keys()
+        .cloned()
+        .collect::<Vec<_>>();
     assert_eq!(keys, vec!["language", "proposed_by", "source"]);
 }
 
@@ -195,7 +226,11 @@ fn a_proposed_program_is_marked_as_a_proposal_with_its_author() {
 fn a_teacher_that_forbids_training_use_refuses_a_training_licence() {
     let mut capability = hard_teacher();
     capability.permits_training_use = false;
-    let req = request(capability, vec![OutputKind::HardLabel], UsageLicence::TrainStudent);
+    let req = request(
+        capability,
+        vec![OutputKind::HardLabel],
+        UsageLicence::TrainStudent,
+    );
     let err = validate_request(&req).unwrap_err();
     assert_eq!(err.kind, HostErrorKind::Config);
     assert!(err.to_string().contains("training"), "{err}");
@@ -204,13 +239,24 @@ fn a_teacher_that_forbids_training_use_refuses_a_training_licence() {
 #[test]
 fn a_forbidden_licence_is_refused() {
     let capability = hard_teacher();
-    let req = request(capability, vec![OutputKind::HardLabel], UsageLicence::Forbidden);
-    assert_eq!(validate_request(&req).unwrap_err().kind, HostErrorKind::Config);
+    let req = request(
+        capability,
+        vec![OutputKind::HardLabel],
+        UsageLicence::Forbidden,
+    );
+    assert_eq!(
+        validate_request(&req).unwrap_err().kind,
+        HostErrorKind::Config
+    );
 }
 
 #[test]
 fn a_request_without_a_response_budget_is_refused() {
-    let mut req = request(hard_teacher(), vec![OutputKind::HardLabel], UsageLicence::DisplayOnly);
+    let mut req = request(
+        hard_teacher(),
+        vec![OutputKind::HardLabel],
+        UsageLicence::DisplayOnly,
+    );
     req.max_response_bytes = 0;
     assert!(validate_request(&req).is_err());
 }
@@ -230,7 +276,11 @@ fn a_recording_teacher_captures_every_validated_call() {
             })
         }),
     });
-    let req = request(hard_teacher(), vec![OutputKind::HardLabel], UsageLicence::TrainStudent);
+    let req = request(
+        hard_teacher(),
+        vec![OutputKind::HardLabel],
+        UsageLicence::TrainStudent,
+    );
     let answer = teacher.query(&req).unwrap();
     assert_eq!(answer.hard_label.as_deref(), Some("fault"));
     assert_eq!(teacher.recorded().len(), 1);
@@ -239,7 +289,11 @@ fn a_recording_teacher_captures_every_validated_call() {
     let mut bad = req.clone();
     bad.wants = vec![OutputKind::SoftDistribution];
     assert!(teacher.query(&bad).is_err());
-    assert_eq!(teacher.recorded().len(), 1, "a refused request must not be recorded as a call");
+    assert_eq!(
+        teacher.recorded().len(),
+        1,
+        "a refused request must not be recorded as a call"
+    );
 }
 
 // ── real HTTP round trip ───────────────────────────────────────────
@@ -250,7 +304,9 @@ fn serve_once(body: &'static str, delay: Duration) -> u16 {
     let port = listener.local_addr().unwrap().port();
     std::thread::spawn(move || {
         let (mut socket, _) = listener.accept().unwrap();
-        socket.set_read_timeout(Some(Duration::from_millis(500))).unwrap();
+        socket
+            .set_read_timeout(Some(Duration::from_millis(500)))
+            .unwrap();
         let mut buf = [0u8; 8192];
         let _ = socket.read(&mut buf);
         if !delay.is_zero() {
@@ -276,7 +332,11 @@ fn a_real_teacher_call_round_trips_over_http() {
         .base_url(format!("http://127.0.0.1:{port}/v1"))
         .timeout(Duration::from_secs(2))
         .build();
-    let req = request(hard_teacher(), vec![OutputKind::HardLabel], UsageLicence::TrainStudent);
+    let req = request(
+        hard_teacher(),
+        vec![OutputKind::HardLabel],
+        UsageLicence::TrainStudent,
+    );
     let response = host.query(&req).unwrap();
     assert_eq!(response.hard_label.as_deref(), Some("fault"));
     assert_eq!(response.model_version.as_deref(), Some("local-net-1"));
@@ -288,7 +348,9 @@ fn an_oversized_teacher_response_is_refused() {
     let port = listener.local_addr().unwrap().port();
     std::thread::spawn(move || {
         let (mut socket, _) = listener.accept().unwrap();
-        socket.set_read_timeout(Some(Duration::from_millis(500))).unwrap();
+        socket
+            .set_read_timeout(Some(Duration::from_millis(500)))
+            .unwrap();
         let mut buf = [0u8; 8192];
         let _ = socket.read(&mut buf);
         let body = "x".repeat(8192);
@@ -307,7 +369,11 @@ fn an_oversized_teacher_response_is_refused() {
         .timeout(Duration::from_secs(2))
         .max_response_bytes(512)
         .build();
-    let req = request(hard_teacher(), vec![OutputKind::HardLabel], UsageLicence::DisplayOnly);
+    let req = request(
+        hard_teacher(),
+        vec![OutputKind::HardLabel],
+        UsageLicence::DisplayOnly,
+    );
     let err = host.query(&req).unwrap_err();
     assert_eq!(err.kind, HostErrorKind::Protocol, "got: {err}");
 }
@@ -320,7 +386,11 @@ fn a_teacher_that_answers_the_wrong_request_is_a_protocol_failure() {
         .base_url(format!("http://127.0.0.1:{port}/v1"))
         .timeout(Duration::from_secs(2))
         .build();
-    let req = request(hard_teacher(), vec![OutputKind::HardLabel], UsageLicence::DisplayOnly);
+    let req = request(
+        hard_teacher(),
+        vec![OutputKind::HardLabel],
+        UsageLicence::DisplayOnly,
+    );
     let err = host.query(&req).unwrap_err();
     assert_eq!(err.kind, HostErrorKind::Protocol);
 }
@@ -337,7 +407,11 @@ fn a_silent_teacher_times_out() {
         .base_url(format!("http://127.0.0.1:{port}/v1"))
         .timeout(Duration::from_millis(300))
         .build();
-    let req = request(hard_teacher(), vec![OutputKind::HardLabel], UsageLicence::DisplayOnly);
+    let req = request(
+        hard_teacher(),
+        vec![OutputKind::HardLabel],
+        UsageLicence::DisplayOnly,
+    );
     let err = host.query(&req).unwrap_err();
     assert_eq!(err.kind, HostErrorKind::Timeout, "got: {err}");
 }

@@ -16,9 +16,7 @@
 //!   level*, not a verified label, so agreement can never stand in for
 //!   task acceptance.
 
-use grove::contracts::{
-    Actor, ActorRole, EnsembleRule, EnsembleSpec, ExpertSpec, ModelSnapshot,
-};
+use grove::contracts::{Actor, ActorRole, EnsembleRule, EnsembleSpec, ExpertSpec, ModelSnapshot};
 use grove::ensemble::{self, ExpertOutput, TeacherVote};
 use grove::store::Store;
 
@@ -77,7 +75,12 @@ fn experts_in_different_output_spaces_cannot_be_integrated() {
     let actor = operator();
     // expert-0 emits `logits`, expert-1 emits `probability`. Same width,
     // incompatible meaning — averaging them is meaningless arithmetic.
-    let spec = spec(&store, &actor, &["logits", "probability"], EnsembleRule::Vote);
+    let spec = spec(
+        &store,
+        &actor,
+        &["logits", "probability"],
+        EnsembleRule::Vote,
+    );
     let error = ensemble::bind_ensemble(&store, &actor, spec, "predict").unwrap_err();
     assert_eq!(error.kind, grove::contracts::ErrorKind::ProtocolViolation);
     assert!(
@@ -117,8 +120,16 @@ fn with_no_available_expert_the_ensemble_abstains() {
     // every selected expert abstains (None) — a missing modality or a dead
     // expert. The ONLY honest answer is no answer.
     let outputs = vec![
-        ExpertOutput { expert: "expert-0".into(), class: None, cost_steps: 4 },
-        ExpertOutput { expert: "expert-1".into(), class: None, cost_steps: 3 },
+        ExpertOutput {
+            expert: "expert-0".into(),
+            class: None,
+            cost_steps: 4,
+        },
+        ExpertOutput {
+            expert: "expert-1".into(),
+            class: None,
+            cost_steps: 3,
+        },
     ];
     let outcome = ensemble::combine(&spec, &outputs).unwrap();
     assert_eq!(outcome.class, None, "no available expert → abstain");
@@ -137,8 +148,16 @@ fn a_vote_tie_has_no_honest_winner() {
     let actor = operator();
     let spec = spec(&store, &actor, &["logits", "logits"], EnsembleRule::Vote);
     let outputs = vec![
-        ExpertOutput { expert: "expert-0".into(), class: Some(0), cost_steps: 4 },
-        ExpertOutput { expert: "expert-1".into(), class: Some(1), cost_steps: 4 },
+        ExpertOutput {
+            expert: "expert-0".into(),
+            class: Some(0),
+            cost_steps: 4,
+        },
+        ExpertOutput {
+            expert: "expert-1".into(),
+            class: Some(1),
+            cost_steps: 4,
+        },
     ];
     let outcome = ensemble::combine(&spec, &outputs).unwrap();
     assert_eq!(
@@ -152,11 +171,28 @@ fn a_vote_tie_has_no_honest_winner() {
 fn a_clear_majority_wins_and_keeps_the_dissent_visible() {
     let store = store("vote");
     let actor = operator();
-    let spec = spec(&store, &actor, &["logits", "logits", "logits"], EnsembleRule::Vote);
+    let spec = spec(
+        &store,
+        &actor,
+        &["logits", "logits", "logits"],
+        EnsembleRule::Vote,
+    );
     let outputs = vec![
-        ExpertOutput { expert: "expert-0".into(), class: Some(1), cost_steps: 4 },
-        ExpertOutput { expert: "expert-1".into(), class: Some(1), cost_steps: 4 },
-        ExpertOutput { expert: "expert-2".into(), class: Some(0), cost_steps: 4 },
+        ExpertOutput {
+            expert: "expert-0".into(),
+            class: Some(1),
+            cost_steps: 4,
+        },
+        ExpertOutput {
+            expert: "expert-1".into(),
+            class: Some(1),
+            cost_steps: 4,
+        },
+        ExpertOutput {
+            expert: "expert-2".into(),
+            class: Some(0),
+            cost_steps: 4,
+        },
     ];
     let outcome = ensemble::combine(&spec, &outputs).unwrap();
     assert_eq!(outcome.class, Some(1));
@@ -168,23 +204,47 @@ fn a_clear_majority_wins_and_keeps_the_dissent_visible() {
 fn all_agree_with_a_missing_expert_abstains() {
     let store = store("allagree");
     let actor = operator();
-    let spec = spec(&store, &actor, &["logits", "logits"], EnsembleRule::AllAgree);
+    let spec = spec(
+        &store,
+        &actor,
+        &["logits", "logits"],
+        EnsembleRule::AllAgree,
+    );
 
     // both agree → the rule is satisfiable
     let agreeing = vec![
-        ExpertOutput { expert: "expert-0".into(), class: Some(1), cost_steps: 4 },
-        ExpertOutput { expert: "expert-1".into(), class: Some(1), cost_steps: 4 },
+        ExpertOutput {
+            expert: "expert-0".into(),
+            class: Some(1),
+            cost_steps: 4,
+        },
+        ExpertOutput {
+            expert: "expert-1".into(),
+            class: Some(1),
+            cost_steps: 4,
+        },
     ];
     assert_eq!(ensemble::combine(&spec, &agreeing).unwrap().class, Some(1));
 
     // one expert is unavailable: "all agree" cannot be established, so
     // treating the survivor as unanimous would be inventing agreement.
     let partial = vec![
-        ExpertOutput { expert: "expert-0".into(), class: Some(1), cost_steps: 4 },
-        ExpertOutput { expert: "expert-1".into(), class: None, cost_steps: 3 },
+        ExpertOutput {
+            expert: "expert-0".into(),
+            class: Some(1),
+            cost_steps: 4,
+        },
+        ExpertOutput {
+            expert: "expert-1".into(),
+            class: None,
+            cost_steps: 3,
+        },
     ];
     let outcome = ensemble::combine(&spec, &partial).unwrap();
-    assert_eq!(outcome.class, None, "an unavailable expert breaks the AllAgree rule");
+    assert_eq!(
+        outcome.class, None,
+        "an unavailable expert breaks the AllAgree rule"
+    );
     assert_eq!(outcome.unavailable, vec!["expert-1".to_string()]);
 }
 
@@ -192,13 +252,26 @@ fn all_agree_with_a_missing_expert_abstains() {
 fn a_weighted_rule_breaks_a_vote_tie_by_declared_weight() {
     let store = store("weighted");
     let actor = operator();
-    let mut spec = spec(&store, &actor, &["logits", "logits"], EnsembleRule::Weighted);
+    let mut spec = spec(
+        &store,
+        &actor,
+        &["logits", "logits"],
+        EnsembleRule::Weighted,
+    );
     // expert-1 is the declared stronger expert
     spec.experts[0].weight = 1.0;
     spec.experts[1].weight = 5.0;
     let outputs = vec![
-        ExpertOutput { expert: "expert-0".into(), class: Some(0), cost_steps: 4 },
-        ExpertOutput { expert: "expert-1".into(), class: Some(1), cost_steps: 4 },
+        ExpertOutput {
+            expert: "expert-0".into(),
+            class: Some(0),
+            cost_steps: 4,
+        },
+        ExpertOutput {
+            expert: "expert-1".into(),
+            class: Some(1),
+            cost_steps: 4,
+        },
     ];
     let outcome = ensemble::combine(&spec, &outputs).unwrap();
     assert_eq!(outcome.class, Some(1), "weight 5 > weight 1 breaks the tie");
@@ -208,11 +281,20 @@ fn a_weighted_rule_breaks_a_vote_tie_by_declared_weight() {
 fn one_call_is_charged_for_every_expert_it_used() {
     let store = store("budget");
     let actor = operator();
-    let spec = spec(&store, &actor, &["logits", "logits", "logits"], EnsembleRule::Vote);
+    let spec = spec(
+        &store,
+        &actor,
+        &["logits", "logits", "logits"],
+        EnsembleRule::Vote,
+    );
 
     // three experts × 10 steps = 30, exactly the per-call budget
-    ensemble::charge(&spec, &["expert-0".into(), "expert-1".into(), "expert-2".into()], 30)
-        .expect("spending exactly the budget is allowed");
+    ensemble::charge(
+        &spec,
+        &["expert-0".into(), "expert-1".into(), "expert-2".into()],
+        30,
+    )
+    .expect("spending exactly the budget is allowed");
 
     // routing around the budget is not a routing decision
     let error = ensemble::charge(&spec, &["expert-0".into(), "expert-1".into()], 31).unwrap_err();
@@ -256,9 +338,21 @@ fn a_population_agreement_is_a_target_not_a_verified_label() {
 
     // three teachers, all agreeing
     let unanimous = vec![
-        TeacherVote { teacher: "t0".into(), snapshot: snap, class: 1 },
-        TeacherVote { teacher: "t1".into(), snapshot: snap, class: 1 },
-        TeacherVote { teacher: "t2".into(), snapshot: snap, class: 1 },
+        TeacherVote {
+            teacher: "t0".into(),
+            snapshot: snap,
+            class: 1,
+        },
+        TeacherVote {
+            teacher: "t1".into(),
+            snapshot: snap,
+            class: 1,
+        },
+        TeacherVote {
+            teacher: "t2".into(),
+            snapshot: snap,
+            class: 1,
+        },
     ];
     let target = ensemble::distillation_target(&unanimous).unwrap();
     assert_eq!(target.class, 1);
@@ -271,9 +365,21 @@ fn a_population_agreement_is_a_target_not_a_verified_label() {
     // two against one: the majority is the target, the dissent is kept
     // visible, and the agreement level says the population was not united
     let split = vec![
-        TeacherVote { teacher: "t0".into(), snapshot: snap, class: 1 },
-        TeacherVote { teacher: "t1".into(), snapshot: snap, class: 1 },
-        TeacherVote { teacher: "t2".into(), snapshot: snap, class: 0 },
+        TeacherVote {
+            teacher: "t0".into(),
+            snapshot: snap,
+            class: 1,
+        },
+        TeacherVote {
+            teacher: "t1".into(),
+            snapshot: snap,
+            class: 1,
+        },
+        TeacherVote {
+            teacher: "t2".into(),
+            snapshot: snap,
+            class: 0,
+        },
     ];
     let target = ensemble::distillation_target(&split).unwrap();
     assert_eq!(target.class, 1);
@@ -293,7 +399,10 @@ fn an_ensemble_binds_as_a_snapshot_identity() {
     let spec = spec(&store, &actor, &["logits", "logits"], EnsembleRule::Vote);
     let snapshot = ensemble::bind_ensemble(&store, &actor, spec, "predict").unwrap();
 
-    let bound = snapshot.ensemble.as_ref().expect("the router is bound into the snapshot");
+    let bound = snapshot
+        .ensemble
+        .as_ref()
+        .expect("the router is bound into the snapshot");
     assert_eq!(bound.experts.len(), 2);
     assert_eq!(bound.rule, EnsembleRule::Vote);
     assert_eq!(bound.output_space, "logits");

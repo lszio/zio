@@ -109,7 +109,9 @@ fn a_recipe_is_persisted_and_loaded_with_its_declaration_intact() {
         vec![SignalKind::HumanPreference],
         512,
     );
-    store.put_recipe(&actor(ActorRole::Operator), &declared).unwrap();
+    store
+        .put_recipe(&actor(ActorRole::Operator), &declared)
+        .unwrap();
 
     let loaded = store.get_recipe("preference@1").unwrap();
     assert_eq!(loaded.id, declared.id);
@@ -118,34 +120,50 @@ fn a_recipe_is_persisted_and_loaded_with_its_declaration_intact() {
     assert_eq!(loaded.consumes, vec![SignalKind::HumanPreference]);
     assert_eq!(loaded.trainable_modules, vec!["fusion".to_string()]);
     // The canonical bytes are the identity, and they survive the round trip.
-    assert_eq!(loaded.canonical_bytes().unwrap(), declared.canonical_bytes().unwrap());
+    assert_eq!(
+        loaded.canonical_bytes().unwrap(),
+        declared.canonical_bytes().unwrap()
+    );
 }
 
 #[test]
 fn every_extended_recipe_family_registers_and_is_visible() {
     let (_root, store) = sample_store("families");
     let families: Vec<(&str, Vec<SignalKind>)> = vec![
-        ("supervised@1", vec![SignalKind::TeacherLabel, SignalKind::HumanCorrection]),
+        (
+            "supervised@1",
+            vec![SignalKind::TeacherLabel, SignalKind::HumanCorrection],
+        ),
         ("hard-distill@1", vec![SignalKind::TeacherLabel]),
         ("soft-distill@1", vec![SignalKind::TeacherLabel]),
         ("preference@1", vec![SignalKind::HumanPreference]),
         ("demonstration@1", vec![SignalKind::Demonstration]),
         ("self-supervised@1", vec![SignalKind::Demonstration]),
-        ("environment-feedback@1", vec![SignalKind::EnvironmentResult]),
+        (
+            "environment-feedback@1",
+            vec![SignalKind::EnvironmentResult],
+        ),
         ("policy-gradient@1", vec![SignalKind::EnvironmentResult]),
     ];
     for (id, consumes) in &families {
         store
-            .put_recipe(&actor(ActorRole::Operator), &recipe(id, "task-w15", consumes.clone(), 512))
+            .put_recipe(
+                &actor(ActorRole::Operator),
+                &recipe(id, "task-w15", consumes.clone(), 512),
+            )
             .unwrap();
     }
     let listed = store.registered_recipes().unwrap();
     assert_eq!(listed.len(), families.len());
     for (id, consumes) in &families {
-        let found = listed.iter().find(|r| r.id == *id).unwrap_or_else(|| {
-            panic!("recipe {id} did not survive registration")
-        });
-        assert_eq!(&found.consumes, consumes, "recipe {id} lost its consumes list");
+        let found = listed
+            .iter()
+            .find(|r| r.id == *id)
+            .unwrap_or_else(|| panic!("recipe {id} did not survive registration"));
+        assert_eq!(
+            &found.consumes, consumes,
+            "recipe {id} lost its consumes list"
+        );
     }
 }
 
@@ -160,7 +178,9 @@ fn a_signal_kind_the_recipe_does_not_consume_is_refused() {
         vec![SignalKind::TeacherLabel],
         512,
     );
-    store.put_recipe(&actor(ActorRole::Operator), &declared).unwrap();
+    store
+        .put_recipe(&actor(ActorRole::Operator), &declared)
+        .unwrap();
 
     // The recipe's own signal is accepted.
     store
@@ -187,7 +207,9 @@ fn a_retraction_is_in_force_whatever_the_recipe_declares() {
         vec![SignalKind::HumanPreference],
         512,
     );
-    store.put_recipe(&actor(ActorRole::Operator), &declared).unwrap();
+    store
+        .put_recipe(&actor(ActorRole::Operator), &declared)
+        .unwrap();
     // A recipe cannot make it unlawful to withdraw data. Revision and
     // retraction are lifecycle operations, not training material.
     for kind in [SignalKind::Retraction, SignalKind::Revision] {
@@ -207,7 +229,9 @@ fn a_demonstration_naming_an_untrainable_module_is_refused() {
         512,
     );
     declared.trainable_modules = vec!["fusion".to_string()];
-    store.put_recipe(&actor(ActorRole::Operator), &declared).unwrap();
+    store
+        .put_recipe(&actor(ActorRole::Operator), &declared)
+        .unwrap();
 
     store
         .bind_signal_to_recipe(
@@ -217,10 +241,7 @@ fn a_demonstration_naming_an_untrainable_module_is_refused() {
         .expect("a module the recipe may train is fine");
 
     let err = store
-        .bind_signal_to_recipe(
-            &declared,
-            &signal(SignalKind::Demonstration, Some("head")),
-        )
+        .bind_signal_to_recipe(&declared, &signal(SignalKind::Demonstration, Some("head")))
         .unwrap_err();
     assert_eq!(err.kind, ErrorKind::ProtocolViolation, "{err}");
     assert!(err.context.contains("head"), "{err}");
@@ -274,7 +295,9 @@ fn a_registered_recipe_is_loaded_by_its_id() {
         vec![SignalKind::EnvironmentResult],
         512,
     );
-    store.put_recipe(&actor(ActorRole::Operator), &declared).unwrap();
+    store
+        .put_recipe(&actor(ActorRole::Operator), &declared)
+        .unwrap();
     let found = store.require_known_recipe("policy-gradient@1").unwrap();
     assert_eq!(found.id, "policy-gradient@1");
     assert_eq!(Store::recipe_consumes(&found), vec!["environment-result"]);
@@ -291,11 +314,15 @@ fn a_run_may_not_exceed_its_recipes_budget() {
         vec![SignalKind::TeacherLabel],
         512,
     );
-    store.put_recipe(&actor(ActorRole::Operator), &declared).unwrap();
+    store
+        .put_recipe(&actor(ActorRole::Operator), &declared)
+        .unwrap();
 
     // A run inside the cap is accepted.
     let ok = run_on("soft-distill@1", "task-w15", 512);
-    store.check_run_against_recipe(&ok).expect("512 is exactly the cap");
+    store
+        .check_run_against_recipe(&ok)
+        .expect("512 is exactly the cap");
 
     // A run that asks for more than the recipe declares is refused —
     // whatever the run itself claims its budget is.
@@ -314,7 +341,9 @@ fn a_run_on_another_tasks_recipe_is_refused() {
         vec![SignalKind::HumanPreference],
         512,
     );
-    store.put_recipe(&actor(ActorRole::Operator), &declared).unwrap();
+    store
+        .put_recipe(&actor(ActorRole::Operator), &declared)
+        .unwrap();
     let run = run_on("preference@1", "task-other", 512);
     let err = store.check_run_against_recipe(&run).unwrap_err();
     assert_eq!(err.kind, ErrorKind::ProtocolViolation, "{err}");
@@ -331,7 +360,9 @@ fn the_spent_ledger_still_refuses_to_go_past_the_budget() {
         vec![SignalKind::TeacherLabel],
         512,
     );
-    store.put_recipe(&actor(ActorRole::Operator), &declared).unwrap();
+    store
+        .put_recipe(&actor(ActorRole::Operator), &declared)
+        .unwrap();
     let mut run = run_on("soft-distill@1", "task-w15", 512);
     store.put_run(&actor(ActorRole::Operator), &run).unwrap();
 
@@ -348,7 +379,8 @@ fn the_spent_ledger_still_refuses_to_go_past_the_budget() {
 /// Load `libs/learning/learn/recipes.zio` into a real zio context.
 fn recipes_ctx() -> zio_core::context::EvalContext {
     let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .ancestors().nth(4)
+        .ancestors()
+        .nth(4)
         .unwrap()
         .to_path_buf();
     let env = Arc::new(zio_core::env::Env::new(None));
@@ -357,17 +389,17 @@ fn recipes_ctx() -> zio_core::context::EvalContext {
     let source_id = ctx
         .source_map()
         .register("core.zio".into(), zio_core::stdlib_source().to_string());
-    let forms = zio_core::reader::reader::read_program_with_source(
-        zio_core::stdlib_source(),
-        source_id,
-    )
-    .expect("stdlib parses");
+    let forms =
+        zio_core::reader::reader::read_program_with_source(zio_core::stdlib_source(), source_id)
+            .expect("stdlib parses");
     for sexp in forms {
         zio_core::eval::eval_in_context(&sexp, &ctx).expect("stdlib loads");
     }
     let lib = root.join("libs/learning/learn/recipes.zio");
     let source = std::fs::read_to_string(&lib).expect("recipes.zio exists");
-    let sid = ctx.source_map().register("learn/recipes.zio".into(), source.clone());
+    let sid = ctx
+        .source_map()
+        .register("learn/recipes.zio".into(), source.clone());
     let forms = zio_core::reader::reader::read_program_with_source(&source, sid)
         .expect("recipes.zio parses");
     for sexp in forms {
@@ -385,11 +417,14 @@ fn recipes_ctx() -> zio_core::context::EvalContext {
 fn eval_json(ctx: &zio_core::context::EvalContext, src: &str) -> serde_json::Value {
     // Evaluate first and bind the RESULT by name. Quoting a symbol here
     // would quote the symbol, not its value.
-    let unique = format!("probe{}", PROBE_ID.with(|c| {
-        let next = c.get();
-        c.set(next + 1);
-        next
-    }));
+    let unique = format!(
+        "probe{}",
+        PROBE_ID.with(|c| {
+            let next = c.get();
+            c.set(next + 1);
+            next
+        })
+    );
     let bind = format!("(def {unique} {src})");
     let sid = ctx.source_map().register("bind".into(), bind.clone());
     let forms = zio_core::reader::reader::read_program_with_source(&bind, sid).expect("binds");
@@ -397,7 +432,9 @@ fn eval_json(ctx: &zio_core::context::EvalContext, src: &str) -> serde_json::Val
         zio_core::eval::eval_in_context(&sexp, ctx).expect("binds");
     }
     let json_src = format!("(json-stringify {unique})");
-    let sid = ctx.source_map().register("json".into(), json_src.to_string());
+    let sid = ctx
+        .source_map()
+        .register("json".into(), json_src.to_string());
     let forms = zio_core::reader::reader::read_program_with_source(&json_src, sid).expect("json");
     let mut rendered = zio_core::value::Value::Nil;
     for sexp in forms {
@@ -419,7 +456,9 @@ thread_local! {
 
 /// Evaluate `src` and return its value's Display, for scalar assertions.
 fn eval_str(ctx: &zio_core::context::EvalContext, src: &str) -> String {
-    let source_id = ctx.source_map().register("recipe-test".into(), src.to_string());
+    let source_id = ctx
+        .source_map()
+        .register("recipe-test".into(), src.to_string());
     let forms = zio_core::reader::reader::read_program_with_source(src, source_id)
         .expect("test source parses");
     let mut last = zio_core::value::Value::Nil;
@@ -436,8 +475,8 @@ fn the_zio_declaration_matches_the_stored_recipe_record() {
     // policy nobody published.
     let ctx = recipes_ctx();
     let declared = eval_json(&ctx, "recipes--preference");
-    let consumes: Vec<String> = serde_json::from_value(declared["consumes"].clone())
-        .expect("consumes is a list");
+    let consumes: Vec<String> =
+        serde_json::from_value(declared["consumes"].clone()).expect("consumes is a list");
     let budget: u32 = declared["budget-steps"]
         .as_u64()
         .expect("budget-steps is a number") as u32;
@@ -455,7 +494,9 @@ fn the_zio_declaration_matches_the_stored_recipe_record() {
         })
         .collect();
     let stored = recipe("preference@1", "task-w15", kinds, budget);
-    store.put_recipe(&actor(ActorRole::Operator), &stored).unwrap();
+    store
+        .put_recipe(&actor(ActorRole::Operator), &stored)
+        .unwrap();
 
     // A run built from the published budget is accepted, and one that
     // asks for a step more is not: the zio cap is the host's cap.
@@ -488,22 +529,43 @@ fn the_zio_registry_holds_every_extended_recipe() {
         assert!(
             registry.get(expected).is_some(),
             "recipe {expected} is not in the registry: {:?}",
-            registry.as_object().map(|m| m.keys().cloned().collect::<Vec<_>>()).unwrap_or_default()
+            registry
+                .as_object()
+                .map(|m| m.keys().cloned().collect::<Vec<_>>())
+                .unwrap_or_default()
         );
     }
     // The extended recipes carry the contract fields the host needs; a
     // soft-distillation recipe with no label space, or a policy recipe
     // with no action set, is not a usable declaration.
     let soft = eval_json(&ctx, "recipes--soft-distill");
-    assert!(soft["teacher-vocab"].is_array(), "soft-distill must declare its label space");
+    assert!(
+        soft["teacher-vocab"].is_array(),
+        "soft-distill must declare its label space"
+    );
     let policy = eval_json(&ctx, "recipes--policy-gradient");
-    assert!(policy["actions"].is_array(), "policy-gradient must declare its actions");
-    assert!(policy["reward"].is_string(), "policy-gradient must declare its reward");
-    assert!(policy["termination"].is_string(), "policy-gradient must declare its termination");
+    assert!(
+        policy["actions"].is_array(),
+        "policy-gradient must declare its actions"
+    );
+    assert!(
+        policy["reward"].is_string(),
+        "policy-gradient must declare its reward"
+    );
+    assert!(
+        policy["termination"].is_string(),
+        "policy-gradient must declare its termination"
+    );
     let demo = eval_json(&ctx, "recipes--demonstration");
-    assert!(demo["legal-actions"].is_array(), "demonstration must declare its legal actions");
+    assert!(
+        demo["legal-actions"].is_array(),
+        "demonstration must declare its legal actions"
+    );
     let selfsup = eval_json(&ctx, "recipes--self-supervised");
-    assert!(selfsup["task-gate"].is_string(), "self-supervision must name the task gate");
+    assert!(
+        selfsup["task-gate"].is_string(),
+        "self-supervision must name the task gate"
+    );
 }
 
 #[test]
@@ -558,11 +620,11 @@ fn the_zio_refusals_are_refusals() {
             r#"(recipes--action-set-declared? recipes--policy-gradient)"#,
             "true",
         ),
+        (r#"(recipes--action-set-declared? {:id "x"})"#, "false"),
         (
-            r#"(recipes--action-set-declared? {:id "x"})"#,
-            "false",
+            r#"(recipes--budget-for recipes--soft-distill 99999)"#,
+            "512",
         ),
-        (r#"(recipes--budget-for recipes--soft-distill 99999)"#, "512"),
         (r#"(recipes--budget-for recipes--policy-gradient 10)"#, "10"),
     ];
     for (src, expected) in cases {
@@ -582,9 +644,18 @@ fn the_pre_existing_recipe_functions_still_work() {
     // moved them.
     let ctx = recipes_ctx();
     for (src, expected) in [
-        (r#"(recipes--check-signal recipes--supervised :teacher-label)"#, "true"),
-        (r#"(recipes--check-signal recipes--supervised :human-correction)"#, "true"),
-        (r#"(recipes--check-signal recipes--supervised :environment-result)"#, "false"),
+        (
+            r#"(recipes--check-signal recipes--supervised :teacher-label)"#,
+            "true",
+        ),
+        (
+            r#"(recipes--check-signal recipes--supervised :human-correction)"#,
+            "true",
+        ),
+        (
+            r#"(recipes--check-signal recipes--supervised :environment-result)"#,
+            "false",
+        ),
         (r#"(recipes--budget-for recipes--supervised 99999)"#, "512"),
         (r#"(recipes--budget-for recipes--supervised 10)"#, "10"),
         (r#"(recipes--trainable? recipes--supervised "h0")"#, "true"),

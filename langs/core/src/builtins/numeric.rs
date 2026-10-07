@@ -34,7 +34,9 @@ fn fold<F>(args: &Vector<Value>, op: F) -> Result<Value, EvalError>
 where
     F: Fn(Num, Num) -> Result<Num, EvalError>,
 {
-    let first = args.front().ok_or_else(|| EvalError::wrong_arg_count_min(1, 0))?;
+    let first = args
+        .front()
+        .ok_or_else(|| EvalError::wrong_arg_count_min(1, 0))?;
     let mut acc = Num::of(first)?;
     for arg in args.iter().skip(1) {
         acc = op(acc, Num::of(arg)?)?;
@@ -279,8 +281,14 @@ pub fn register(env: &Arc<Env>) {
     env.set("-".into(), Value::NativeFunction(NativeFn::new("-", sub)));
     env.set("*".into(), Value::NativeFunction(NativeFn::new("*", mul)));
     env.set("/".into(), Value::NativeFunction(NativeFn::new("/", div)));
-    env.set("mod".into(), Value::NativeFunction(NativeFn::new("mod", mod_fn)));
-    env.set("sqrt".into(), Value::NativeFunction(NativeFn::new("sqrt", sqrt)));
+    env.set(
+        "mod".into(),
+        Value::NativeFunction(NativeFn::new("mod", mod_fn)),
+    );
+    env.set(
+        "sqrt".into(),
+        Value::NativeFunction(NativeFn::new("sqrt", sqrt)),
+    );
 
     // Comparison
     env.set("=".into(), Value::NativeFunction(NativeFn::new("=", eq)));

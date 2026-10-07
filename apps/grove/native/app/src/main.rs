@@ -3,7 +3,10 @@
 
 use std::path::PathBuf;
 
-use grove_app::{agent, demo, inspect, load_protocol, modular, open_store, operator, population, publisher, select, usage, Paths};
+use grove_app::{
+    Paths, agent, demo, inspect, load_protocol, modular, open_store, operator, population,
+    publisher, select, usage,
+};
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -38,8 +41,17 @@ fn run(args: &[String]) -> Result<String, grove::contracts::Error> {
         ));
     };
     const COMMANDS: &[&str] = &[
-        "demo", "inspect", "checkpoint", "fork", "resume", "compare", "select", "approve",
-        "decline", "run", "serve",
+        "demo",
+        "inspect",
+        "checkpoint",
+        "fork",
+        "resume",
+        "compare",
+        "select",
+        "approve",
+        "decline",
+        "run",
+        "serve",
     ];
     if !COMMANDS.contains(&command.as_str()) {
         return Err(usage(&format!(
@@ -51,9 +63,7 @@ fn run(args: &[String]) -> Result<String, grove::contracts::Error> {
     if command == "serve" && opts.bind.is_some() && opts.root.is_none() {
         return Err(usage("serve needs --root PATH (the store it serves)"));
     }
-    let root = opts
-        .root
-        .ok_or_else(|| usage("--root PATH is required"))?;
+    let root = opts.root.ok_or_else(|| usage("--root PATH is required"))?;
     let store = open_store(&root)?;
     let paths = Paths::from_repo_root();
 
@@ -66,12 +76,9 @@ fn run(args: &[String]) -> Result<String, grove::contracts::Error> {
             match case.as_str() {
                 "dual" => demo::run_dual(&root, &paths, &device),
                 "modular" => modular::run_modular(&root, &paths, &device),
-                "population" => population::run_population(
-                    &root,
-                    &paths,
-                    &device,
-                    opts.workers.unwrap_or(2),
-                ),
+                "population" => {
+                    population::run_population(&root, &paths, &device, opts.workers.unwrap_or(2))
+                }
                 other => Err(usage(&format!(
                     "unknown case {other:?}; the delivered cases are `dual`, \
                      `population` and `modular`"
@@ -84,13 +91,8 @@ fn run(args: &[String]) -> Result<String, grove::contracts::Error> {
             let state = opts
                 .state
                 .ok_or_else(|| usage("checkpoint needs --state PATH (a worker state file)"))?;
-            let cp = grove::checkpoint::pause(
-                &store,
-                &operator(),
-                &run,
-                Path::new(&state),
-                now_ms(),
-            )?;
+            let cp =
+                grove::checkpoint::pause(&store, &operator(), &run, Path::new(&state), now_ms())?;
             Ok(format!(
                 "checkpoint {} committed; run {run} is paused at {} steps\n",
                 cp.id, cp.budget_spent_steps
@@ -112,9 +114,7 @@ fn run(args: &[String]) -> Result<String, grove::contracts::Error> {
             )?;
             Ok(format!(
                 "branch {} forked from {parent} (head {:?}, quota {} steps)\n",
-                branch.id,
-                branch.head,
-                branch.budget_quota
+                branch.id, branch.head, branch.budget_quota
             ))
         }
         "resume" => {
@@ -169,14 +169,13 @@ fn run(args: &[String]) -> Result<String, grove::contracts::Error> {
                 ..agent::RunBudget::default()
             };
             let grant = agent::candidate_grant(&run_budget, Vec::new());
-            let model_host: std::sync::Arc<dyn loom::harness::ModelHost> =
-                std::sync::Arc::new(
-                    loom::http::HttpAiHost::builder()
-                        .base_url(&config.base_url)
-                        .api_key(&config.api_key)
-                        .model(&config.model)
-                        .build(),
-                );
+            let model_host: std::sync::Arc<dyn loom::harness::ModelHost> = std::sync::Arc::new(
+                loom::http::HttpAiHost::builder()
+                    .base_url(&config.base_url)
+                    .api_key(&config.api_key)
+                    .model(&config.model)
+                    .build(),
+            );
             let (host, ctx) = agent::AgentHost::new(
                 std::sync::Arc::new(grove::store::Store::open(&root)?),
                 operator(),
@@ -187,9 +186,7 @@ fn run(args: &[String]) -> Result<String, grove::contracts::Error> {
                 model_host,
             )?;
             let logic = opts.logic.clone();
-            Ok(host
-                .run_with_logic(&ctx, logic.as_deref())
-                ?.render())
+            Ok(host.run_with_logic(&ctx, logic.as_deref())?.render())
         }
         // Without the `model-http` feature there is no network
         // transport at all, so the command names its own absence rather
@@ -232,16 +229,15 @@ fn run(args: &[String]) -> Result<String, grove::contracts::Error> {
             let snapshot = opts
                 .snapshot
                 .ok_or_else(|| usage("decline needs --snapshot HEX (or --candidate ID)"))?;
-            let subject = opts
-                .candidate
-                .clone()
-                .unwrap_or_else(|| snapshot.clone());
+            let subject = opts.candidate.clone().unwrap_or_else(|| snapshot.clone());
             let reason = opts
                 .reason
                 .clone()
                 .unwrap_or_else(|| "no reason given".to_string());
             grove::logic::decline(&store, &publisher(), &subject, &reason, now_ms())?;
-            Ok(format!("declined {subject}: {reason}\n  nothing was published\n"))
+            Ok(format!(
+                "declined {subject}: {reason}\n  nothing was published\n"
+            ))
         }
         other => unreachable!("{other} is validated above"),
     }
@@ -369,9 +365,18 @@ fn run_serve(args: &[String]) -> Result<(), grove::contracts::Error> {
         std::collections::HashMap::new();
     for (var, role) in [
         ("GROVE_TOKEN_READER", grove::contracts::ActorRole::Reader),
-        ("GROVE_TOKEN_ANNOTATOR", grove::contracts::ActorRole::Annotator),
-        ("GROVE_TOKEN_OPERATOR", grove::contracts::ActorRole::Operator),
-        ("GROVE_TOKEN_PUBLISHER", grove::contracts::ActorRole::Publisher),
+        (
+            "GROVE_TOKEN_ANNOTATOR",
+            grove::contracts::ActorRole::Annotator,
+        ),
+        (
+            "GROVE_TOKEN_OPERATOR",
+            grove::contracts::ActorRole::Operator,
+        ),
+        (
+            "GROVE_TOKEN_PUBLISHER",
+            grove::contracts::ActorRole::Publisher,
+        ),
     ] {
         if let Ok(value) = std::env::var(var) {
             if !value.is_empty() {
@@ -391,9 +396,7 @@ fn run_serve(args: &[String]) -> Result<(), grove::contracts::Error> {
         grove_app::runner::Runner::with_training(
             std::sync::Arc::clone(&store),
             grove_app::runner::RunnerConfig::default(),
-            grove_app::runner::TrainingEnvironment::probe(
-                &grove_app::Paths::from_repo_root().root,
-            ),
+            grove_app::runner::TrainingEnvironment::probe(&grove_app::Paths::from_repo_root().root),
         )
         .map_err(|e| usage(&format!("no queue owner: {e}")))?,
     );
@@ -424,10 +427,8 @@ fn run_serve(args: &[String]) -> Result<(), grove::contracts::Error> {
         let owner = std::sync::Arc::clone(&runner);
         let worker = tokio::task::spawn_blocking(move || {
             eprintln!("grove owner loop at epoch {}", owner.epoch());
-            let actor = grove::contracts::Actor::new(
-                "grove-owner",
-                grove::contracts::ActorRole::Operator,
-            );
+            let actor =
+                grove::contracts::Actor::new("grove-owner", grove::contracts::ActorRole::Operator);
             loop {
                 match owner.tick(&actor, "srv") {
                     Ok(Some(outcome)) => eprintln!(

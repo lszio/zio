@@ -74,8 +74,26 @@ pub struct Event {
 
 /// The port. An implementation receives events; it decides what to do
 /// with them (record, count, stream, refuse).
+/// Extension trait for reading back a concrete observer.
+///
+/// `Observer` itself is deliberately not `Any`: the hot path calls
+/// `on_event` and nothing else, and adding a vtable entry every embedder
+/// pays for on every event would be a bad trade. A host that wants to
+/// read the events back opts in by implementing this, which is what
+/// makes the recorded trace available as data instead of a log line.
 pub trait Observer: Send + Sync {
     fn on_event(&self, event: &Event);
+
+    /// The events this observer has recorded, if it records any.
+    ///
+    /// On the trait rather than a subtrait because the evaluator holds a
+    /// `&dyn Observer` and a trait object cannot be coerced to a
+    /// subtrait — and because the default answer must be "nothing
+    /// recorded", not an empty list that reads like a run that happened
+    /// and observed nothing.
+    fn recorded_recording(&self) -> Option<Vec<Event>> {
+        None
+    }
 }
 
 /// The state the evaluator carries: a sequence counter and the observer,
@@ -128,6 +146,19 @@ impl Observation {
         self.observer.read().is_some()
     }
 
+    /// The events an attached recording observer has collected.
+    ///
+    /// The observer is held as a trait object, so this reads through
+    /// [`ObserverInspect`] rather than downcasting at the call site: a
+    /// `&dyn Observer` cannot be coerced to a subtrait, and pretending
+    /// the events are available for an observer that never recorded any
+    /// would report an empty trace for a run that was not empty.
+    pub fn recorded_events(&self) -> Option<Vec<Event>> {
+        let guard = self.observer.read();
+        let observer = guard.as_ref()?;
+        observer.recorded_recording()
+    }
+
     /// Report one thing that happened.
     ///
     /// The first check is the whole point: with no observer there is no
@@ -170,11 +201,24 @@ impl Observation {
     /// must stop. One relaxed atomic add per evaluated node — the check
     /// is one branch on top of work the evaluator already does.
     pub fn spend_fuel(&self) -> bool {
+        self.spend_fuel_by(1)
+    }
+
+    /// Spend `units` steps in one charge. A compiled loop spends per
+    /// instruction, and paying an atomic per instruction there would
+    /// make the accounting more expensive than the work. `false` means
+    /// the ceiling is spent and the caller must stop.
+    pub fn spend_fuel_by(&self, units: u64) -> bool {
         let ceiling = self.fuel_ceiling.load(Ordering::Relaxed);
         if ceiling == 0 {
             return true;
         }
-        self.fuel.fetch_add(1, Ordering::Relaxed) < ceiling
+        // A saturating add: a ceiling is a bound, and an overflow would
+        // wrap into "spent nothing".
+        self.fuel
+            .fetch_add(units, Ordering::Relaxed)
+            .saturating_add(units)
+            <= ceiling
     }
 
     /// Payloads this port has constructed.
@@ -226,5 +270,9 @@ impl RecordingObserver {
 impl Observer for RecordingObserver {
     fn on_event(&self, event: &Event) {
         self.events.lock().push(event.clone());
+    }
+
+    fn recorded_recording(&self) -> Option<Vec<Event>> {
+        Some(self.events())
     }
 }

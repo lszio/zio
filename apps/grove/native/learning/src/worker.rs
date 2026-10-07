@@ -22,7 +22,7 @@ use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
-use crate::contracts::{digest_bytes, ArtifactRef, Error, ErrorKind, Result};
+use crate::contracts::{ArtifactRef, Error, ErrorKind, Result, digest_bytes};
 
 /// Protocol spoken over the worker's stdin/stdout.
 pub const PROTOCOL: &str = "grove.worker/1";
@@ -30,14 +30,18 @@ pub const PROTOCOL_VERSION: u32 = 1;
 /// A control frame larger than this is a protocol error, not a big frame.
 pub const MAX_FRAME_BYTES: usize = 1 << 20;
 
-
 // ── frames ─────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "kebab-case")]
 pub enum Frame {
     #[serde(rename = "hello")]
-    Hello { v: u32, protocol: String, capabilities: Vec<String>, torch: String },
+    Hello {
+        v: u32,
+        protocol: String,
+        capabilities: Vec<String>,
+        torch: String,
+    },
     #[serde(rename = "ready")]
     Ready { v: u32, protocol: String },
     #[serde(rename = "train")]
@@ -106,7 +110,14 @@ pub enum Frame {
         val_accuracy: Option<f64>,
     },
     #[serde(rename = "failed")]
-    Failed { v: u32, #[serde(default)] run_id: String, #[serde(default)] attempt_id: String, error: String },
+    Failed {
+        v: u32,
+        #[serde(default)]
+        run_id: String,
+        #[serde(default)]
+        attempt_id: String,
+        error: String,
+    },
 }
 
 impl Frame {
@@ -136,11 +147,17 @@ impl Frame {
         if line.len() > MAX_FRAME_BYTES {
             return Err(Error::new(
                 ErrorKind::BackendFailed,
-                format!("worker frame is {} bytes, over the {MAX_FRAME_BYTES} cap", line.len()),
+                format!(
+                    "worker frame is {} bytes, over the {MAX_FRAME_BYTES} cap",
+                    line.len()
+                ),
             ));
         }
         serde_json::from_str(line).map_err(|e| {
-            Error::new(ErrorKind::BackendFailed, format!("worker frame is not valid JSON: {e}"))
+            Error::new(
+                ErrorKind::BackendFailed,
+                format!("worker frame is not valid JSON: {e}"),
+            )
         })
     }
 }
@@ -349,9 +366,7 @@ impl Worker {
         let script = profile
             .read_only
             .declared_worker_script()
-            .ok_or_else(|| {
-                Error::denied("the profile does not declare the worker script")
-            })?;
+            .ok_or_else(|| Error::denied("the profile does not declare the worker script"))?;
         let shell = crate::isolation::worker_shell(profile, &config.python, &script)?;
         let mut command = Command::new(&config.unshare);
         command
@@ -373,12 +388,14 @@ impl Worker {
                 format!("spawn isolated worker: {e}"),
             )
         })?;
-        let stdout = child.stdout.take().ok_or_else(|| {
-            Error::new(ErrorKind::BackendFailed, "worker stdout was not piped")
-        })?;
-        let stderr = child.stderr.take().ok_or_else(|| {
-            Error::new(ErrorKind::BackendFailed, "worker stderr was not piped")
-        })?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| Error::new(ErrorKind::BackendFailed, "worker stdout was not piped"))?;
+        let stderr = child
+            .stderr
+            .take()
+            .ok_or_else(|| Error::new(ErrorKind::BackendFailed, "worker stderr was not piped"))?;
         // One reader thread owns stdout for the worker's lifetime.
         let (tx, rx) = mpsc::channel();
         let reader = thread::spawn(move || {
@@ -440,7 +457,9 @@ impl Worker {
                 if v != PROTOCOL_VERSION || protocol != PROTOCOL {
                     return Err(Error::new(
                         ErrorKind::IncompatibleState,
-                        format!("worker speaks {protocol} v{v}, host requires {PROTOCOL} v{PROTOCOL_VERSION}"),
+                        format!(
+                            "worker speaks {protocol} v{v}, host requires {PROTOCOL} v{PROTOCOL_VERSION}"
+                        ),
                     ));
                 }
             }
@@ -524,7 +543,10 @@ impl Worker {
 
     pub fn send(&mut self, frame: &Frame) -> Result<()> {
         let text = serde_json::to_string(frame).map_err(|e| {
-            Error::new(ErrorKind::BackendFailed, format!("frame is not encodable: {e}"))
+            Error::new(
+                ErrorKind::BackendFailed,
+                format!("frame is not encodable: {e}"),
+            )
         })?;
         if text.len() > MAX_FRAME_BYTES {
             return Err(Error::new(
@@ -532,14 +554,20 @@ impl Worker {
                 format!("outbound frame is {} bytes, over the cap", text.len()),
             ));
         }
-        let stdin = self.child.stdin.as_mut().ok_or_else(|| {
-            Error::new(ErrorKind::BackendFailed, "worker stdin was not piped")
-        })?;
+        let stdin =
+            self.child.stdin.as_mut().ok_or_else(|| {
+                Error::new(ErrorKind::BackendFailed, "worker stdin was not piped")
+            })?;
         stdin
             .write_all(text.as_bytes())
             .and_then(|_| stdin.write_all(b"\n"))
             .and_then(|_| stdin.flush())
-            .map_err(|e| Error::new(ErrorKind::BackendFailed, format!("worker write failed: {e}")))
+            .map_err(|e| {
+                Error::new(
+                    ErrorKind::BackendFailed,
+                    format!("worker write failed: {e}"),
+                )
+            })
     }
 
     /// Reap the whole process group. The direct child is `unshare`; its
@@ -680,7 +708,10 @@ fn apply_limits(command: &mut Command, max_address_space: u64) {
     unsafe {
         command.pre_exec(move || {
             let set = |resource: u32, value: u64| -> std::io::Result<()> {
-                let limit = libc::rlimit { rlim_cur: value, rlim_max: value };
+                let limit = libc::rlimit {
+                    rlim_cur: value,
+                    rlim_max: value,
+                };
                 if libc::setrlimit(resource, &limit) == 0 {
                     Ok(())
                 } else {
@@ -707,7 +738,7 @@ pub fn commit_worker_output(store: &crate::store::Store, path: &Path) -> Result<
             format!("worker output {} is unreadable: {e}", path.display()),
         )
     })?;
-    Ok(store.artifacts().put(&bytes)?)
+    store.artifacts().put(&bytes)
 }
 
 /// The digest of a file the worker will read, for the run record.

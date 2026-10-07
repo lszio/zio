@@ -6,7 +6,6 @@ use std::process::Command;
 /// PASS/FAIL markers. This is the guardrail that would have caught the
 /// libraries shipping with broken functions (undefined symbols, parallel
 /// `let` misuse) — see the 2026-09 architecture review.
-
 fn workspace_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .ancestors()
@@ -18,7 +17,7 @@ fn workspace_root() -> PathBuf {
 fn run_contract(file: &str) -> String {
     let output = Command::new(env!("CARGO_BIN_EXE_zio-cli"))
         .arg(workspace_root().join("langs/cli/tests/libs").join(file))
-        .current_dir(&workspace_root())
+        .current_dir(workspace_root())
         .output()
         .unwrap_or_else(|e| panic!("run lib contract {file}: {e}"));
     assert!(
@@ -37,8 +36,10 @@ fn run_contract(file: &str) -> String {
 
 fn assert_markers(stdout: &str, file: &str, markers: &[&str]) {
     for marker in markers {
-        // zio prints strings with quotes: "PASS" "marker"
-        let line = format!("\"PASS\" \"{marker}\"");
+        // `println` writes a string as itself; the quoting variant is
+        // `prn`. An escaped "PASS" in this output would mean a string
+        // was printed through the wrong path.
+        let line = format!("PASS {marker}");
         assert!(
             stdout.contains(&line),
             "contract {file} missing PASS marker {marker:?}:\n{stdout}"
@@ -117,7 +118,12 @@ fn protocol_library_contract() {
     assert_markers(
         &out,
         "protocol.zio",
-        &["dispatch-dog", "dispatch-cat", "multi-arg", "generic-function-name"],
+        &[
+            "dispatch-dog",
+            "dispatch-cat",
+            "multi-arg",
+            "generic-function-name",
+        ],
     );
 }
 
@@ -161,7 +167,12 @@ fn pipeline_library_contract() {
     assert_markers(
         &out,
         "pipeline.zio",
-        &["filter-map", "aggregate-count", "expansion-shape", "unknown-stage-detected"],
+        &[
+            "filter-map",
+            "aggregate-count",
+            "expansion-shape",
+            "unknown-stage-detected",
+        ],
     );
 }
 

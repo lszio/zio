@@ -13,11 +13,11 @@
 //! Offline except for the worker process, which is local torch on CPU.
 
 use std::path::PathBuf;
-use std::time::Duration;
 use std::process::{Command, Stdio};
 use std::sync::Arc;
+use std::time::Duration;
 
-use grove::worker::{Frame, Isolation, Worker, WorkerConfig, PROTOCOL_VERSION};
+use grove::worker::{Frame, Isolation, PROTOCOL_VERSION, Worker, WorkerConfig};
 use zio_core::context::{EvalContext, EvalRuntime};
 use zio_core::env::Env;
 use zio_core::error::EvalError;
@@ -25,7 +25,8 @@ use zio_core::value::Value;
 
 fn workspace_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .ancestors().nth(4)
+        .ancestors()
+        .nth(4)
         .unwrap()
         .to_path_buf()
 }
@@ -41,7 +42,9 @@ fn venv_python() -> PathBuf {
 // ── Zio harness ────────────────────────────────────────────────────
 
 fn eval_str(ctx: &EvalContext, src: &str) -> Result<Value, EvalError> {
-    let source_id = ctx.source_map().register("dual-test".into(), src.to_string());
+    let source_id = ctx
+        .source_map()
+        .register("dual-test".into(), src.to_string());
     let forms = zio_core::reader::reader::read_program_with_source(src, source_id)
         .map_err(|e| EvalError::custom(format!("parse error: {e}")))?;
     let mut last = Value::Nil;
@@ -55,12 +58,12 @@ fn model_ctx() -> EvalContext {
     let env = Arc::new(Env::new(None));
     zio_core::builtins::setup_env(&env);
     let ctx = EvalContext::new(env);
-    let source_id = ctx.source_map().register("core.zio".into(), zio_core::stdlib_source().to_string());
-    let forms = zio_core::reader::reader::read_program_with_source(
-        zio_core::stdlib_source(),
-        source_id,
-    )
-    .expect("stdlib parses");
+    let source_id = ctx
+        .source_map()
+        .register("core.zio".into(), zio_core::stdlib_source().to_string());
+    let forms =
+        zio_core::reader::reader::read_program_with_source(zio_core::stdlib_source(), source_id)
+            .expect("stdlib parses");
     for sexp in forms {
         zio_core::eval::eval_in_context(&sexp, &ctx).expect("stdlib loads");
     }
@@ -68,8 +71,8 @@ fn model_ctx() -> EvalContext {
         let path = workspace_root().join("libs/learning").join(lib);
         let source = std::fs::read_to_string(&path).expect("lib exists");
         let sid = ctx.source_map().register(lib.into(), source.clone());
-        let forms = zio_core::reader::reader::read_program_with_source(&source, sid)
-            .expect("lib parses");
+        let forms =
+            zio_core::reader::reader::read_program_with_source(&source, sid).expect("lib parses");
         for sexp in forms {
             zio_core::eval::eval_in_context(&sexp, &ctx)
                 .unwrap_or_else(|e| panic!("loading {lib}: {e}"));
@@ -85,8 +88,7 @@ fn graph_json(ctx: &EvalContext, expr: &str) -> serde_json::Value {
     let value = eval_str(ctx, expr).expect("model description evaluates");
     // Stringify the VALUE itself, not its display form: the reader pulls
     // `,` into symbols, so a display round trip would corrupt `nil,`.
-    eval_str(ctx, &format!("(def graph--last '{value})"))
-        .expect("binding the description works");
+    eval_str(ctx, &format!("(def graph--last '{value})")).expect("binding the description works");
     let rendered = match eval_str(ctx, "(json-stringify graph--last)") {
         Ok(Value::String(s)) => s,
         other => panic!("json-stringify failed: {other:?}"),
@@ -130,37 +132,50 @@ fn start_trainer() -> Option<Worker> {
 }
 
 /// Train `graph` for `steps` and return (loss, val_accuracy).
-fn train_graph(worker: &mut Worker, dir: &PathBuf, graph: serde_json::Value, steps: u32, seed: u64)
-    -> (f64, f64)
-{
+fn train_graph(
+    worker: &mut Worker,
+    dir: &PathBuf,
+    graph: serde_json::Value,
+    steps: u32,
+    seed: u64,
+) -> (f64, f64) {
     let seed_weights = dir.join("seed.json");
     std::fs::write(&seed_weights, "{}").unwrap();
     let trained = dir.join(format!("trained-{seed}-{steps}.json"));
-    let frame = worker.request(
-        Frame::Train {
-            v: PROTOCOL_VERSION,
-            request_id: format!("req-{seed}-{steps}"),
-            run_id: format!("run-{seed}-{steps}"),
-            attempt_id: format!("att-{seed}-{steps}"),
-            graph,
-            weights: seed_weights.to_string_lossy().into_owned(),
-            data: task_dir().join("data/train.bin").to_string_lossy().into_owned(),
-            val_data: Some(task_dir().join("data/val.bin").to_string_lossy().into_owned()),
-            out: trained.to_string_lossy().into_owned(),
-            steps,
-            seed,
-            resume: None,
-            save_at: None,
-            state_out: None,
-            stop_after_save: None,
-        },
-        std::time::Duration::from_secs(180),
-    )
-    .expect("train request completes");
+    let frame = worker
+        .request(
+            Frame::Train {
+                v: PROTOCOL_VERSION,
+                request_id: format!("req-{seed}-{steps}"),
+                run_id: format!("run-{seed}-{steps}"),
+                attempt_id: format!("att-{seed}-{steps}"),
+                graph,
+                weights: seed_weights.to_string_lossy().into_owned(),
+                data: task_dir()
+                    .join("data/train.bin")
+                    .to_string_lossy()
+                    .into_owned(),
+                val_data: Some(
+                    task_dir()
+                        .join("data/val.bin")
+                        .to_string_lossy()
+                        .into_owned(),
+                ),
+                out: trained.to_string_lossy().into_owned(),
+                steps,
+                seed,
+                resume: None,
+                save_at: None,
+                state_out: None,
+                stop_after_save: None,
+            },
+            std::time::Duration::from_secs(180),
+        )
+        .expect("train request completes");
     match frame {
-        Frame::Done { loss, val_accuracy, .. } => {
-            (loss.expect("loss"), val_accuracy.unwrap_or(0.0))
-        }
+        Frame::Done {
+            loss, val_accuracy, ..
+        } => (loss.expect("loss"), val_accuracy.unwrap_or(0.0)),
         other => {
             let diag = worker.drain_stderr(4000);
             panic!("expected done, got {other:?}\nworker stderr: {diag}");
@@ -184,10 +199,13 @@ fn zio_describes_and_the_worker_executes() {
     assert_eq!(nonlinear["trainable"], serde_json::json!(["h0", "h1"]));
     // the structural change is present: a relu on a 24-wide hidden layer
     let ops = nonlinear["ops"].as_array().unwrap();
-    assert!(ops.iter().any(|o| o["kind"] == "relu"), "rewrite inserted a relu");
     assert!(
-        ops.iter().any(|o| o["kind"] == "linear" && o["output"] == "h0"
-            && o["attrs"]["out"] == 24),
+        ops.iter().any(|o| o["kind"] == "relu"),
+        "rewrite inserted a relu"
+    );
+    assert!(
+        ops.iter()
+            .any(|o| o["kind"] == "linear" && o["output"] == "h0" && o["attrs"]["out"] == 24),
         "the widened layer carries its declared width"
     );
 }
@@ -197,7 +215,10 @@ fn the_rewrite_is_idempotent_and_scoped() {
     let ctx = model_ctx();
     let once = graph_json(&ctx, "(model--nonlinear-graph 24)");
     // applying the same rewrite to an already-nonlinear graph changes nothing
-    let twice = graph_json(&ctx, "(model--rewrite-add-hidden (model--nonlinear-graph 24) 24)");
+    let twice = graph_json(
+        &ctx,
+        "(model--rewrite-add-hidden (model--nonlinear-graph 24) 24)",
+    );
     assert_eq!(once, twice, "the rewrite must be idempotent");
 
     // the baseline is untouched by building candidates from it
@@ -276,7 +297,10 @@ fn recipes_cap_and_gate_what_candidates_may_do() {
     )
     .unwrap();
     let rendered = format!("{v}");
-    assert!(rendered.contains("true") && rendered.contains("false"), "{rendered}");
+    assert!(
+        rendered.contains("true") && rendered.contains("false"),
+        "{rendered}"
+    );
 
     // a recipe caps the step budget whatever a candidate asks for
     let v = eval_str(&ctx, "(recipes--budget-for recipes--supervised 99999)").unwrap();
@@ -287,7 +311,9 @@ fn recipes_cap_and_gate_what_candidates_may_do() {
 
 #[test]
 fn the_three_populations_on_the_w00_task() {
-    let Some(mut worker) = start_trainer() else { return };
+    let Some(mut worker) = start_trainer() else {
+        return;
+    };
     let dir = std::env::temp_dir().join(format!("grove-w05-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
 
@@ -324,7 +350,9 @@ fn the_three_populations_on_the_w00_task() {
 fn a_structural_change_reinitializes_and_keeps_the_old_model() {
     // The old candidate's parameter artifact is immutable: the rewrite
     // starts from the seed, never from the parent's trained weights.
-    let Some(mut worker) = start_trainer() else { return };
+    let Some(mut worker) = start_trainer() else {
+        return;
+    };
     let dir = std::env::temp_dir().join(format!("grove-w05-fork-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let ctx = model_ctx();
@@ -344,7 +372,10 @@ fn a_structural_change_reinitializes_and_keeps_the_old_model() {
                 attempt_id: "att-parent".into(),
                 graph: nonlinear.clone(),
                 weights: parent.to_string_lossy().into_owned(),
-                data: task_dir().join("data/train.bin").to_string_lossy().into_owned(),
+                data: task_dir()
+                    .join("data/train.bin")
+                    .to_string_lossy()
+                    .into_owned(),
                 val_data: None,
                 out: parent_out.to_string_lossy().into_owned(),
                 steps: 60,
@@ -357,7 +388,10 @@ fn a_structural_change_reinitializes_and_keeps_the_old_model() {
             std::time::Duration::from_secs(120),
         )
         .expect("parent trains");
-    assert!(matches!(parent_frame, Frame::Done { .. }), "{parent_frame:?}");
+    assert!(
+        matches!(parent_frame, Frame::Done { .. }),
+        "{parent_frame:?}"
+    );
     let parent_before = std::fs::read(&parent_out).unwrap();
 
     // child: same structure, seed 12 — a different starting point
@@ -373,7 +407,10 @@ fn a_structural_change_reinitializes_and_keeps_the_old_model() {
                 attempt_id: "att-child".into(),
                 graph: nonlinear,
                 weights: child.to_string_lossy().into_owned(),
-                data: task_dir().join("data/train.bin").to_string_lossy().into_owned(),
+                data: task_dir()
+                    .join("data/train.bin")
+                    .to_string_lossy()
+                    .into_owned(),
                 val_data: None,
                 out: child_out.to_string_lossy().into_owned(),
                 steps: 60,
@@ -390,9 +427,13 @@ fn a_structural_change_reinitializes_and_keeps_the_old_model() {
 
     // the parent's artifact is untouched by the child's run
     let parent_after = std::fs::read(&parent_out).unwrap();
-    assert_eq!(parent_before, parent_after, "fork must not modify the parent");
+    assert_eq!(
+        parent_before, parent_after,
+        "fork must not modify the parent"
+    );
     // and the two runs genuinely differ (fresh init, not inheritance)
-    let child_weights: serde_json::Value = serde_json::from_slice(&std::fs::read(&child_out).unwrap()).unwrap();
+    let child_weights: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&child_out).unwrap()).unwrap();
     let parent_weights: serde_json::Value = serde_json::from_slice(&parent_before).unwrap();
     assert_ne!(
         child_weights["params"], parent_weights["params"],
@@ -403,7 +444,9 @@ fn a_structural_change_reinitializes_and_keeps_the_old_model() {
 
 #[test]
 fn a_failed_training_disqualifies_only_its_candidate() {
-    let Some(mut worker) = start_trainer() else { return };
+    let Some(mut worker) = start_trainer() else {
+        return;
+    };
     let dir = std::env::temp_dir().join(format!("grove-w05-fail-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let ctx = model_ctx();
@@ -427,11 +470,15 @@ fn a_failed_training_disqualifies_only_its_candidate() {
                 attempt_id: "att-bad".into(),
                 graph: bad,
                 weights: bad_seed.to_string_lossy().into_owned(),
-                data: task_dir().join("data/train.bin").to_string_lossy().into_owned(),
+                data: task_dir()
+                    .join("data/train.bin")
+                    .to_string_lossy()
+                    .into_owned(),
                 val_data: None,
                 out: bad_out.to_string_lossy().into_owned(),
                 steps: 10,
-                seed: 1,                resume: None,
+                seed: 1,
+                resume: None,
                 save_at: None,
                 state_out: None,
                 stop_after_save: None,
@@ -457,11 +504,15 @@ fn a_failed_training_disqualifies_only_its_candidate() {
                 attempt_id: "att-ok".into(),
                 graph: ok,
                 weights: ok_seed.to_string_lossy().into_owned(),
-                data: task_dir().join("data/train.bin").to_string_lossy().into_owned(),
+                data: task_dir()
+                    .join("data/train.bin")
+                    .to_string_lossy()
+                    .into_owned(),
                 val_data: None,
                 out: ok_out.to_string_lossy().into_owned(),
                 steps: 20,
-                seed: 1,                resume: None,
+                seed: 1,
+                resume: None,
                 save_at: None,
                 state_out: None,
                 stop_after_save: None,
@@ -470,8 +521,10 @@ fn a_failed_training_disqualifies_only_its_candidate() {
         )
         .expect("the healthy candidate trains");
     assert!(matches!(ok_frame, Frame::Done { .. }), "{ok_frame:?}");
-    assert!(bad_out.metadata().map(|m| m.len()).unwrap_or(0) == 0 || !bad_out.exists(),
-        "the failed candidate wrote no output");
+    assert!(
+        bad_out.metadata().map(|m| m.len()).unwrap_or(0) == 0 || !bad_out.exists(),
+        "the failed candidate wrote no output"
+    );
     assert!(ok_out.exists(), "the healthy candidate wrote its output");
     eprintln!("bad candidate rejected with: {bad_error}");
     worker.kill();
@@ -490,8 +543,14 @@ fn an_exhausted_budget_stops_the_loop() {
     )
     .unwrap();
     let rendered = format!("{v}");
-    assert!(rendered.contains("true") && rendered.contains("false"), "{rendered}");
-    assert!(rendered.contains("0"), "over budget leaves nothing: {rendered}");
+    assert!(
+        rendered.contains("true") && rendered.contains("false"),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains("0"),
+        "over budget leaves nothing: {rendered}"
+    );
 
     // and the host's ledger agrees (consume_steps refuses overspend)
     let root = std::env::temp_dir().join(format!("grove-w05-ledger-{}", std::process::id()));

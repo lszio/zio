@@ -22,7 +22,9 @@
 
 use std::collections::HashMap;
 
-use grove::contracts::{Actor, ActorRole, ModelSnapshot, Run, RunState, SCHEMA_VERSION, SignalKind};
+use grove::contracts::{
+    Actor, ActorRole, ModelSnapshot, Run, RunState, SCHEMA_VERSION, SignalKind,
+};
 use grove::store::Store;
 
 fn tokens() -> HashMap<String, ActorRole> {
@@ -96,11 +98,9 @@ fn request(
             r.into_string().unwrap_or_default(),
             String::new(),
         ),
-        Err(ureq::Error::Status(code, r)) => (
-            code,
-            r.into_string().unwrap_or_default(),
-            String::new(),
-        ),
+        Err(ureq::Error::Status(code, r)) => {
+            (code, r.into_string().unwrap_or_default(), String::new())
+        }
         Err(e) => (0, e.to_string(), String::new()),
     };
     Reply {
@@ -235,7 +235,13 @@ fn the_signal_view_separates_filed_from_learned() {
     };
     store.submit_signal(&annotator, &signal).unwrap();
 
-    let view = request(&base, "GET", "/api/signals/corr-1", Some("reader-tok"), None);
+    let view = request(
+        &base,
+        "GET",
+        "/api/signals/corr-1",
+        Some("reader-tok"),
+        None,
+    );
     assert_eq!(view.status, 200, "{}", view.body);
     let parsed: serde_json::Value = serde_json::from_str(&view.body).unwrap();
     assert_eq!(parsed["status"], "accepted");
@@ -262,7 +268,13 @@ fn the_signal_view_separates_filed_from_learned() {
         .freeze_dataset(&Actor::new("api-operator", ActorRole::Operator), &revision)
         .unwrap();
 
-    let after = request(&base, "GET", "/api/signals/corr-1", Some("reader-tok"), None);
+    let after = request(
+        &base,
+        "GET",
+        "/api/signals/corr-1",
+        Some("reader-tok"),
+        None,
+    );
     let parsed: serde_json::Value = serde_json::from_str(&after.body).unwrap();
     assert_eq!(
         parsed["learned_into"].as_array().unwrap()[0],
@@ -348,7 +360,10 @@ fn the_lineage_view_marks_unrecoverable_and_invalidated_nodes() {
     assert_eq!(node["recoverable"], true, "the artifact is still there");
 
     // now remove it: the view must say the node is NOT recoverable
-    store.artifacts().remove(&checkpoint.state_artifact).unwrap();
+    store
+        .artifacts()
+        .remove(&checkpoint.state_artifact)
+        .unwrap();
     let after = request(&base, "GET", "/api/lineage", Some("reader-tok"), None);
     let parsed: serde_json::Value = serde_json::from_str(&after.body).unwrap();
     let node = parsed["nodes"]

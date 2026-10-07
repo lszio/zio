@@ -86,4 +86,3 @@
             (recur (rest pool) (cons b paused) debt2)
             (recur (rest pool) paused debt2)))))))
 
-(println "zio.learn.population loaded (baseline+leader+diversity quotas, shared-ledger budget policy; pure)")

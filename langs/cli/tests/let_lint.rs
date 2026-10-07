@@ -16,7 +16,6 @@ use zio_core::sexp::Sexp;
 /// - `fn` bodies: parameter bindings shadow, and the body is lazy anyway
 /// - `quote` forms: data, not code
 /// - `defmacro` definitions: templates need macro-level semantics
-
 fn workspace_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .ancestors()
@@ -74,11 +73,15 @@ fn flagged_refs(
                 }
                 _ => {}
             }
-            items.iter().flat_map(|i| flagged_refs(i, names, shadowed)).collect()
+            items
+                .iter()
+                .flat_map(|i| flagged_refs(i, names, shadowed))
+                .collect()
         }
-        Sexp::Vector(items, _) => {
-            items.iter().flat_map(|i| flagged_refs(i, names, shadowed)).collect()
-        }
+        Sexp::Vector(items, _) => items
+            .iter()
+            .flat_map(|i| flagged_refs(i, names, shadowed))
+            .collect(),
         _ => Vec::new(),
     }
 }
@@ -86,8 +89,7 @@ fn flagged_refs(
 fn check_parallel_form(rel: &str, items: &im::Vector<Sexp>, out: &mut Vec<String>) {
     let pairs = binding_pairs(items);
     for (i, (name, init)) in pairs.iter().enumerate() {
-        let earlier: HashSet<String> =
-            pairs[..i].iter().map(|(n, _)| n.clone()).collect();
+        let earlier: HashSet<String> = pairs[..i].iter().map(|(n, _)| n.clone()).collect();
         for violated in flagged_refs(init, &earlier, &mut HashSet::new()) {
             out.push(format!(
                 "{rel}: binding '{name}' references earlier sibling '{violated}' \
@@ -120,11 +122,9 @@ fn walk(rel: &str, expr: &Sexp, out: &mut Vec<String>) {
 
 fn lint_file(rel: &str) -> Vec<String> {
     let path = workspace_root().join(rel);
-    let source = std::fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("read {rel}: {e}"));
+    let source = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {rel}: {e}"));
     let mut out = Vec::new();
-    for form in reader::reader::read_program(&source)
-        .unwrap_or_else(|e| panic!("parse {rel}: {e}"))
+    for form in reader::reader::read_program(&source).unwrap_or_else(|e| panic!("parse {rel}: {e}"))
     {
         walk(rel, &form, &mut out);
     }

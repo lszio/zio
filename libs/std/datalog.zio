@@ -1,49 +1,145 @@
-;; ── zio.datalog — Datalog storage (transact) ────────────────────
-;; Datomic-style datom storage in pure Zio Lisp.
-;;
-;; Status: create-db and transact are runnable (tx-data must be a
-;; list of lists — car/cdr require lists). The query evaluator is a
-;; STUB: q ignores its query form and returns datom values; there is
-;; no unification, join, or rule recursion yet. match-clause below is
-;; the intended foundation for single-clause matching. See the
-;; feature matrix before relying on this library.
+;; Deterministic set-of-datoms query engine. Transactions use [e a v]
+;; or [e a v :db/add|:db/retract]; add is idempotent, retract removes the
+;; exact triple. No implicit cardinality-one/schema policy is imposed.
+;; (q [:find ?name :in $ ?age :where [?e :age ?age] [?e :name ?name]] db 30)
+;; Variables start with ?, _ is a wildcard. q quotes its literal query;
+;; datalog-query accepts query data. :find projects bound variables or
+;; constants. :in supports $ plus scalar variables. Conjunctive triples
+;; join by unification; results are distinct vectors in datom/input order.
+;; Rules, recursive calls, predicates, aggregates, negation and collection
+;; inputs are explicitly unsupported and rejected, not silently ignored.
+
+(defn datalog--sequence [x]
+  (if (vector? x) true (if (list? x) true false)))
 
 (defn create-db [& schema]
-  {:datalog/datoms []})
+  (if (= (count schema) 0)
+    {:datalog/datoms []}
+    (error "unsupported-query: schema declarations are not supported")))
+
+(defn datalog--triple= [a b]
+  (if (= (get a 0) (get b 0))
+    (if (= (get a 1) (get b 1)) (= (get a 2) (get b 2)) false)
+    false))
 
 (defn transact [db tx-data]
-  (loop [items tx-data curr-db db]
-    (if (or (nil? items) (= (count items) 0))
-      curr-db
-      (let* [item (car items)
-             e (get item 0)
-             a (get item 1)
-             v (get item 2)
-             op (get item 3 :db/add)
-             new-datom [e a v op]
-             old-datoms (get curr-db :datalog/datoms [])
-             updated-db (assoc curr-db :datalog/datoms (vector-conj old-datoms new-datom))]
-        (recur (cdr items) updated-db)))))
+  (if (datalog--sequence tx-data) true (error "invalid-input: transaction must be sequential"))
+  (loop [i 0 datoms (get db :datalog/datoms [])]
+    (if (= i (count tx-data))
+      (put db :datalog/datoms datoms)
+      (let* [item (get tx-data i)]
+        (if (datalog--sequence item) true (error "invalid-input: transaction datom must be sequential"))
+        (if (< (count item) 3) (error "invalid-input: datom requires entity, attribute, value") true)
+        (if (> (count item) 4) (error "invalid-input: datom has extra fields") true)
+        (let* [op (get item 3 :db/add)
+               found (filter (fn [d] (datalog--triple= d item)) datoms)]
+          (cond
+            ((= op :db/add)
+             (recur (+ i 1) (if (= (count found) 0)
+                              (vector-conj datoms [(get item 0) (get item 1) (get item 2) :db/add])
+                              datoms)))
+            ((= op :db/retract)
+             (recur (+ i 1) (apply vector (filter (fn [d] (not (datalog--triple= d item))) datoms))))
+            (else (error "invalid-input: transaction operation must be :db/add or :db/retract"))))))))
+
+(defn datalog--variable? [x]
+  (if (symbol? x) (str-starts-with? (str x) "?") false))
+
+(defn datalog--term [x]
+  (if (symbol? x)
+    (if (= x '_) x
+      (if (datalog--variable? x) x
+        (error "unsupported-query: symbols must be variables or _")))
+    (if (datalog--sequence x) (error "unsupported-query: nested query terms")
+      (if (map? x) (error "unsupported-query: map query terms") x))))
+
+(defn datalog--unify [binding clause datom]
+  (loop [i 0 result binding]
+    (if (= i 3)
+      result
+      (let* [term (get clause i) value (get datom i)]
+        (if (= term '_)
+          (recur (+ i 1) result)
+          (if (datalog--variable? term)
+            (if (= (count (filter (fn [key] (= key term)) (keys result))) 0)
+              (recur (+ i 1) (put result term value))
+              (if (= (get result term) value) (recur (+ i 1) result) nil))
+            (if (= term value) (recur (+ i 1) result) nil)))))))
+
+(defn datalog--clause [clause]
+  (if (datalog--sequence clause)
+    (if (= (count clause) 3) (do (map datalog--term clause) clause)
+      (error "unsupported-query: where clauses must be entity/attribute/value triples"))
+    (error "unsupported-query: expected a datom pattern")))
 
 (defn match-clause [datoms clause]
-  (let [pattern-e (get clause 0)
-        pattern-a (get clause 1)
-        pattern-v (get clause 2)]
-    (filter (fn [d]
-              (let [e (get d 0)
-                    a (get d 1)
-                    v (get d 2)]
-                (and (if (symbol? pattern-e) true (= pattern-e e))
-                     (if (symbol? pattern-a) true (= pattern-a a))
-                     (if (symbol? pattern-v) true (= pattern-v v)))))
-            datoms)))
+  (datalog--clause clause)
+  (filter (fn [d] (not (nil? (datalog--unify {} clause d)))) datoms))
 
-(defmacro q [query-form db]
-  ;; Stub: the query form is accepted but not evaluated (Planned).
-  (list 'datalog-q-stub (list 'quote query-form) db))
+(defn datalog--parse [query]
+  (if (datalog--sequence query) true (error "invalid-input: query must be sequential"))
+  (if (= (get query 0) :find) true (error "invalid-input: query must begin with :find"))
+  (loop [i 1 section :find find [] inputs [] clauses [] seen-in false seen-where false]
+    (if (= i (count query))
+      (if (= (count find) 0) (error "invalid-input: empty :find")
+        (if (= (count clauses) 0) (error "invalid-input: empty :where")
+          {:find find :in inputs :where clauses}))
+      (let* [term (get query i)]
+        (cond
+          ((= term :in)
+           (if seen-in (error "invalid-input: duplicate :in")
+             (if seen-where (error "invalid-input: :in must precede :where")
+               (recur (+ i 1) :in find inputs clauses true seen-where))))
+          ((= term :where)
+           (if seen-where (error "invalid-input: duplicate :where")
+             (recur (+ i 1) :where find inputs clauses seen-in true)))
+          ((= term :rules) (error "unsupported-query: rules are not supported"))
+          ((= section :find)
+           (do (datalog--term term)
+               (if (= term '_) (error "invalid-input: cannot project wildcard") true)
+               (recur (+ i 1) section (vector-conj find term) inputs clauses seen-in seen-where)))
+          ((= section :in)
+           (if (= term '$)
+             (if (= (count inputs) 0)
+               (recur (+ i 1) section find (vector-conj inputs term) clauses seen-in seen-where)
+               (error "invalid-input: $ must be first in :in"))
+             (if (datalog--variable? term)
+               (if (= (count (filter (fn [v] (= v term)) inputs)) 0)
+                 (recur (+ i 1) section find (vector-conj inputs term) clauses seen-in seen-where)
+                 (error "invalid-input: duplicate input variable"))
+               (error "unsupported-query: :in accepts $ and scalar variables only"))))
+          (else (recur (+ i 1) section find inputs
+                       (vector-conj clauses (datalog--clause term)) seen-in seen-where)))))))
 
-(defn datalog-q-stub [query db]
-  ;; Placeholder result so callers can see the shape; ignores query.
-  (map (fn [d] [(get d 2)]) (get db :datalog/datoms [])))
+(defn datalog-query [query db & args]
+  (let* [parsed (datalog--parse query)
+         inputs (filter (fn [v] (not (= v '$))) (get parsed :in))
+         clauses (get parsed :where)
+         known (reduce (fn [acc clause]
+                         (reduce (fn [a term] (if (datalog--variable? term) (put a term true) a)) acc clause))
+                       (reduce (fn [acc term] (put acc term true)) {} inputs) clauses)]
+    (if (= (count inputs) (count args)) true (error "invalid-input: query input arity mismatch"))
+    (map (fn [term]
+           (if (datalog--variable? term)
+             (if (get known term false) true (error "invalid-input: unbound projection variable")) true))
+         (get parsed :find))
+    (let* [initial (reduce (fn [binding i] (put binding (get inputs i) (get args i)))
+                          {} (range 0 (count inputs)))
+           joined
+           (reduce (fn [bindings clause]
+                     (reduce (fn [out binding]
+                               (reduce (fn [acc datom]
+                                         (let* [unified (datalog--unify binding clause datom)]
+                                           (if (nil? unified) acc (vector-conj acc unified))))
+                                       out (get db :datalog/datoms [])))
+                             [] bindings))
+                   [initial] clauses)]
+      (reduce (fn [rows binding]
+                (let* [row (apply vector (map (fn [term] (if (datalog--variable? term) (get binding term) term))
+                                             (get parsed :find)))]
+                  (if (= (count (filter (fn [existing] (= row existing)) rows)) 0)
+                    (vector-conj rows row) rows)))
+              [] joined))))
 
-(println "zio.datalog loaded (transact runnable; query evaluator is a stub — Planned)")
+(defmacro q [query-form db & inputs]
+  (cons 'datalog-query (cons (list 'quote query-form) (cons db inputs))))

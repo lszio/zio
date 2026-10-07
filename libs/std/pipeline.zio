@@ -29,4 +29,3 @@
           src
           stages))
 
-(println "zio.pipeline loaded (filter/map/aggregate-count/emit stages; expansion-time errors)")

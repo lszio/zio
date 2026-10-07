@@ -64,7 +64,10 @@ pub struct Error {
 
 impl Error {
     pub fn new(kind: ErrorKind, context: impl Into<String>) -> Self {
-        Self { kind, context: context.into() }
+        Self {
+            kind,
+            context: context.into(),
+        }
     }
 
     pub fn invalid(context: impl Into<String>) -> Self {
@@ -128,7 +131,10 @@ pub struct Actor {
 
 impl Actor {
     pub fn new(id: impl Into<String>, role: ActorRole) -> Self {
-        Self { id: id.into(), role }
+        Self {
+            id: id.into(),
+            role,
+        }
     }
 
     /// Role containment: an operator may also annotate, a publisher may also
@@ -201,8 +207,7 @@ pub fn digest_bytes(bytes: &[u8]) -> ArtifactRef {
 /// metric-carrying records are therefore checked structurally before they
 /// are allowed to be written.
 pub fn canonical_json<T: Serialize>(value: &T) -> Result<Vec<u8>> {
-    serde_json::to_vec(value)
-        .map_err(|e| Error::invalid(format!("manifest is not encodable: {e}")))
+    serde_json::to_vec(value).map_err(|e| Error::invalid(format!("manifest is not encodable: {e}")))
 }
 
 /// Metrics are the only float-bearing field in a stored record. A non-finite
@@ -350,13 +355,7 @@ impl ModelSnapshot {
         params: Vec<ParamRef>,
         preprocessing_version: impl Into<String>,
     ) -> Self {
-        Self::with_graph(
-            owner,
-            entrypoint,
-            params,
-            preprocessing_version,
-            None,
-        )
+        Self::with_graph(owner, entrypoint, params, preprocessing_version, None)
     }
 
     /// The same, plus the graph the snapshot executes. A deployable
@@ -381,7 +380,6 @@ impl ModelSnapshot {
         }
     }
 }
-
 
 /// A typed content block. Bytes live in the artifact store; the record
 /// carries the reference and the declared media type.
@@ -415,7 +413,6 @@ impl Observation {
     }
 }
 
-
 /// The exact snapshot that produced this output. Feedback always binds
 /// to this id, never to "the current head".
 /// Set when the input could not be decided; abstain is a real output.
@@ -440,7 +437,6 @@ impl Prediction {
         canonical_json(self)
     }
 }
-
 
 /// The kinds the first slice of the design needs. The envelope is open, the
 /// vocabulary is versioned with the record.
@@ -499,7 +495,6 @@ impl LearningSignal {
     }
 }
 
-
 /// A frozen member set. Once written, its membership cannot change: later
 /// signals produce a new revision.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -521,7 +516,6 @@ impl DatasetRevision {
     }
 }
 
-
 /// Signal kinds this recipe is allowed to consume.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Recipe {
@@ -539,7 +533,6 @@ impl Recipe {
         canonical_json(self)
     }
 }
-
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -588,7 +581,6 @@ impl Run {
     }
 }
 
-
 /// What a checkpoint can actually restore. Model-initialization is *not*
 /// learning-continuation and never pretends to be.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -625,7 +617,6 @@ impl Checkpoint {
     }
 }
 
-
 /// A lineage DAG node: an immutable checkpoint id plus the edge that explains
 /// how it was produced.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -659,7 +650,6 @@ impl Branch {
     }
 }
 
-
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Population {
     pub schema: SchemaVersion,
@@ -677,7 +667,6 @@ impl Population {
         canonical_json(self)
     }
 }
-
 
 /// Scores live beside a snapshot, never inside it, so the same
 /// model can be re-evaluated under another protocol unchanged.
@@ -700,4 +689,3 @@ impl EvaluationRecord {
         canonical_json(self)
     }
 }
-

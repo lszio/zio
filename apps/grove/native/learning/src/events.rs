@@ -125,11 +125,7 @@ pub(crate) fn install_schema(conn: &rusqlite::Connection) -> rusqlite::Result<()
 /// A batch that contains one oversized or out-of-order event writes
 /// nothing: a partial trace is a claim about coverage that the run did
 /// not deliver.
-pub fn append_events(
-    store: &Store,
-    actor: &Actor,
-    events: &[ExecutionEvent],
-) -> Result<()> {
+pub fn append_events(store: &Store, actor: &Actor, events: &[ExecutionEvent]) -> Result<()> {
     // Only a runner writes the log. A reader can read it and nothing
     // else, so the log cannot be back-filled by whoever is looking at it.
     actor.require(ActorRole::Operator, "appending execution events")?;
@@ -149,7 +145,9 @@ pub fn append_events(
                     "execution event {}:{} detail is {} bytes, over the {MAX_TRACE_BYTES}-byte cap; \
                      the event is refused rather than truncated, because a trace that stops \
                      recording without saying so looks complete",
-                    event.run_id, event.sequence, event.detail.len()
+                    event.run_id,
+                    event.sequence,
+                    event.detail.len()
                 ),
             ));
         }
@@ -162,9 +160,10 @@ pub fn append_events(
                 ),
             ));
         }
-        let source = event.source.as_ref().map(|s| {
-            serde_json::to_string(s).unwrap_or_else(|_| "null".to_string())
-        });
+        let source = event
+            .source
+            .as_ref()
+            .map(|s| serde_json::to_string(s).unwrap_or_else(|_| "null".to_string()));
         // Prepared per insert and reset, rather than cached: a cached
         // statement is reset by the connection when it is returned, and
         // a statement reused across rows inside one transaction can be
@@ -222,7 +221,11 @@ pub fn append_events(
 ///
 /// `after_sequence` is exclusive, so a reader that has processed up to
 /// and including `N` asks for `N` and gets the rest.
-pub fn read_events(store: &Store, run_id: &str, after_sequence: u64) -> Result<Vec<ExecutionEvent>> {
+pub fn read_events(
+    store: &Store,
+    run_id: &str,
+    after_sequence: u64,
+) -> Result<Vec<ExecutionEvent>> {
     read_events_with(store, run_id, Some(after_sequence as i64), true)
 }
 
@@ -282,9 +285,9 @@ fn read_events_with(
         .map_err(|e| Error::new(ErrorKind::BackendFailed, format!("query: {e}")))?;
     let mut out = Vec::new();
     for row in rows {
-        out.push(row.map_err(|e| {
-            Error::new(ErrorKind::BackendFailed, format!("read event: {e}"))
-        })?);
+        out.push(
+            row.map_err(|e| Error::new(ErrorKind::BackendFailed, format!("read event: {e}")))?,
+        );
     }
     Ok(out)
 }
@@ -354,14 +357,12 @@ impl StoreObserver {
                 attempt_id: String::new(),
                 kind: e.kind.as_str().to_string(),
                 detail: e.detail,
-                source: e
-                    .span
-                    .map(|span| EventSourceStub {
-                        source_id: span.source_id.0,
-                        name: String::new(),
-                        line: span.line,
-                        col: span.col,
-                    }),
+                source: e.span.map(|span| EventSourceStub {
+                    source_id: span.source_id.0,
+                    name: String::new(),
+                    line: span.line,
+                    col: span.col,
+                }),
                 at_ms: 0,
             })
             .collect()

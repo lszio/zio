@@ -9,11 +9,10 @@
 use std::path::PathBuf;
 
 use grove::contracts::{
-    Actor, ActorRole, ErrorKind, LearningSignal, Observation, SignalKind, SCHEMA_VERSION,
+    Actor, ActorRole, ErrorKind, LearningSignal, Observation, SCHEMA_VERSION, SignalKind,
 };
 use grove::memory::{
-    self, AbstractionCandidate, ExperienceIndexEntry, MemoryIndex, PromotionEvidence,
-    SemanticQuery,
+    self, AbstractionCandidate, ExperienceIndexEntry, MemoryIndex, PromotionEvidence, SemanticQuery,
 };
 use grove::store::Store;
 use zio_core::value::Value;
@@ -78,12 +77,7 @@ fn signal(id: &str, task: &str, usage_permitted: bool) -> LearningSignal {
     }
 }
 
-fn entry(
-    id: &str,
-    task: &str,
-    ast: &str,
-    sources: &[&str],
-) -> ExperienceIndexEntry {
+fn entry(id: &str, task: &str, ast: &str, sources: &[&str]) -> ExperienceIndexEntry {
     ExperienceIndexEntry {
         schema: SCHEMA_VERSION,
         id: id.to_string(),
@@ -108,16 +102,16 @@ fn entry(
 fn index_entries_name_existing_records_instead_of_copying_them() {
     let (store, _root) = open_store("factbase");
     let op = operator();
-    store.put_observation(&op, &permitted_obs("obs-a", "task-a")).unwrap();
+    store
+        .put_observation(&op, &permitted_obs("obs-a", "task-a"))
+        .unwrap();
 
     let index = MemoryIndex::new().unwrap();
     let e = entry("e-1", "task-a", "(+ (* 2 x) 1)", &["obs-a"]);
     index.commit(&store, &op, &e).unwrap();
 
     // The entry is committed as a durable manifest like every other record.
-    let digest = grove::contracts::digest_bytes(
-        &grove::contracts::canonical_json(&e).unwrap(),
-    );
+    let digest = grove::contracts::digest_bytes(&grove::contracts::canonical_json(&e).unwrap());
     let body = store.load_manifest(&digest).unwrap();
     assert!(body.contains("task-a"), "committed entry body: {body}");
 
@@ -164,13 +158,19 @@ fn semantic_near_neighbour_never_merges_into_a_different_ast() {
         },
     )
     .unwrap();
-    assert!(hit.similarity_bp > 900, "expected a near neighbour, got {hit:?}");
+    assert!(
+        hit.similarity_bp > 900,
+        "expected a near neighbour, got {hit:?}"
+    );
 
     // …yet the structural merge refuses them: different AST, different
     // program, and no amount of embedding proximity rewrites that.
     let err = memory::merge_structural(ctx, &a, &b).unwrap_err();
     assert_eq!(err.kind, ErrorKind::IncompatibleState, "{err}");
-    assert!(err.context.contains("cannot rewrite a different AST"), "{err}");
+    assert!(
+        err.context.contains("cannot rewrite a different AST"),
+        "{err}"
+    );
 
     // An AST-identical pair still merges.
     let same = entry("e-3", "task-c", "(+ (* 2 x) 1)", &[]);
@@ -211,7 +211,11 @@ fn fingerprints_under_different_probe_sets_are_never_compared() {
         ctx,
         "(count (memory--behavioural-bucket (memory--index-behavioural [{:memory/probes \"arith-v1\"} {:memory/probes \"arith-v2\"}]) \"arith-v1\"))",
     );
-    assert_eq!(buckets.as_i64(), Some(1), "each probe set is its own bucket");
+    assert_eq!(
+        buckets.as_i64(),
+        Some(1),
+        "each probe set is its own bucket"
+    );
 }
 
 // ── refusal 3: retrieval cannot cross a data licence ─────────────
@@ -220,8 +224,12 @@ fn fingerprints_under_different_probe_sets_are_never_compared() {
 fn retrieval_refuses_a_licence_violation_instead_of_filtering_the_row() {
     let (store, _root) = open_store("licence");
     let op = operator();
-    store.put_observation(&op, &permitted_obs("obs-ok", "task-a")).unwrap();
-    store.put_observation(&op, &forbidden_obs("obs-no", "task-b")).unwrap();
+    store
+        .put_observation(&op, &permitted_obs("obs-ok", "task-a"))
+        .unwrap();
+    store
+        .put_observation(&op, &forbidden_obs("obs-no", "task-b"))
+        .unwrap();
 
     let index = MemoryIndex::new().unwrap();
 
@@ -256,21 +264,23 @@ fn retrieval_refuses_a_licence_violation_instead_of_filtering_the_row() {
 fn a_capability_from_a_retracted_source_refuses_to_load() {
     let (store, _root) = open_store("retracted");
     let op = operator();
-    store.put_observation(&op, &permitted_obs("obs-a", "task-a")).unwrap();
+    store
+        .put_observation(&op, &permitted_obs("obs-a", "task-a"))
+        .unwrap();
     let sig = signal("sig-a", "task-a", true);
     store.submit_signal(&op, &sig).unwrap();
     assert_eq!(store.signal_status("sig-a").unwrap(), "accepted");
 
     let index = MemoryIndex::new().unwrap();
     let ctx = index.context();
-    let programs = [
-        "(+ (* 2 x) 1)".to_string(),
-        "(+ (* 3 y) 2)".to_string(),
-    ];
+    let programs = ["(+ (* 2 x) 1)".to_string(), "(+ (* 3 y) 2)".to_string()];
     let candidate =
         memory::extract_abstraction(ctx, &programs, &["task-a".into(), "task-b".into()]).unwrap();
     assert_eq!(candidate.spine, vec!["+".to_string(), "*".to_string()]);
-    assert!(!candidate.is_macro, "a 2-deep spine is an ordinary function");
+    assert!(
+        !candidate.is_macro,
+        "a 2-deep spine is an ordinary function"
+    );
 
     let mut source = entry("e-1", "task-a", "(+ (* 2 x) 1)", &["obs-a"]);
     source.source_signal_ids = vec!["sig-a".into()];
@@ -281,9 +291,15 @@ fn a_capability_from_a_retracted_source_refuses_to_load() {
         new_task_id: "task-new".into(),
         new_task_program: "(+ (* 11 w) 4)".into(),
     };
-    let promoted =
-        memory::promote_abstraction(&store, &op, &candidate, std::slice::from_ref(&source), &evidence, 1_000)
-            .unwrap();
+    let promoted = memory::promote_abstraction(
+        &store,
+        &op,
+        &candidate,
+        std::slice::from_ref(&source),
+        &evidence,
+        1_000,
+    )
+    .unwrap();
     assert_eq!(promoted.validated_on, "task-new");
 
     // Now the source signal is withdrawn. The knowledge it produced is
@@ -337,7 +353,13 @@ fn a_query_in_another_space_version_is_refused() {
     )
     .unwrap();
     assert_eq!(hit.id, "v-1");
-    assert_eq!(hit.similarity_bp, 1000, "identical vectors: full similarity");
+    // Basis points: 10000 is 1.0, so identical vectors are 10000. The
+    // earlier 1000 pinned a tenth-of-full-similarity, which is a
+    // different claim about what the unit means.
+    assert_eq!(
+        hit.similarity_bp, 10_000,
+        "identical vectors: full similarity"
+    );
 
     // the encoder changed → refused, coordinates mean something else now
     let err = memory::semantic_nearest(
@@ -383,16 +405,17 @@ fn promotion_requires_regression_and_a_task_that_never_participated() {
         "(+ (* 5 z) 7)".to_string(),
     ];
     let discovery_tasks = ["task-a", "task-b", "task-c"];
-    let candidate = memory::extract_abstraction(
-        ctx,
-        &programs,
-        &discovery_tasks.map(String::from).to_vec(),
-    )
-    .unwrap();
+    let candidate =
+        memory::extract_abstraction(ctx, &programs, &discovery_tasks.map(String::from).to_vec())
+            .unwrap();
     assert_eq!(candidate.spine, vec!["+".to_string(), "*".to_string()]);
     assert_eq!(candidate.discovered_from.len(), 3);
     assert_eq!(candidate.leaf_count, 3);
-    assert!(candidate.definition.starts_with("(defn apply-spine"), "{}", candidate.definition);
+    assert!(
+        candidate.definition.starts_with("(defn apply-spine"),
+        "{}",
+        candidate.definition
+    );
     assert!(candidate.definition_dl > 0);
 
     // The abstraction really is the programs: same value, both sides.
@@ -485,9 +508,8 @@ fn promotion_requires_regression_and_a_task_that_never_participated() {
     .unwrap();
     assert_eq!(promoted.validated_on, "task-new");
     assert_eq!(promoted.promoted_at_ms, 4_242);
-    let digest = grove::contracts::digest_bytes(
-        &grove::contracts::canonical_json(&promoted).unwrap(),
-    );
+    let digest =
+        grove::contracts::digest_bytes(&grove::contracts::canonical_json(&promoted).unwrap());
     assert!(store.load_manifest(&digest).is_ok());
 }
 
@@ -528,24 +550,33 @@ fn a_macro_candidate_is_rechecked_after_expansion() {
             "(+ (* (/ 3 y) 2) 5)".to_string(),
             "(+ (* (/ 5 z) 7) 9)".to_string(),
         ],
-        &["task-a".to_string(), "task-b".to_string(), "task-c".to_string()],
+        &[
+            "task-a".to_string(),
+            "task-b".to_string(),
+            "task-c".to_string(),
+        ],
     )
     .unwrap();
-    assert!(candidate.is_macro, "deep spine: {}", candidate.spine.join("/"));
+    assert!(
+        candidate.is_macro,
+        "deep spine: {}",
+        candidate.spine.join("/")
+    );
     assert_eq!(candidate.spine.len(), 3);
 
     // The expansion is re-read: expansion can reintroduce dependencies
     // and permissions the surface form hid, so it is validated as data.
-    let expanded = grove::memory::eval_public(
-        ctx,
-        "(memory--expanded-body '(memory--apply-spine 'x 'y))",
-    );
+    let expanded =
+        grove::memory::eval_public(ctx, "(memory--expanded-body '(memory--apply-spine 'x 'y))");
     let text = expanded.to_string();
     assert!(
         !text.contains("memory--apply-spine"),
         "expansion must not still be a macro call: {text}"
     );
-    assert!(text.contains('y'), "expansion carries the argument through: {text}");
+    assert!(
+        text.contains('y'),
+        "expansion carries the argument through: {text}"
+    );
 }
 
 // ── measurement, not vibes ───────────────────────────────────────
@@ -564,7 +595,11 @@ fn reuse_is_measured_as_total_description_length_on_a_fresh_task() {
     let candidate = memory::extract_abstraction(
         ctx,
         &discovery,
-        &["task-a".to_string(), "task-b".to_string(), "task-c".to_string()],
+        &[
+            "task-a".to_string(),
+            "task-b".to_string(),
+            "task-c".to_string(),
+        ],
     )
     .unwrap();
 
@@ -584,7 +619,10 @@ fn reuse_is_measured_as_total_description_length_on_a_fresh_task() {
         report.total_dl,
         report.net_saving
     );
-    assert!(report.before_dl > 0, "the raw program is measured: {report:?}");
+    assert!(
+        report.before_dl > 0,
+        "the raw program is measured: {report:?}"
+    );
     assert_eq!(report.definition_dl, candidate.definition_dl);
     assert_eq!(
         report.total_dl,
@@ -615,8 +653,16 @@ fn reuse_is_measured_as_total_description_length_on_a_fresh_task() {
         "W14 two calls: before={} call_after={} definition={} total={} saving={}",
         many.before_dl, many.after_call_dl, many.definition_dl, many.total_dl, many.net_saving
     );
-    assert_eq!(many.before_dl, 2 * report.before_dl, "both raw programs counted");
-    assert_eq!(many.after_call_dl, 2 * report.after_call_dl, "both call sites counted");
+    assert_eq!(
+        many.before_dl,
+        2 * report.before_dl,
+        "both raw programs counted"
+    );
+    assert_eq!(
+        many.after_call_dl,
+        2 * report.after_call_dl,
+        "both call sites counted"
+    );
     assert_eq!(
         many.total_dl,
         many.after_call_dl + many.definition_dl,

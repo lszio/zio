@@ -35,6 +35,9 @@ pub fn setup_env(env: &Arc<Env>) {
     // Error signaling (implemented with the condition-system form handler)
     env.set(
         "error".into(),
-        Value::NativeFunction(NativeFn::new("error", crate::special::zos_forms::do_error_fn)),
+        Value::NativeFunction(NativeFn::new(
+            "error",
+            crate::special::zos_forms::do_error_fn,
+        )),
     );
 }

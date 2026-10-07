@@ -12,8 +12,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::artifacts::ArtifactStore;
 use crate::contracts::{
@@ -343,20 +342,21 @@ impl Store {
     /// version is refused rather than migrated on the fly.
     pub fn open(root: impl AsRef<Path>) -> Result<Self> {
         let root = root.as_ref();
-        std::fs::create_dir_all(root).map_err(|e| {
-            Error::new(ErrorKind::BackendFailed, format!("create store root: {e}"))
-        })?;
+        std::fs::create_dir_all(root)
+            .map_err(|e| Error::new(ErrorKind::BackendFailed, format!("create store root: {e}")))?;
         let artifacts = Arc::new(ArtifactStore::open(root.join("artifacts"))?);
-        let conn = Connection::open(root.join("grove.db")).map_err(|e| {
-            Error::new(ErrorKind::BackendFailed, format!("open store: {e}"))
-        })?;
+        let conn = Connection::open(root.join("grove.db"))
+            .map_err(|e| Error::new(ErrorKind::BackendFailed, format!("open store: {e}")))?;
         conn.execute_batch(SCHEMA)
             .map_err(|e| Error::new(ErrorKind::BackendFailed, format!("init schema: {e}")))?;
-        crate::events::install_schema(&conn)
-            .map_err(|e| Error::new(ErrorKind::BackendFailed, format!("init events schema: {e}")))?;
+        crate::events::install_schema(&conn).map_err(|e| {
+            Error::new(ErrorKind::BackendFailed, format!("init events schema: {e}"))
+        })?;
 
         let existing: Option<String> = conn
-            .query_row("SELECT value FROM meta WHERE key = 'schema'", [], |row| row.get(0))
+            .query_row("SELECT value FROM meta WHERE key = 'schema'", [], |row| {
+                row.get(0)
+            })
             .optional()
             .map_err(db_err)?;
         match existing.as_deref() {
@@ -377,7 +377,9 @@ impl Store {
                 if found != SCHEMA_VERSION {
                     return Err(Error::new(
                         ErrorKind::IncompatibleState,
-                        format!("store schema {found} != supported {SCHEMA_VERSION}; migrate explicitly"),
+                        format!(
+                            "store schema {found} != supported {SCHEMA_VERSION}; migrate explicitly"
+                        ),
                     ));
                 }
             }
@@ -408,14 +410,25 @@ impl Store {
 
     /// Commit any serializable record as an immutable manifest. The bytes
     /// are durable and digest-checked before the row is written.
-    pub fn commit_manifest<T: serde::Serialize>(&self, kind: &str, owner: &str, value: &T) -> Result<ArtifactRef> {
+    pub fn commit_manifest<T: serde::Serialize>(
+        &self,
+        kind: &str,
+        owner: &str,
+        value: &T,
+    ) -> Result<ArtifactRef> {
         let bytes = crate::contracts::canonical_json(value)?;
         let digest = self.artifacts.put(&bytes)?;
         self.conn
             .execute(
                 "INSERT OR IGNORE INTO manifests (digest, kind, owner, schema, body)
                  VALUES (?1, ?2, ?3, ?4, ?5)",
-                params![digest.to_hex(), kind, owner, SCHEMA_VERSION, String::from_utf8_lossy(&bytes)],
+                params![
+                    digest.to_hex(),
+                    kind,
+                    owner,
+                    SCHEMA_VERSION,
+                    String::from_utf8_lossy(&bytes)
+                ],
             )
             .map_err(db_err)?;
         Ok(digest)
@@ -543,13 +556,18 @@ impl Store {
     pub fn get_observation(&self, id: &str) -> Result<Observation> {
         let (body, schema): (String, i64) = self
             .conn
-            .query_row("SELECT body, schema FROM observations WHERE id = ?1", params![id], |row| {
-                Ok((row.get(0)?, row.get(1)?))
-            })
+            .query_row(
+                "SELECT body, schema FROM observations WHERE id = ?1",
+                params![id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
             .optional()
             .map_err(db_err)?
             .ok_or_else(|| {
-                Error::new(ErrorKind::ArtifactUnavailable, format!("no observation {id}"))
+                Error::new(
+                    ErrorKind::ArtifactUnavailable,
+                    format!("no observation {id}"),
+                )
             })?;
         decode(&body, require_schema(schema)?)
     }
@@ -600,7 +618,10 @@ impl Store {
             .optional()
             .map_err(db_err)?
             .ok_or_else(|| {
-                Error::new(ErrorKind::ArtifactUnavailable, format!("no prediction {id}"))
+                Error::new(
+                    ErrorKind::ArtifactUnavailable,
+                    format!("no prediction {id}"),
+                )
             })?;
         decode(&body, require_schema(schema)?)
     }
@@ -610,15 +631,11 @@ impl Store {
     /// Submit a signal. Returns `Duplicate` when this producer already
     /// submitted the same idempotency key — the caller gets a receipt, the
     /// dataset gets no second sample.
-    pub fn submit_signal(
-        &self,
-        actor: &Actor,
-        signal: &LearningSignal,
-    ) -> Result<Receipt> {
+    pub fn submit_signal(&self, actor: &Actor, signal: &LearningSignal) -> Result<Receipt> {
         let required = match signal.kind {
-            SignalKind::HumanCorrection | SignalKind::HumanPreference | SignalKind::Demonstration => {
-                ActorRole::Annotator
-            }
+            SignalKind::HumanCorrection
+            | SignalKind::HumanPreference
+            | SignalKind::Demonstration => ActorRole::Annotator,
             SignalKind::TeacherLabel => ActorRole::Operator,
             _ => ActorRole::Reader,
         };
@@ -632,7 +649,10 @@ impl Store {
 
         if signal.kind.targets_other_signal() {
             let referred = signal.revises.as_ref().ok_or_else(|| {
-                Error::invalid(format!("{:?} signal must name the signal it revises", signal.kind))
+                Error::invalid(format!(
+                    "{:?} signal must name the signal it revises",
+                    signal.kind
+                ))
             })?;
             let exists: bool = self
                 .conn
@@ -647,7 +667,10 @@ impl Store {
             if !exists {
                 return Err(Error::new(
                     ErrorKind::IncompatibleState,
-                    format!("signal {signal_id} revises unknown signal {referred}", signal_id = signal.id),
+                    format!(
+                        "signal {signal_id} revises unknown signal {referred}",
+                        signal_id = signal.id
+                    ),
                 ));
             }
         }
@@ -706,9 +729,11 @@ impl Store {
 
     pub fn signal_status(&self, id: &str) -> Result<String> {
         self.conn
-            .query_row("SELECT status FROM signals WHERE id = ?1", params![id], |row| {
-                row.get(0)
-            })
+            .query_row(
+                "SELECT status FROM signals WHERE id = ?1",
+                params![id],
+                |row| row.get(0),
+            )
             .optional()
             .map_err(db_err)?
             .ok_or_else(|| Error::new(ErrorKind::ArtifactUnavailable, format!("no signal {id}")))
@@ -739,12 +764,7 @@ impl Store {
     /// Adjudicate conflicting human corrections about the same target field:
     /// the winner stays, the loser is marked superseded. This is the only
     /// path that resolves a conflict, and it is explicit.
-    pub fn resolve_conflict(
-        &self,
-        actor: &Actor,
-        keep: &str,
-        supersede: &str,
-    ) -> Result<()> {
+    pub fn resolve_conflict(&self, actor: &Actor, keep: &str, supersede: &str) -> Result<()> {
         actor.require(ActorRole::Annotator, "adjudicating a conflict")?;
         let (keep_target, keep_field): (String, Option<String>) = self
             .conn
@@ -768,7 +788,10 @@ impl Store {
             .optional()
             .map_err(db_err)?
             .ok_or_else(|| {
-                Error::new(ErrorKind::ArtifactUnavailable, format!("no signal {supersede}"))
+                Error::new(
+                    ErrorKind::ArtifactUnavailable,
+                    format!("no signal {supersede}"),
+                )
             })?;
         if keep_target != other_target || keep_field != other_field {
             return Err(Error::invalid(format!(
@@ -793,7 +816,9 @@ impl Store {
             .filter(|s| {
                 matches!(
                     s.kind,
-                    SignalKind::HumanCorrection | SignalKind::HumanPreference | SignalKind::Demonstration
+                    SignalKind::HumanCorrection
+                        | SignalKind::HumanPreference
+                        | SignalKind::Demonstration
                 )
             })
             .collect();
@@ -817,18 +842,16 @@ impl Store {
     /// Freeze the current in-force signal set for a task. Membership is
     /// written once and never rewritten: a later signal produces a new
     /// revision rather than mutating a view a run is already training on.
-    pub fn freeze_dataset(
-        &self,
-        actor: &Actor,
-        revision: &DatasetRevision,
-    ) -> Result<()> {
+    pub fn freeze_dataset(&self, actor: &Actor, revision: &DatasetRevision) -> Result<()> {
         actor.require(ActorRole::Operator, "freezing a dataset revision")?;
         for signal_id in &revision.signal_ids {
             let status: Option<String> = self
                 .conn
-                .query_row("SELECT status FROM signals WHERE id = ?1", params![signal_id], |r| {
-                    r.get(0)
-                })
+                .query_row(
+                    "SELECT status FROM signals WHERE id = ?1",
+                    params![signal_id],
+                    |r| r.get(0),
+                )
                 .optional()
                 .map_err(db_err)?;
             match status.as_deref() {
@@ -843,7 +866,7 @@ impl Store {
                     return Err(Error::new(
                         ErrorKind::ArtifactUnavailable,
                         format!("signal {signal_id} does not exist"),
-                    ))
+                    ));
                 }
             }
         }
@@ -864,9 +887,11 @@ impl Store {
     pub fn get_dataset(&self, id: &str) -> Result<DatasetRevision> {
         let (body, schema): (String, i64) = self
             .conn
-            .query_row("SELECT body, schema FROM datasets WHERE id = ?1", params![id], |row| {
-                Ok((row.get(0)?, row.get(1)?))
-            })
+            .query_row(
+                "SELECT body, schema FROM datasets WHERE id = ?1",
+                params![id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
             .optional()
             .map_err(db_err)?
             .ok_or_else(|| {
@@ -921,14 +946,14 @@ impl Store {
     pub fn get_recipe(&self, id: &str) -> Result<Recipe> {
         let (body, schema): (String, i64) = self
             .conn
-            .query_row("SELECT body, schema FROM recipes WHERE id = ?1", params![id], |row| {
-                Ok((row.get(0)?, row.get(1)?))
-            })
+            .query_row(
+                "SELECT body, schema FROM recipes WHERE id = ?1",
+                params![id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
             .optional()
             .map_err(db_err)?
-            .ok_or_else(|| {
-                Error::new(ErrorKind::ArtifactUnavailable, format!("no recipe {id}"))
-            })?;
+            .ok_or_else(|| Error::new(ErrorKind::ArtifactUnavailable, format!("no recipe {id}")))?;
         decode(&body, require_schema(schema)?)
     }
 
@@ -951,12 +976,17 @@ impl Store {
 
     /// Every run record, for the inspect surface.
     pub fn runs(&self) -> Vec<Run> {
-        let mut stmt = match self.conn.prepare("SELECT body, schema FROM runs ORDER BY id") {
+        let mut stmt = match self
+            .conn
+            .prepare("SELECT body, schema FROM runs ORDER BY id")
+        {
             Ok(stmt) => stmt,
             Err(_) => return Vec::new(),
         };
         let rows = stmt
-            .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)))
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+            })
             .expect("query_map cannot fail on a prepared select");
         rows.flatten()
             .filter_map(|(body, schema)| decode(&body, require_schema(schema).ok()?).ok())
@@ -972,7 +1002,9 @@ impl Store {
             Err(_) => return Vec::new(),
         };
         let rows = stmt
-            .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)))
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+            })
             .expect("query_map cannot fail on a prepared select");
         rows.flatten()
             .filter_map(|(body, schema)| decode(&body, require_schema(schema).ok()?).ok())
@@ -988,7 +1020,9 @@ impl Store {
             Err(_) => return Vec::new(),
         };
         let rows = stmt
-            .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)))
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+            })
             .expect("query_map cannot fail on a prepared select");
         rows.flatten()
             .filter_map(|(body, schema)| decode(&body, require_schema(schema).ok()?).ok())
@@ -998,9 +1032,11 @@ impl Store {
     pub fn get_run(&self, id: &str) -> Result<Run> {
         let (body, schema): (String, i64) = self
             .conn
-            .query_row("SELECT body, schema FROM runs WHERE id = ?1", params![id], |row| {
-                Ok((row.get(0)?, row.get(1)?))
-            })
+            .query_row(
+                "SELECT body, schema FROM runs WHERE id = ?1",
+                params![id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
             .optional()
             .map_err(db_err)?
             .ok_or_else(|| Error::new(ErrorKind::ArtifactUnavailable, format!("no run {id}")))?;
@@ -1011,7 +1047,11 @@ impl Store {
         self.conn
             .execute(
                 "UPDATE runs SET state = ?1, body = ?2 WHERE id = ?3",
-                params![state_str(run.state), String::from_utf8_lossy(&run.canonical_bytes()?), run.id],
+                params![
+                    state_str(run.state),
+                    String::from_utf8_lossy(&run.canonical_bytes()?),
+                    run.id
+                ],
             )
             .map_err(db_err)?;
         Ok(())
@@ -1025,7 +1065,10 @@ impl Store {
         if spent > run.steps_budget {
             return Err(Error::new(
                 ErrorKind::BudgetExhausted,
-                format!("run {run_id} asked for {spent} steps, budget is {}", run.steps_budget),
+                format!(
+                    "run {run_id} asked for {spent} steps, budget is {}",
+                    run.steps_budget
+                ),
             ));
         }
         run.steps_consumed = spent;
@@ -1086,7 +1129,10 @@ impl Store {
             .optional()
             .map_err(db_err)?
             .ok_or_else(|| {
-                Error::new(ErrorKind::ArtifactUnavailable, format!("no checkpoint {id}"))
+                Error::new(
+                    ErrorKind::ArtifactUnavailable,
+                    format!("no checkpoint {id}"),
+                )
             })?;
         decode(&body, require_schema(schema)?)
     }
@@ -1133,7 +1179,10 @@ impl Store {
             .optional()
             .map_err(db_err)?;
         let (head, version, body) = row.ok_or_else(|| {
-            Error::new(ErrorKind::ArtifactUnavailable, format!("no branch {branch_id}"))
+            Error::new(
+                ErrorKind::ArtifactUnavailable,
+                format!("no branch {branch_id}"),
+            )
         })?;
         if version != expected_version {
             return Err(Error::conflict(format!(
@@ -1141,7 +1190,10 @@ impl Store {
             )));
         }
         let mut branch: Branch = serde_json::from_str(&body).map_err(|e| {
-            Error::new(ErrorKind::IncompatibleState, format!("branch {branch_id} is unreadable: {e}"))
+            Error::new(
+                ErrorKind::IncompatibleState,
+                format!("branch {branch_id} is unreadable: {e}"),
+            )
         })?;
         if head.is_none() {
             return Err(Error::new(
@@ -1168,9 +1220,11 @@ impl Store {
     pub fn get_branch(&self, id: &str) -> Result<Branch> {
         let (body, schema): (String, i64) = self
             .conn
-            .query_row("SELECT body, schema FROM branches WHERE id = ?1", params![id], |row| {
-                Ok((row.get(0)?, row.get(1)?))
-            })
+            .query_row(
+                "SELECT body, schema FROM branches WHERE id = ?1",
+                params![id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
             .optional()
             .map_err(db_err)?
             .ok_or_else(|| Error::new(ErrorKind::ArtifactUnavailable, format!("no branch {id}")))?;
@@ -1348,9 +1402,11 @@ impl Store {
             ));
         }
         let current: Option<String> = tx
-            .query_row("SELECT body FROM runs WHERE id = ?1", params![run_id], |row| {
-                row.get(0)
-            })
+            .query_row(
+                "SELECT body FROM runs WHERE id = ?1",
+                params![run_id],
+                |row| row.get(0),
+            )
             .optional()
             .map_err(db_err)?;
         let body = current.ok_or_else(|| {
@@ -1376,8 +1432,11 @@ impl Store {
         .map_err(db_err)?;
         // The attempt is spent before the state is visible as final, so a
         // replayed receipt finds a closed attempt rather than a live one.
-        tx.execute("UPDATE attempts SET active = 0 WHERE id = ?1", params![attempt_id])
-            .map_err(db_err)?;
+        tx.execute(
+            "UPDATE attempts SET active = 0 WHERE id = ?1",
+            params![attempt_id],
+        )
+        .map_err(db_err)?;
         tx.commit().map_err(db_err)?;
         Ok(())
     }
@@ -1459,7 +1518,13 @@ impl Store {
     /// process from the one that queued it — including after a restart.
     /// Re-queueing the same run with different work is refused: a run id
     /// that meant two things is an ambiguity nobody can resolve later.
-    pub fn put_queued_work(&self, actor: &Actor, run_id: &str, kind: &str, payload: &str) -> Result<()> {
+    pub fn put_queued_work(
+        &self,
+        actor: &Actor,
+        run_id: &str,
+        kind: &str,
+        payload: &str,
+    ) -> Result<()> {
         actor.require(ActorRole::Operator, "queuing work for a run")?;
         let existing: Option<String> = self
             .conn
@@ -1474,7 +1539,9 @@ impl Store {
             if previous != payload {
                 return Err(Error::new(
                     ErrorKind::Conflict,
-                    format!("run {run_id} is already queued for different work; one run id cannot mean two things"),
+                    format!(
+                        "run {run_id} is already queued for different work; one run id cannot mean two things"
+                    ),
                 ));
             }
             return Ok(());
@@ -1568,13 +1635,18 @@ impl Store {
     pub fn get_population(&self, id: &str) -> Result<Population> {
         let (body, schema): (String, i64) = self
             .conn
-            .query_row("SELECT body, schema FROM populations WHERE id = ?1", params![id], |row| {
-                Ok((row.get(0)?, row.get(1)?))
-            })
+            .query_row(
+                "SELECT body, schema FROM populations WHERE id = ?1",
+                params![id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
             .optional()
             .map_err(db_err)?
             .ok_or_else(|| {
-                Error::new(ErrorKind::ArtifactUnavailable, format!("no population {id}"))
+                Error::new(
+                    ErrorKind::ArtifactUnavailable,
+                    format!("no population {id}"),
+                )
             })?;
         decode(&body, require_schema(schema)?)
     }
@@ -1643,15 +1715,14 @@ impl Store {
         Ok(())
     }
 
-    pub fn get_protocol(
-        &self,
-        id: &str,
-    ) -> Result<crate::evaluation::EvaluationProtocol> {
+    pub fn get_protocol(&self, id: &str) -> Result<crate::evaluation::EvaluationProtocol> {
         let (body, schema): (String, i64) = self
             .conn
-            .query_row("SELECT body, schema FROM protocols WHERE id = ?1", params![id], {
-                |row| Ok((row.get(0)?, row.get(1)?))
-            })
+            .query_row(
+                "SELECT body, schema FROM protocols WHERE id = ?1",
+                params![id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
             .optional()
             .map_err(db_err)?
             .ok_or_else(|| {
@@ -1756,7 +1827,12 @@ impl Store {
         tx.execute(
             "INSERT INTO publications (id, snapshot, version, actor, state)
              VALUES (?1, ?2, ?3, ?4, 'active')",
-            params![format!("pub-v{version}"), snapshot.to_hex(), version, actor.id],
+            params![
+                format!("pub-v{version}"),
+                snapshot.to_hex(),
+                version,
+                actor.id
+            ],
         )
         .map_err(db_err)?;
         tx.commit().map_err(db_err)?;
@@ -1832,9 +1908,11 @@ impl Store {
     pub fn get_candidate(&self, id: &str) -> Result<crate::logic::LogicCandidate> {
         let body: Option<String> = self
             .conn
-            .query_row("SELECT body FROM candidates WHERE id = ?1", params![id], |row| {
-                row.get(0)
-            })
+            .query_row(
+                "SELECT body FROM candidates WHERE id = ?1",
+                params![id],
+                |row| row.get(0),
+            )
             .optional()
             .map_err(db_err)?;
         let body = body.ok_or_else(|| {
@@ -1849,9 +1927,11 @@ impl Store {
     pub fn candidate_state(&self, id: &str) -> Result<crate::logic::CandidateState> {
         let state: Option<String> = self
             .conn
-            .query_row("SELECT state FROM candidates WHERE id = ?1", params![id], |row| {
-                row.get(0)
-            })
+            .query_row(
+                "SELECT state FROM candidates WHERE id = ?1",
+                params![id],
+                |row| row.get(0),
+            )
             .optional()
             .map_err(db_err)?;
         let state = state.ok_or_else(|| {
@@ -1970,16 +2050,15 @@ impl Store {
     pub fn get_approval(&self, id: &str) -> Result<crate::logic::HumanApproval> {
         let body: Option<String> = self
             .conn
-            .query_row("SELECT body FROM approvals WHERE id = ?1", params![id], |row| {
-                row.get(0)
-            })
+            .query_row(
+                "SELECT body FROM approvals WHERE id = ?1",
+                params![id],
+                |row| row.get(0),
+            )
             .optional()
             .map_err(db_err)?;
         let body = body.ok_or_else(|| {
-            Error::new(
-                ErrorKind::ArtifactUnavailable,
-                format!("no approval {id}"),
-            )
+            Error::new(ErrorKind::ArtifactUnavailable, format!("no approval {id}"))
         })?;
         decode(&body, SCHEMA_VERSION)
     }
@@ -2055,19 +2134,17 @@ impl Store {
         &self,
         approval: &crate::logic::HumanApproval,
     ) -> Result<bool> {
-        let (Some(expected), Some((current, _))) =
-            (approval.expected_publication_version, self.active_publication()?)
-        else {
+        let (Some(expected), Some((current, _))) = (
+            approval.expected_publication_version,
+            self.active_publication()?,
+        ) else {
             return Ok(true);
         };
         Ok(expected == current)
     }
 
     /// The evaluation digests an approval names.
-    pub(crate) fn approval_evaluation_refs(
-        &self,
-        approval_id: &str,
-    ) -> Result<Vec<ArtifactRef>> {
+    pub(crate) fn approval_evaluation_refs(&self, approval_id: &str) -> Result<Vec<ArtifactRef>> {
         let mut stmt = self
             .conn
             .prepare(
@@ -2188,12 +2265,8 @@ impl Store {
     /// Refuse to continue an invalidated lineage. The same reasoning as
     /// deployment: the data the run learned from is withdrawn.
     pub fn require_resumable(&self, snapshot: &ArtifactRef) -> Result<()> {
-        self.require_deployable(snapshot).map_err(|e| {
-            Error::new(
-                e.kind,
-                format!("lineage cannot be resumed: {}", e.context),
-            )
-        })
+        self.require_deployable(snapshot)
+            .map_err(|e| Error::new(e.kind, format!("lineage cannot be resumed: {}", e.context)))
     }
 
     /// Mark the signal retracted and record, for every affected snapshot,
@@ -2208,7 +2281,9 @@ impl Store {
                 .prepare("SELECT id, body FROM datasets ORDER BY id")
                 .map_err(db_err)?;
             let rows = stmt
-                .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))
+                .query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })
                 .map_err(db_err)?;
             for row in rows {
                 let (id, body) = row.map_err(db_err)?;
@@ -2228,7 +2303,9 @@ impl Store {
                 .prepare("SELECT body, schema FROM runs ORDER BY id")
                 .map_err(db_err)?;
             let rows = stmt
-                .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)))
+                .query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+                })
                 .map_err(db_err)?;
             for row in rows {
                 let (body, schema) = row.map_err(db_err)?;
@@ -2248,7 +2325,9 @@ impl Store {
                 .prepare("SELECT body, schema FROM checkpoints ORDER BY id")
                 .map_err(db_err)?;
             let rows = stmt
-                .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)))
+                .query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+                })
                 .map_err(db_err)?;
             for row in rows {
                 let (body, schema) = row.map_err(db_err)?;
@@ -2299,15 +2378,12 @@ impl Store {
     pub fn retention_horizon_ms(&self) -> Result<Option<u64>> {
         match self.meta("retention.horizon_ms")? {
             None => Ok(None),
-            Some(v) => v
-                .parse()
-                .map(Some)
-                .map_err(|_| {
-                    Error::new(
-                        ErrorKind::IncompatibleState,
-                        format!("retention.horizon_ms is not a number: {v}"),
-                    )
-                }),
+            Some(v) => v.parse().map(Some).map_err(|_| {
+                Error::new(
+                    ErrorKind::IncompatibleState,
+                    format!("retention.horizon_ms is not a number: {v}"),
+                )
+            }),
         }
     }
 
@@ -2317,7 +2393,8 @@ impl Store {
     pub fn set_retention_horizon_ms(&self, horizon_ms: Option<u64>) -> Result<()> {
         match horizon_ms {
             Some(ms) => self.set_meta("retention.horizon_ms", &ms.to_string()),
-            None => self.conn
+            None => self
+                .conn
                 .execute("DELETE FROM meta WHERE key = 'retention.horizon_ms'", [])
                 .map_err(db_err)
                 .map(|_| ()),
@@ -2328,9 +2405,11 @@ impl Store {
     /// ownership record.
     pub fn meta(&self, key: &str) -> Result<Option<String>> {
         self.conn
-            .query_row("SELECT value FROM meta WHERE key = ?1", params![key], |row| {
-                row.get(0)
-            })
+            .query_row(
+                "SELECT value FROM meta WHERE key = ?1",
+                params![key],
+                |row| row.get(0),
+            )
             .optional()
             .map_err(db_err)
     }
@@ -2389,7 +2468,11 @@ impl Store {
         // frozen views and in-force signals keep their evidence readable:
         // the observation records live in their own tables, so the bytes
         // they protect are the content blocks
-        for observation in self.revision_observations()?.into_iter().chain(self.signal_roots()?) {
+        for observation in self
+            .revision_observations()?
+            .into_iter()
+            .chain(self.signal_roots()?)
+        {
             for block in observation.blocks {
                 live.insert(block.artifact);
             }
@@ -2423,7 +2506,9 @@ impl Store {
             .prepare("SELECT body, schema FROM datasets ORDER BY id")
             .map_err(db_err)?;
         let rows = stmt
-            .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)))
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+            })
             .map_err(db_err)?;
         for row in rows {
             let (body, schema) = row.map_err(db_err)?;
@@ -2445,7 +2530,9 @@ impl Store {
             .prepare("SELECT body, schema FROM signals WHERE status = 'accepted' ORDER BY id")
             .map_err(db_err)?;
         let rows = stmt
-            .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)))
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+            })
             .map_err(db_err)?;
         for row in rows {
             let (body, schema) = row.map_err(db_err)?;
@@ -2538,8 +2625,12 @@ fn require_schema(found: i64) -> Result<u32> {
 }
 
 fn decode<T: serde::de::DeserializeOwned>(body: &str, _schema: u32) -> Result<T> {
-    serde_json::from_str(body)
-        .map_err(|e| Error::new(ErrorKind::IncompatibleState, format!("record is unreadable: {e}")))
+    serde_json::from_str(body).map_err(|e| {
+        Error::new(
+            ErrorKind::IncompatibleState,
+            format!("record is unreadable: {e}"),
+        )
+    })
 }
 
 fn kind_str(kind: SignalKind) -> &'static str {

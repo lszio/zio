@@ -119,14 +119,20 @@ impl Coordinator {
         // A receipt from before this claim cannot be honoured, so every
         // lease the previous owner held is released here.
         self.store.reclaim_leases()?;
-        let record = OwnershipRecord { epoch: next.epoch, pid };
+        let record = OwnershipRecord {
+            epoch: next.epoch,
+            pid,
+        };
         self.store
-            .set_meta("coordinator.owner", &serde_json::to_string(&record).map_err(|e| {
-                Error::new(
-                    ErrorKind::BackendFailed,
-                    format!("serialize ownership record: {e}"),
-                )
-            })?)
+            .set_meta(
+                "coordinator.owner",
+                &serde_json::to_string(&record).map_err(|e| {
+                    Error::new(
+                        ErrorKind::BackendFailed,
+                        format!("serialize ownership record: {e}"),
+                    )
+                })?,
+            )
             .map_err(|e| {
                 Error::new(
                     ErrorKind::BackendFailed,
@@ -231,13 +237,22 @@ impl Coordinator {
     }
 
     /// Extend a lease for an attempt that is still working.
-    pub fn renew_lease(&self, actor: &Actor, attempt_id: &str, lease_ms: i64, now_ms: i64) -> Result<i64> {
+    pub fn renew_lease(
+        &self,
+        actor: &Actor,
+        attempt_id: &str,
+        lease_ms: i64,
+        now_ms: i64,
+    ) -> Result<i64> {
         actor.require(ActorRole::Operator, "renewing a lease")?;
         let attempt = self.get_attempt(attempt_id)?;
         if attempt.lease_expires_ms <= now_ms {
             return Err(Error::new(
                 ErrorKind::Conflict,
-                format!("attempt {attempt_id} lease expired at {}; renewals cannot revive it", attempt.lease_expires_ms),
+                format!(
+                    "attempt {attempt_id} lease expired at {}; renewals cannot revive it",
+                    attempt.lease_expires_ms
+                ),
             ));
         }
         let next = now_ms + lease_ms;
@@ -264,7 +279,14 @@ impl Coordinator {
         now_ms: i64,
     ) -> Result<u32> {
         let epoch = self.ownership()?.map(|o| o.epoch).unwrap_or(0);
-        self.commit_attempt_stamped(actor, attempt_id, new_head, expected_head_version, now_ms, epoch)
+        self.commit_attempt_stamped(
+            actor,
+            attempt_id,
+            new_head,
+            expected_head_version,
+            now_ms,
+            epoch,
+        )
     }
 
     /// Commit an attempt's result, refusing one stamped with a coordinator
@@ -303,7 +325,9 @@ impl Coordinator {
         if attempt.lease_expires_ms <= now_ms {
             return Err(Error::new(
                 ErrorKind::Conflict,
-                format!("attempt {attempt_id} lease expired; its result must not overwrite newer progress"),
+                format!(
+                    "attempt {attempt_id} lease expired; its result must not overwrite newer progress"
+                ),
             ));
         }
         // mark the attempt spent BEFORE the head move: one attempt commits once
@@ -314,7 +338,8 @@ impl Coordinator {
                 rusqlite::params![attempt_id],
             )
             .map_err(crate::store::db_err)?;
-        self.store.advance_head(actor, &attempt.branch, new_head, expected_head_version)
+        self.store
+            .advance_head(actor, &attempt.branch, new_head, expected_head_version)
     }
 
     /// Kill an attempt: free the slot, deactivate the lease. The steps it
@@ -372,10 +397,15 @@ impl Coordinator {
             .map_err(crate::store::db_err)?;
         let rows = stmt
             .query_map([], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, u32>(1)?, row.get::<_, String>(2)?))
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, u32>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
             })
             .map_err(crate::store::db_err)?;
-        rows.collect::<std::result::Result<Vec<_>, _>>().map_err(crate::store::db_err)
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(crate::store::db_err)
     }
 
     fn get_attempt(&self, attempt_id: &str) -> Result<Attempt> {

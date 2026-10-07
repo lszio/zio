@@ -5,9 +5,9 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use loom::install;
 use loom::mock::test_support::parse_answer_lines;
 use loom::mock::{RecordingLlmHost, ScriptedLlmHost};
-use loom::install;
 use zio_core::context::{EvalContext, EvalRuntime};
 use zio_core::env::Env;
 use zio_core::error::EvalError;
@@ -15,13 +15,16 @@ use zio_core::value::Value;
 
 fn workspace_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .ancestors().nth(3)
+        .ancestors()
+        .nth(3)
         .expect("crate lives in the repository layout")
         .to_path_buf()
 }
 
 fn eval_str(ctx: &EvalContext, src: &str) -> Result<Value, EvalError> {
-    let source_id = ctx.source_map().register("proposer-test".into(), src.to_string());
+    let source_id = ctx
+        .source_map()
+        .register("proposer-test".into(), src.to_string());
     let forms = zio_core::reader::reader::read_program_with_source(src, source_id)
         .map_err(|e| EvalError::custom(format!("parse error: {e}")))?;
     let mut last = Value::Nil;
@@ -52,7 +55,9 @@ fn bare_ctx() -> EvalContext {
 /// A context with stdlib + proposer.zio loaded and a recording-wrapped
 /// scripted llm host installed. Returns the scripted host handle so tests
 /// can inspect the last prompt/options.
-fn proposer_ctx(scripted: ScriptedLlmHost) -> (EvalContext, Arc<RecordingLlmHost>, Arc<ScriptedLlmHost>) {
+fn proposer_ctx(
+    scripted: ScriptedLlmHost,
+) -> (EvalContext, Arc<RecordingLlmHost>, Arc<ScriptedLlmHost>) {
     let ctx = bare_ctx();
     let scripted = Arc::new(scripted);
     let recorder = Arc::new(RecordingLlmHost::new(scripted.clone()));
@@ -107,8 +112,10 @@ const FORMAT_GARBAGE: &str = "```text\n;; thinking out loud\n;; still thinking\n
 
 #[test]
 fn proposer_retries_then_succeeds() {
-    let (ctx, recorder, _) =
-        proposer_ctx(ScriptedLlmHost::new([FORMAT_GARBAGE.into(), "(+ x 1)".into()]));
+    let (ctx, recorder, _) = proposer_ctx(ScriptedLlmHost::new([
+        FORMAT_GARBAGE.into(),
+        "(+ x 1)".into(),
+    ]));
     let got = propose(&ctx, "[]").unwrap();
     assert_eq!(as_strings(got), vec!["(+ x 1)"]);
     assert_eq!(recorder.calls(), 2);
@@ -116,8 +123,10 @@ fn proposer_retries_then_succeeds() {
 
 #[test]
 fn proposer_returns_empty_after_exhausted_retries() {
-    let (ctx, recorder, _) =
-        proposer_ctx(ScriptedLlmHost::new([FORMAT_GARBAGE.into(), FORMAT_GARBAGE.into()]));
+    let (ctx, recorder, _) = proposer_ctx(ScriptedLlmHost::new([
+        FORMAT_GARBAGE.into(),
+        FORMAT_GARBAGE.into(),
+    ]));
     let got = propose(&ctx, "[]").unwrap();
     assert_eq!(as_strings(got), Vec::<String>::new());
     assert_eq!(recorder.calls(), 2); // initial attempt + 1 retry
@@ -133,8 +142,7 @@ fn proposer_caps_at_k_and_dedups_first_occurrence() {
 
 #[test]
 fn proposer_is_deterministic_across_calls() {
-    let (ctx, _, handle) =
-        proposer_ctx(ScriptedLlmHost::new(["(+ x 1)".into(), "(+ x 1)".into()]));
+    let (ctx, _, handle) = proposer_ctx(ScriptedLlmHost::new(["(+ x 1)".into(), "(+ x 1)".into()]));
     let a = propose(&ctx, "[]").unwrap();
     let b = propose(&ctx, "[]").unwrap();
     assert_eq!(a, b);
@@ -145,8 +153,7 @@ fn proposer_is_deterministic_across_calls() {
 
 #[test]
 fn history_and_task_render_into_the_prompt() {
-    let (ctx, _, handle) =
-        proposer_ctx(ScriptedLlmHost::new(["(+ x 1)".into(), "(* x 2)".into()]));
+    let (ctx, _, handle) = proposer_ctx(ScriptedLlmHost::new(["(+ x 1)".into(), "(* x 2)".into()]));
     let _ = propose(&ctx, "[]").unwrap();
     let without_history = handle.last_prompt.lock().clone();
     assert!(!without_history.contains("generation 0"));
@@ -212,6 +219,10 @@ fn zio_parse_matches_the_rust_reference() {
             .into_iter()
             .map(Value::String)
             .collect();
-        assert_eq!(zio_lines, Value::Vector(expected.into_iter().collect()), "answer: {answer:?}");
+        assert_eq!(
+            zio_lines,
+            Value::Vector(expected.into_iter().collect()),
+            "answer: {answer:?}"
+        );
     }
 }

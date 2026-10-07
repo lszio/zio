@@ -9,7 +9,97 @@ use crate::context::EvalEngine;
 use crate::env::Env;
 use crate::error::EvalError;
 use crate::special::TailResult;
-use crate::value::{is_truthy, NativeFn, Value};
+use crate::value::{NativeFn, Value, is_truthy};
+
+// ── Conj / Into / Unique ───────────────────────────────────────────
+
+/// The elements of a collection as a vector, whatever kind it is.
+fn elements(value: &Value) -> Result<Vector<Value>, EvalError> {
+    match value {
+        Value::List(items) | Value::Vector(items) => Ok(items.clone()),
+        Value::Nil => Ok(Vector::new()),
+        Value::Map(map) => Ok(map
+            .iter()
+            .map(|(key, value)| Value::Vector(vector![key.clone(), value.clone()]))
+            .collect()),
+        other => Err(EvalError::type_error(
+            "sequential or map",
+            other.value_type(),
+        )),
+    }
+}
+
+/// `(conj coll x)` — append `x`, keeping the collection's kind.
+///
+/// A vector stays a vector and a list stays a list, because callers
+/// build on the result: a list of pairs that came back as a vector
+/// would break `cons` and `first` on the next line of the same program.
+pub fn conj(args: Vector<Value>, _engine: &dyn EvalEngine) -> Result<Value, EvalError> {
+    if args.len() != 2 {
+        return Err(EvalError::wrong_arg_count(2, args.len()));
+    }
+    match &args[0] {
+        Value::List(items) => {
+            let mut items = items.clone();
+            items.push_back(args[1].clone());
+            Ok(Value::List(items))
+        }
+        other => {
+            let mut items = elements(other)?;
+            items.push_back(args[1].clone());
+            Ok(Value::Vector(items))
+        }
+    }
+}
+
+/// `(into to from)` — append every element of `from` to `to`.
+///
+/// Present because "collect these into that" is a different operation
+/// from appending one item, and writing it as a `reduce` at every call
+/// site made the intent unreadable.
+pub fn into(args: Vector<Value>, _engine: &dyn EvalEngine) -> Result<Value, EvalError> {
+    if args.len() != 2 {
+        return Err(EvalError::wrong_arg_count(2, args.len()));
+    }
+    let additions = elements(&args[1])?;
+    match &args[0] {
+        Value::List(items) => {
+            let mut items = items.clone();
+            for item in additions {
+                items.push_back(item);
+            }
+            Ok(Value::List(items))
+        }
+        other => {
+            let mut items = elements(other)?;
+            for item in additions {
+                items.push_back(item);
+            }
+            Ok(Value::Vector(items))
+        }
+    }
+}
+
+/// `(unique coll)` — the elements with later duplicates removed.
+///
+/// Order is preserved: the first occurrence of each value is the one
+/// kept, so a dedup over a record list is stable.
+pub fn unique(args: Vector<Value>, _engine: &dyn EvalEngine) -> Result<Value, EvalError> {
+    if args.len() != 1 {
+        return Err(EvalError::wrong_arg_count(1, args.len()));
+    }
+    let items = elements(&args[0])?;
+    let mut seen: Vec<Value> = Vec::with_capacity(items.len());
+    let mut kept = Vector::new();
+    for item in items {
+        if seen.contains(&item) {
+            continue;
+        }
+        seen.push(item.clone());
+        kept.push_back(item);
+    }
+    Ok(Value::Vector(kept))
+}
 
 // ── Cons / List Operations ─────────────────────────────────────────
 
@@ -32,7 +122,10 @@ pub fn car(args: Vector<Value>, _engine: &dyn EvalEngine) -> Result<Value, EvalE
         return Err(EvalError::wrong_arg_count(1, args.len()));
     }
     match &args[0] {
-        Value::List(l) => l.front().cloned().ok_or_else(|| EvalError::custom("cannot take car of empty list")),
+        Value::List(l) => l
+            .front()
+            .cloned()
+            .ok_or_else(|| EvalError::custom("cannot take car of empty list")),
         other => Err(EvalError::type_error("list", other.value_type())),
     }
 }
@@ -191,19 +284,24 @@ pub fn get_fn(args: Vector<Value>, _engine: &dyn EvalEngine) -> Result<Value, Ev
             if let Some(val) = v.get(idx) {
                 Ok(val.clone())
             } else {
-                default.cloned().ok_or_else(|| EvalError::index_out_of_bounds(idx, v.len()))
+                default
+                    .cloned()
+                    .ok_or_else(|| EvalError::index_out_of_bounds(idx, v.len()))
             }
         }
         Value::Map(m) => {
             if let Some(val) = m.get(key) {
                 Ok(val.clone())
             } else {
-                default.cloned().ok_or_else(|| {
-                    EvalError::custom(format!("key not found in map: {key}"))
-                })
+                default
+                    .cloned()
+                    .ok_or_else(|| EvalError::custom(format!("key not found in map: {key}")))
             }
         }
-        other => Err(EvalError::type_error("sequential or map", other.value_type())),
+        other => Err(EvalError::type_error(
+            "sequential or map",
+            other.value_type(),
+        )),
     }
 }
 
@@ -349,12 +447,16 @@ pub fn slice_fn(args: Vector<Value>, _engine: &dyn EvalEngine) -> Result<Value, 
         Value::Vector(v) => {
             let s = start.min(v.len());
             let e = end.min(v.len()).max(s);
-            Ok(Value::Vector(v.clone().into_iter().skip(s).take(e - s).collect()))
+            Ok(Value::Vector(
+                v.clone().into_iter().skip(s).take(e - s).collect(),
+            ))
         }
         Value::List(l) => {
             let s = start.min(l.len());
             let e = end.min(l.len()).max(s);
-            Ok(Value::List(l.clone().into_iter().skip(s).take(e - s).collect()))
+            Ok(Value::List(
+                l.clone().into_iter().skip(s).take(e - s).collect(),
+            ))
         }
         other => Err(EvalError::type_error("sequential", other.value_type())),
     }
@@ -404,31 +506,100 @@ pub fn sort_fn(args: Vector<Value>, engine: &dyn EvalEngine) -> Result<Value, Ev
 
 pub fn register(env: &Arc<Env>) {
     // Cons / List
-    env.set("cons".into(), Value::NativeFunction(NativeFn::new("cons", cons)));
-    env.set("car".into(), Value::NativeFunction(NativeFn::new("car", car)));
-    env.set("cdr".into(), Value::NativeFunction(NativeFn::new("cdr", cdr)));
-    env.set("list".into(), Value::NativeFunction(NativeFn::new("list", list)));
+    env.set(
+        "cons".into(),
+        Value::NativeFunction(NativeFn::new("cons", cons)),
+    );
+    env.set(
+        "car".into(),
+        Value::NativeFunction(NativeFn::new("car", car)),
+    );
+    env.set(
+        "cdr".into(),
+        Value::NativeFunction(NativeFn::new("cdr", cdr)),
+    );
+    env.set(
+        "list".into(),
+        Value::NativeFunction(NativeFn::new("list", list)),
+    );
 
     // Sequence operations
-    env.set("map".into(), Value::NativeFunction(NativeFn::new("map", map_fn)));
-    env.set("filter".into(), Value::NativeFunction(NativeFn::new("filter", filter_fn)));
-    env.set("reduce".into(), Value::NativeFunction(NativeFn::new("reduce", reduce_fn)));
-    env.set("apply".into(), Value::NativeFunction(NativeFn::new("apply", apply_fn)));
-    env.set("get".into(), Value::NativeFunction(NativeFn::new("get", get_fn)));
-    env.set("count".into(), Value::NativeFunction(NativeFn::new("count", count_fn)));
+    env.set(
+        "map".into(),
+        Value::NativeFunction(NativeFn::new("map", map_fn)),
+    );
+    env.set(
+        "filter".into(),
+        Value::NativeFunction(NativeFn::new("filter", filter_fn)),
+    );
+    env.set(
+        "reduce".into(),
+        Value::NativeFunction(NativeFn::new("reduce", reduce_fn)),
+    );
+    env.set(
+        "apply".into(),
+        Value::NativeFunction(NativeFn::new("apply", apply_fn)),
+    );
+    env.set(
+        "get".into(),
+        Value::NativeFunction(NativeFn::new("get", get_fn)),
+    );
+    env.set(
+        "count".into(),
+        Value::NativeFunction(NativeFn::new("count", count_fn)),
+    );
 
-// ── Map operations ─────────────────────────────────────────────────
-    env.set("put".into(), Value::NativeFunction(NativeFn::new("put", put_fn)));
-    env.set("keys".into(), Value::NativeFunction(NativeFn::new("keys", keys_fn)));
-    env.set("vals".into(), Value::NativeFunction(NativeFn::new("vals", vals_fn)));
-    env.set("dissoc".into(), Value::NativeFunction(NativeFn::new("dissoc", dissoc_fn)));
+    // ── Map operations ─────────────────────────────────────────────────
+    env.set(
+        "put".into(),
+        Value::NativeFunction(NativeFn::new("put", put_fn)),
+    );
+    env.set(
+        "keys".into(),
+        Value::NativeFunction(NativeFn::new("keys", keys_fn)),
+    );
+    env.set(
+        "vals".into(),
+        Value::NativeFunction(NativeFn::new("vals", vals_fn)),
+    );
+    env.set(
+        "dissoc".into(),
+        Value::NativeFunction(NativeFn::new("dissoc", dissoc_fn)),
+    );
 
     // Vector operations
-    env.set("vector".into(), Value::NativeFunction(NativeFn::new("vector", vector_fn)));
-    env.set("vector-conj".into(), Value::NativeFunction(NativeFn::new("vector-conj", vector_conj_fn)));
+    env.set(
+        "vector".into(),
+        Value::NativeFunction(NativeFn::new("vector", vector_fn)),
+    );
+    env.set(
+        "vector-conj".into(),
+        Value::NativeFunction(NativeFn::new("vector-conj", vector_conj_fn)),
+    );
+    env.set(
+        "conj".into(),
+        Value::NativeFunction(NativeFn::new("conj", conj)),
+    );
+    env.set(
+        "into".into(),
+        Value::NativeFunction(NativeFn::new("into", into)),
+    );
+    env.set(
+        "unique".into(),
+        Value::NativeFunction(NativeFn::new("unique", unique)),
+    );
 
     // Sequence generation and sorting
-    env.set("range".into(), Value::NativeFunction(NativeFn::new("range", range_fn)));
-    env.set("slice".into(), Value::NativeFunction(NativeFn::new("slice", slice_fn)));
-    env.set("sort".into(), Value::NativeFunction(NativeFn::new("sort", sort_fn)));
+    env.set(
+        "range".into(),
+        Value::NativeFunction(NativeFn::new("range", range_fn)),
+    );
+    env.set(
+        "slice".into(),
+        Value::NativeFunction(NativeFn::new("slice", slice_fn)),
+    );
+    env.set(
+        "sort".into(),
+        Value::NativeFunction(NativeFn::new("sort", sort_fn)),
+    );
 }

@@ -1,0 +1,30 @@
+(load "contracts.zio")
+(defn artifact--path [store digest]
+  (let [hex (grove--ref-hex digest)]
+    (str (get store :root) "/artifacts/objects/" (slice hex 0 2) "/" hex)))
+(defn artifact--get [store digest]
+  (let* [hex (grove--ref-hex digest) path (artifact--path store hex)]
+    (grove--require (not (nil? (host/stat-path path))) "artifact-unavailable" (str "missing object " hex))
+    (let [bytes (host/read-bytes path)]
+      (grove--require (= hex (grove--digest bytes)) "artifact-unavailable" (str "corrupt object " hex))
+      bytes)))
+(defn artifact--put [store bytes]
+  (grove--authorize store "reader")
+  (let* [buffer (host/bytes bytes) hex (grove--digest buffer) path (artifact--path store hex)]
+    (if (host/stat-path path)
+      (artifact--get store hex)
+      (host/write-atomic path buffer))
+    (artifact--get store hex)
+    hex))
+(defn artifact--objects [store]
+  (let [root (str (get store :root) "/artifacts/objects")]
+    (if (nil? (host/stat-path root)) []
+      (reduce (fn [out shard]
+        (let [directory (str root "/" shard)]
+          (if (= (grove--get-key (host/stat-path directory) :type nil) :directory)
+            (reduce (fn [acc name]
+              (if (grove--hex? name)
+                (let* [path (str directory "/" name) stat (host/stat-path path)]
+                  (grove--require (= :file (get stat :type)) "artifact-unavailable" "object is not regular file")
+                  (conj acc {:digest name :modified-ms (get stat :modified-ms) :path path})) acc)) out (host/list-dir directory))
+            out))) [] (host/list-dir root)))))

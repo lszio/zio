@@ -65,7 +65,10 @@ fn signal(id: &str, key: &str, task: &str) -> LearningSignal {
 }
 
 fn observation(id: &str, task: &str, store: &Store) -> Observation {
-    let pixels = store.artifacts().put(format!("pixels-{id}").as_bytes()).unwrap();
+    let pixels = store
+        .artifacts()
+        .put(format!("pixels-{id}").as_bytes())
+        .unwrap();
     let observation = Observation {
         schema: SCHEMA_VERSION,
         id: id.to_string(),
@@ -81,12 +84,17 @@ fn observation(id: &str, task: &str, store: &Store) -> Observation {
         modality_mask: vec![true, false],
         training_permitted: true,
     };
-    store.put_observation(&Actor::new("reader", ActorRole::Reader), &observation).unwrap();
+    store
+        .put_observation(&Actor::new("reader", ActorRole::Reader), &observation)
+        .unwrap();
     observation
 }
 
 fn snapshot(store: &Store, name: &str) -> ArtifactRef {
-    let weights = store.artifacts().put(format!("weights-{name}").as_bytes()).unwrap();
+    let weights = store
+        .artifacts()
+        .put(format!("weights-{name}").as_bytes())
+        .unwrap();
     let snapshot = ModelSnapshot {
         schema: SCHEMA_VERSION,
         owner: "trainer".to_string(),
@@ -212,7 +220,9 @@ fn age(store: &Store, artifact: &ArtifactRef, age: Duration) {
         .write(true)
         .open(&path)
         .unwrap_or_else(|e| panic!("open {}: {e}", path.display()));
-    let when = SystemTime::now().checked_sub(age).expect("age within range");
+    let when = SystemTime::now()
+        .checked_sub(age)
+        .expect("age within range");
     file.set_modified(when).unwrap();
 }
 
@@ -229,13 +239,19 @@ fn cleanup_deletes_only_unreachable_objects_past_the_retention_horizon() {
 
     // signal → dataset → run → checkpoint → branch head, the deepest root
     observation("obs-sig-retract", "task-1", &store);
-    store.submit_signal(&annotator(), &signal("sig-retract", "k1", "task-1")).unwrap();
-    store.freeze_dataset(&operator(), &revision("ds-1", "task-1", &["sig-retract"])).unwrap();
+    store
+        .submit_signal(&annotator(), &signal("sig-retract", "k1", "task-1"))
+        .unwrap();
+    store
+        .freeze_dataset(&operator(), &revision("ds-1", "task-1", &["sig-retract"]))
+        .unwrap();
 
     let deployed = snapshot(&store, "deployed");
     let in_force = snapshot(&store, "in-force");
     let run_id = "run-lineage";
-    store.put_run(&operator(), &run(&run_id, "task-1", "ds-1", deployed)).unwrap();
+    store
+        .put_run(&operator(), &run(&run_id, "task-1", "ds-1", deployed))
+        .unwrap();
     let ckpt = committed_checkpoint(&store, &dir, "head", &run_id, 1);
     store
         .put_branch(
@@ -253,7 +269,9 @@ fn cleanup_deletes_only_unreachable_objects_past_the_retention_horizon() {
         .unwrap();
     let p = protocol("proto-1", "ds-1");
     passing(&store, &p, &deployed);
-    evaluation::publish_snapshot(&store, &publisher(), &p, &deployed, None).unwrap().0;
+    evaluation::publish_snapshot(&store, &publisher(), &p, &deployed, None)
+        .unwrap()
+        .0;
 
     // garbage: a crashed writer's committed-then-abandoned object, and one
     // orphaned parameter that no record names any more
@@ -269,7 +287,10 @@ fn cleanup_deletes_only_unreachable_objects_past_the_retention_horizon() {
         .unwrap();
     let kept = store.collect_artifacts().unwrap();
     assert_eq!(kept.deleted, Vec::<ArtifactRef>::new());
-    assert!(store.artifacts().exists(&orphan_old), "inside the horizon, nothing is collected");
+    assert!(
+        store.artifacts().exists(&orphan_old),
+        "inside the horizon, nothing is collected"
+    );
     assert!(store.artifacts().exists(&orphan_fresh));
 
     // a zero horizon declares: collect everything no root can reach
@@ -286,11 +307,17 @@ fn cleanup_deletes_only_unreachable_objects_past_the_retention_horizon() {
     // every root's bytes are still there, and the refusal is reported
     for (what, digest) in [
         ("active publication", deployed),
-        ("branch head checkpoint", ArtifactRef::parse_hex(&ckpt.state_artifact.to_hex()).unwrap()),
+        (
+            "branch head checkpoint",
+            ArtifactRef::parse_hex(&ckpt.state_artifact.to_hex()).unwrap(),
+        ),
         ("checkpoint state artifact", ckpt.state_artifact),
         ("snapshot manifest", deployed),
     ] {
-        assert!(store.artifacts().exists(&digest), "{what} was collected while reachable");
+        assert!(
+            store.artifacts().exists(&digest),
+            "{what} was collected while reachable"
+        );
     }
     assert!(
         report.refused.contains(&deployed) || report.refused.contains(&ckpt.state_artifact),
@@ -317,14 +344,19 @@ fn a_snapshot_parameter_is_live_while_its_snapshot_is_the_deployment() {
     let weights = snapshot.params[0].artifact;
     let p = protocol("proto-params", "ds-none");
     passing(&store, &p, &deployed);
-    evaluation::publish_snapshot(&store, &publisher(), &p, &deployed, None).unwrap().0;
+    evaluation::publish_snapshot(&store, &publisher(), &p, &deployed, None)
+        .unwrap()
+        .0;
     // a second parameter nobody names, left over from an abandoned fork
     let orphan = store.artifacts().put(b"unreferenced-weights").unwrap();
     age(&store, &orphan, Duration::from_secs(1));
     age(&store, &weights, Duration::from_secs(1));
 
     let live = store.live_artifacts().unwrap();
-    assert!(live.contains(&weights), "a deployed snapshot's parameter is live");
+    assert!(
+        live.contains(&weights),
+        "a deployed snapshot's parameter is live"
+    );
     assert!(!live.contains(&orphan));
 
     store.set_retention_horizon_ms(Some(0)).unwrap();
@@ -348,15 +380,27 @@ fn retracting_a_signal_invalidates_the_lineage_that_consumed_it() {
 
     observation("obs-sig-bad", "task-1", &store);
     observation("obs-sig-good", "task-2", &store);
-    store.submit_signal(&annotator(), &signal("sig-bad", "k1", "task-1")).unwrap();
-    store.submit_signal(&annotator(), &signal("sig-good", "k2", "task-2")).unwrap();
-    store.freeze_dataset(&operator(), &revision("ds-bad", "task-1", &["sig-bad"])).unwrap();
-    store.freeze_dataset(&operator(), &revision("ds-good", "task-2", &["sig-good"])).unwrap();
+    store
+        .submit_signal(&annotator(), &signal("sig-bad", "k1", "task-1"))
+        .unwrap();
+    store
+        .submit_signal(&annotator(), &signal("sig-good", "k2", "task-2"))
+        .unwrap();
+    store
+        .freeze_dataset(&operator(), &revision("ds-bad", "task-1", &["sig-bad"]))
+        .unwrap();
+    store
+        .freeze_dataset(&operator(), &revision("ds-good", "task-2", &["sig-good"]))
+        .unwrap();
 
     let tainted = snapshot(&store, "tainted");
     let clean = snapshot(&store, "clean");
-    store.put_run(&operator(), &run("run-bad", "task-1", "ds-bad", tainted)).unwrap();
-    store.put_run(&operator(), &run("run-good", "task-2", "ds-good", clean)).unwrap();
+    store
+        .put_run(&operator(), &run("run-bad", "task-1", "ds-bad", tainted))
+        .unwrap();
+    store
+        .put_run(&operator(), &run("run-good", "task-2", "ds-good", clean))
+        .unwrap();
     let ckpt_bad = committed_checkpoint(&store, &dir, "bad", "run-bad", 1);
     let ckpt_good = committed_checkpoint(&store, &dir, "good", "run-good", 1);
 
@@ -370,16 +414,25 @@ fn retracting_a_signal_invalidates_the_lineage_that_consumed_it() {
 
     let propagation = store.retract_signal(&annotator(), "sig-bad").unwrap();
     assert_eq!(propagation.signal_id, "sig-bad");
-    assert!(propagation.invalidated_snapshots.contains(&tainted), "the consuming snapshot must be invalidated");
+    assert!(
+        propagation.invalidated_snapshots.contains(&tainted),
+        "the consuming snapshot must be invalidated"
+    );
     assert!(
         !propagation.invalidated_snapshots.contains(&clean),
         "a snapshot trained on unrelated data must not be touched"
     );
-    assert_eq!(propagation.invalidated_checkpoints, vec![ckpt_bad.id.clone()]);
+    assert_eq!(
+        propagation.invalidated_checkpoints,
+        vec![ckpt_bad.id.clone()]
+    );
     assert!(!propagation.invalidated_checkpoints.contains(&ckpt_good.id));
 
     // the frozen revision keeps its member — retraction is not a rewrite
-    assert_eq!(store.get_dataset("ds-bad").unwrap().signal_ids, vec!["sig-bad".to_string()]);
+    assert_eq!(
+        store.get_dataset("ds-bad").unwrap().signal_ids,
+        vec!["sig-bad".to_string()]
+    );
 
     // deployment eligibility follows
     let err = evaluation::publish_snapshot(&store, &publisher(), &p, &tainted, None).unwrap_err();
@@ -399,11 +452,16 @@ fn retracting_a_signal_invalidates_the_lineage_that_consumed_it() {
     )
     .unwrap_err();
     assert_eq!(err.kind, ErrorKind::IncompatibleState);
-    assert!(store.get_run("run-resumed").is_err(), "a refused resume creates no run");
+    assert!(
+        store.get_run("run-resumed").is_err(),
+        "a refused resume creates no run"
+    );
 
     // the unrelated snapshot still publishes
     assert_eq!(
-        evaluation::publish_snapshot(&store, &publisher(), &p_good, &clean, None).unwrap().0,
+        evaluation::publish_snapshot(&store, &publisher(), &p_good, &clean, None)
+            .unwrap()
+            .0,
         1
     );
 }
@@ -417,18 +475,30 @@ fn an_invalidated_snapshot_reports_its_revoked_signal() {
     std::fs::create_dir_all(&dir).unwrap();
     let store = Store::open(&root).unwrap();
     observation("obs-sig-v", "task-1", &store);
-    store.submit_signal(&annotator(), &signal("sig-v", "k1", "task-1")).unwrap();
-    store.freeze_dataset(&operator(), &revision("ds-v", "task-1", &["sig-v"])).unwrap();
+    store
+        .submit_signal(&annotator(), &signal("sig-v", "k1", "task-1"))
+        .unwrap();
+    store
+        .freeze_dataset(&operator(), &revision("ds-v", "task-1", &["sig-v"]))
+        .unwrap();
     let tainted = snapshot(&store, "tainted");
-    store.put_run(&operator(), &run("run-v", "task-1", "ds-v", tainted)).unwrap();
+    store
+        .put_run(&operator(), &run("run-v", "task-1", "ds-v", tainted))
+        .unwrap();
     committed_checkpoint(&store, &dir, "v", "run-v", 1);
 
     assert!(store.snapshot_invalidation(&tainted).unwrap().is_none());
     store.retract_signal(&annotator(), "sig-v").unwrap();
-    let invalidation = store.snapshot_invalidation(&tainted).unwrap().expect("invalidated");
+    let invalidation = store
+        .snapshot_invalidation(&tainted)
+        .unwrap()
+        .expect("invalidated");
     assert_eq!(invalidation.revoked_signals, vec!["sig-v".to_string()]);
     assert_eq!(invalidation.dataset_revisions, vec!["ds-v".to_string()]);
-    assert!(invalidation.recoverable == false, "retracted data is not recoverable by redeploy");
+    assert!(
+        invalidation.recoverable == false,
+        "retracted data is not recoverable by redeploy"
+    );
 }
 
 // ── (c) non-recoverable history ────────────────────────────────────
@@ -439,10 +509,16 @@ fn resumable_world(name: &str) -> (PathBuf, PathBuf, Store, String, String) {
     std::fs::create_dir_all(&dir).unwrap();
     let store = Store::open(&root).unwrap();
     observation("obs-sig-r", "task-1", &store);
-    store.submit_signal(&annotator(), &signal("sig-r", "k1", "task-1")).unwrap();
-    store.freeze_dataset(&operator(), &revision("ds-r", "task-1", &["sig-r"])).unwrap();
+    store
+        .submit_signal(&annotator(), &signal("sig-r", "k1", "task-1"))
+        .unwrap();
+    store
+        .freeze_dataset(&operator(), &revision("ds-r", "task-1", &["sig-r"]))
+        .unwrap();
     let base = snapshot(&store, "base");
-    store.put_run(&operator(), &run("run-r", "task-1", "ds-r", base)).unwrap();
+    store
+        .put_run(&operator(), &run("run-r", "task-1", "ds-r", base))
+        .unwrap();
     let ckpt = committed_checkpoint(&store, &dir, "r", "run-r", 1);
     (root, dir, store, ckpt.id, ckpt.state_artifact.to_hex())
 }
@@ -467,7 +543,10 @@ fn a_checkpoint_whose_state_object_was_removed_cannot_resume() {
     .unwrap_err();
     assert_eq!(err.kind, ErrorKind::ArtifactUnavailable);
     assert!(err.to_string().contains(&state_hex), "{err}");
-    assert!(store.get_run("run-after-loss").is_err(), "no run may be created from lost state");
+    assert!(
+        store.get_run("run-after-loss").is_err(),
+        "no run may be created from lost state"
+    );
     drop((root, store));
 }
 
@@ -530,7 +609,10 @@ fn a_collected_state_object_leaves_the_checkpoint_unrecoverable() {
     age(&store, &state, Duration::from_secs(1));
     store.set_retention_horizon_ms(Some(0)).unwrap();
     let report = store.collect_artifacts().unwrap();
-    assert!(report.deleted.contains(&state), "an unreachable state object is collectable");
+    assert!(
+        report.deleted.contains(&state),
+        "an unreachable state object is collectable"
+    );
 
     let err = checkpoint::resume_plan(
         &store,
@@ -577,7 +659,9 @@ fn a_restart_reclaims_ownership_and_expired_leases() {
                 },
             )
             .unwrap();
-        store.put_run(&operator(), &run("run-a", "task-1", "ds-1", base)).unwrap();
+        store
+            .put_run(&operator(), &run("run-a", "task-1", "ds-1", base))
+            .unwrap();
         store
             .put_branch(
                 &operator(),
@@ -600,7 +684,16 @@ fn a_restart_reclaims_ownership_and_expired_leases() {
         );
         // a long lease the old process still believes it holds
         coordinator
-            .start_attempt(&operator(), "pop-1", "branch-a", "run-a", 100, 600_000, t0, "att-old")
+            .start_attempt(
+                &operator(),
+                "pop-1",
+                "branch-a",
+                "run-a",
+                100,
+                600_000,
+                t0,
+                "att-old",
+            )
             .unwrap();
         let first_epoch = coordinator.ownership().unwrap().unwrap().epoch;
         (coordinator, first_epoch)
@@ -609,7 +702,10 @@ fn a_restart_reclaims_ownership_and_expired_leases() {
     // ── the process restarts: a brand new store handle, a new coordinator ──
     let store = std::sync::Arc::new(Store::open(&root).unwrap());
     let coordinator = Coordinator::new(store.clone());
-    let ownership = coordinator.ownership().unwrap().expect("ownership is recorded");
+    let ownership = coordinator
+        .ownership()
+        .unwrap()
+        .expect("ownership is recorded");
     assert!(
         ownership.epoch > second,
         "a restart takes a new ownership epoch ({} <= {second})",
@@ -619,7 +715,10 @@ fn a_restart_reclaims_ownership_and_expired_leases() {
 
     // the previous owner's lease is reclaimed, so it is not a live slot
     assert!(
-        !coordinator.active_attempts(t1).unwrap().contains(&"att-old".to_string()),
+        !coordinator
+            .active_attempts(t1)
+            .unwrap()
+            .contains(&"att-old".to_string()),
         "a lease from a dead process must not stay active"
     );
 
@@ -630,7 +729,10 @@ fn a_restart_reclaims_ownership_and_expired_leases() {
         .unwrap_err();
     assert_eq!(err.kind, ErrorKind::Conflict);
     assert!(err.to_string().contains("ownership"), "{err}");
-    assert_eq!(store.get_branch("branch-a").unwrap().head.as_deref(), Some("ckpt-0"));
+    assert_eq!(
+        store.get_branch("branch-a").unwrap().head.as_deref(),
+        Some("ckpt-0")
+    );
     assert_eq!(store.get_branch("branch-a").unwrap().head_version, 0);
 
     // even the current owner cannot resurrect the reclaimed lease
@@ -649,11 +751,22 @@ fn ownership_is_taken_by_the_latest_handle() {
     let root = temp_root("ownership");
     let first = std::sync::Arc::new(Store::open(&root).unwrap());
     let first_coordinator = Coordinator::new(first.clone());
-    let epoch = first_coordinator.ownership().unwrap().expect("claimed").epoch;
+    let epoch = first_coordinator
+        .ownership()
+        .unwrap()
+        .expect("claimed")
+        .epoch;
 
     let second = std::sync::Arc::new(Store::open(&root).unwrap());
     let second_coordinator = Coordinator::new(second);
-    assert!(second_coordinator.ownership().unwrap().expect("claimed").epoch > epoch);
+    assert!(
+        second_coordinator
+            .ownership()
+            .unwrap()
+            .expect("claimed")
+            .epoch
+            > epoch
+    );
     let err = first_coordinator
         .commit_attempt_stamped(&operator(), "att-x", "ckpt-x", 0, 1, epoch)
         .unwrap_err();
@@ -671,7 +784,10 @@ fn live_artifacts_is_empty_for_a_store_with_no_records() {
     let orphan = store.artifacts().put(b"never-referenced").unwrap();
     age(&store, &orphan, Duration::from_secs(1));
     let report = store.collect_artifacts().unwrap();
-    assert!(report.deleted.is_empty(), "no declared horizon, no deletion");
+    assert!(
+        report.deleted.is_empty(),
+        "no declared horizon, no deletion"
+    );
     assert!(store.artifacts().exists(&orphan));
     assert_eq!(store.retention_horizon_ms().unwrap(), None);
 }

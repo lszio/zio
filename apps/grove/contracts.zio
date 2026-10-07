@@ -1,0 +1,89 @@
+;; Trusted application code; candidate contexts never receive store handles.
+;; The principal gate happens here, the role check is uniform, and the
+;; digest is the Rust-stable sha256("grove-artifact-v1\0" || bytes).
+(def grove--schema 1)
+(def grove--errors ["invalid-input" "capability-denied" "conflict" "incompatible-state" "budget-exhausted" "artifact-unavailable" "timeout" "cancelled" "backend-failed" "protocol-violation"])
+(defn grove--get-key [record key fallback]
+  (get record key (get record (name key) fallback)))
+(defn grove--fail [class detail] (error (str class ": " detail)))
+(defn grove--require [condition class detail]
+  (if condition true (grove--fail class detail)))
+(defn grove--schema! [schema]
+  (grove--require (= schema 1) "incompatible-state" (str "unsupported record schema " schema)))
+(defn grove--role-rank [role]
+  (get {"reader" 0 "annotator" 1 "operator" 2 "publisher" 3} role -1))
+(defn grove--authorize [store required]
+  (let* [principal (get store :principal)
+         rank (grove--role-rank (grove--get-key principal :role ""))]
+    (grove--require (>= rank (grove--role-rank required)) "capability-denied" (str required " role required"))))
+(defn grove--principal-id [store] (grove--get-key (get store :principal) :id ""))
+(defn grove--owned [store record]
+  (grove--require (= (grove--get-key record :owner nil) (grove--principal-id store)) "capability-denied" "record owner differs from authenticated principal"))
+(defn grove--contains [values value]
+  (> (count (filter (fn [x] (= x value)) values)) 0))
+(defn grove--unique [values]
+  (reduce (fn [out x] (if (grove--contains out x) out (conj out x))) [] values))
+(defn grove--hex? [value]
+  (if (string? value)
+    (if (= (count value) 64)
+      (= (count (filter (fn [c] (grove--contains ["0" "1" "2" "3" "4" "5" "6" "7" "8" "9" "a" "b" "c" "d" "e" "f"] c)) (map (fn [i] (slice value i (+ i 1))) (range 64)))) 64)
+      false)
+    false))
+(defn grove--digest [bytes]
+  (host/sha256 (host/byte-concat [(host/bytes "grove-artifact-v1") (host/bytes [0]) (host/bytes bytes)])))
+(defn grove--ref-hex [ref]
+  (if (string? ref)
+    (do (grove--require (grove--hex? ref) "invalid-input" "digest must be lowercase 64-hex") ref)
+    (let [bytes (grove--get-key ref :digest [])]
+      (grove--require (= (count bytes) 32) "invalid-input" "ArtifactRef must hold 32 bytes")
+      (apply str (map (fn [b]
+        (grove--require (and (int? b) (>= b 0) (< b 256)) "invalid-input" "digest byte out of range")
+        (str (slice "0123456789abcdef" (/ b 16) (+ (/ b 16) 1))
+             (slice "0123456789abcdef" (mod b 16) (+ (mod b 16) 1)))) bytes)))))
+(defn grove--hex-digit [digit]
+  (loop [i 0]
+    (if (= digit (slice "0123456789abcdef" i (+ i 1))) i
+      (if (= i 15) (grove--fail "invalid-input" "invalid hex digit") (recur (+ i 1))))))
+(defn grove--artifact-ref [ref]
+  (let [hex (grove--ref-hex ref)]
+    {:digest (map (fn [i]
+      (+ (* 16 (grove--hex-digit (slice hex i (+ i 1))))
+         (grove--hex-digit (slice hex (+ i 1) (+ i 2))))) (range 0 64 2))}))
+
+;; A new actor's identity is the request-bound principal; never trust a
+;; caller-supplied "approved=true" or "actor" field. The store treats
+;; the principal on the open handle as the only identity source.
+(defn grove--actor-of [store] (grove--principal-id store))
+
+;; Non-finite numbers would round-trip to null and make a frozen record
+;; describe a different value; we refuse them at the point of use.
+(defn grove--finite? [value]
+  (if (number? value)
+    (host/json-bytes value) ;; side effect test: encoding fails on non-finite
+    (grove--fail "invalid-input" "metric value must be a number")))
+(defn grove--require-finite-metrics [metrics]
+  (if (vector? metrics)
+    (reduce (fn [_ pair]
+      (let* [name (get pair 0) value (get pair 1)]
+        (grove--require (string? name) "invalid-input" "metric name must be a string")
+        (grove--require (number? value) "invalid-input" "metric value must be a number")
+        (host/json-bytes value) ;; raises on non-finite; surfaces invalid-input
+        nil) nil) nil metrics)
+    nil))
+
+;; Truthy detection that matches the Rust boolean semantics: only the
+;; literal false or nil is false. Used by the capability checks where a
+;; missing field must not silently grant authority.
+(defn grove--true? [value] (if (nil? value) false (= value false)))
+(defn grove--not-nil? [value] (if (nil? value) false true))
+
+;; A monotonic id derived from the request. Distinct from the principal,
+;; which is the authenticated identity: the operation id is the receipt's
+;; handle and must be reproducible from principal+route+payload so a
+;; retried request finds the same row.
+(defn grove--op-id [principal route payload]
+  (host/sha256 (host/byte-concat [
+    (host/bytes "grove-op-v1")
+    (host/bytes [0])
+    (host/bytes (str principal "\0" route "\0"))
+    (host/bytes (host/json-bytes payload))])))

@@ -19,7 +19,7 @@ use grove::contracts::{
 };
 use grove::coordinator::{Billing, Coordinator};
 use grove::store::Store;
-use grove::worker::{Frame, Isolation, Worker, WorkerConfig, PROTOCOL_VERSION};
+use grove::worker::{Frame, Isolation, PROTOCOL_VERSION, Worker, WorkerConfig};
 
 fn operator() -> Actor {
     Actor::new("trainer", ActorRole::Operator)
@@ -27,7 +27,8 @@ fn operator() -> Actor {
 
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .ancestors().nth(4)
+        .ancestors()
+        .nth(4)
         .unwrap()
         .to_path_buf()
 }
@@ -68,7 +69,10 @@ fn population_store(name: &str) -> (Arc<Store>, Coordinator) {
 }
 
 /// A population with two member branches and a shared 1000-step grant.
-fn seed_population(store: &Store, coordinator: &Coordinator) -> (String, String, String, ArtifactRef) {
+fn seed_population(
+    store: &Store,
+    coordinator: &Coordinator,
+) -> (String, String, String, ArtifactRef) {
     let op = operator();
     // branch heads need a base snapshot to point at
     let weights = store.artifacts().put(b"population-weights").unwrap();
@@ -88,7 +92,9 @@ fn seed_population(store: &Store, coordinator: &Coordinator) -> (String, String,
         ensemble: None,
         graph: None,
     };
-    let snapshot_digest = store.commit_manifest("ModelSnapshot", "trainer", &snapshot).unwrap();
+    let snapshot_digest = store
+        .commit_manifest("ModelSnapshot", "trainer", &snapshot)
+        .unwrap();
 
     let population = Population {
         schema: SCHEMA_VERSION,
@@ -131,7 +137,12 @@ fn seed_population(store: &Store, coordinator: &Coordinator) -> (String, String,
             )
             .unwrap();
     }
-    ("pop-1".to_string(), "branch-a".to_string(), "branch-b".to_string(), snapshot_digest)
+    (
+        "pop-1".to_string(),
+        "branch-a".to_string(),
+        "branch-b".to_string(),
+        snapshot_digest,
+    )
 }
 
 use std::path::PathBuf;
@@ -148,14 +159,32 @@ fn the_ledger_is_shared_and_forks_do_not_multiply_it() {
 
     // branch A's attempt debits the shared line
     coordinator
-        .start_attempt(&operator(), &pop, "branch-a", "run-branch-a", 300, 60_000, now(), "att-a1")
+        .start_attempt(
+            &operator(),
+            &pop,
+            "branch-a",
+            "run-branch-a",
+            300,
+            60_000,
+            now(),
+            "att-a1",
+        )
         .unwrap();
     let after_a = store.get_population(&pop).unwrap();
     assert_eq!(after_a.spent_steps, 300, "branch A bills the shared ledger");
 
     // branch B asks for one step more than the shared grant has left
     coordinator
-        .start_attempt(&operator(), &pop, "branch-b", "run-branch-b", 701, 60_000, now(), "att-b1")
+        .start_attempt(
+            &operator(),
+            &pop,
+            "branch-b",
+            "run-branch-b",
+            701,
+            60_000,
+            now(),
+            "att-b1",
+        )
         .unwrap_err();
     assert_eq!(
         store.get_population(&pop).unwrap().spent_steps,
@@ -165,13 +194,31 @@ fn the_ledger_is_shared_and_forks_do_not_multiply_it() {
 
     // what fits, starts — and lands exactly on the shared ceiling
     coordinator
-        .start_attempt(&operator(), &pop, "branch-b", "run-branch-b", 700, 60_000, now(), "att-b1")
+        .start_attempt(
+            &operator(),
+            &pop,
+            "branch-b",
+            "run-branch-b",
+            700,
+            60_000,
+            now(),
+            "att-b1",
+        )
         .unwrap();
     assert_eq!(store.get_population(&pop).unwrap().spent_steps, 1000);
 
     // the grant is exhausted: any further attempt is refused
     let err = coordinator
-        .start_attempt(&operator(), &pop, "branch-a", "run-branch-a", 1, 60_000, now(), "att-a2")
+        .start_attempt(
+            &operator(),
+            &pop,
+            "branch-a",
+            "run-branch-a",
+            1,
+            60_000,
+            now(),
+            "att-a2",
+        )
         .unwrap_err();
     assert_eq!(err.kind, ErrorKind::BudgetExhausted);
 }
@@ -194,7 +241,16 @@ fn billing_is_idempotent_by_message_id() {
 
     // the population's ledger agrees: one debit only
     coordinator
-        .start_attempt(&operator(), &pop, "branch-a", "run-branch-a", 100, 60_000, now(), "att-1")
+        .start_attempt(
+            &operator(),
+            &pop,
+            "branch-a",
+            "run-branch-a",
+            100,
+            60_000,
+            now(),
+            "att-1",
+        )
         .unwrap();
     assert_eq!(store.get_population(&pop).unwrap().spent_steps, 100);
 }
@@ -204,7 +260,9 @@ fn an_unknown_outcome_stays_visible() {
     let (store, coordinator) = population_store("unknown");
     let _ = seed_population(&store, &coordinator);
 
-    coordinator.record_unknown_outcome("msg-x", 50, "teacher call timed out mid-flight").unwrap();
+    coordinator
+        .record_unknown_outcome("msg-x", 50, "teacher call timed out mid-flight")
+        .unwrap();
     let unknown = coordinator.unknown_outcomes().unwrap();
     assert_eq!(unknown.len(), 1, "the unknown outcome is on the books");
     assert_eq!(unknown[0].0, "msg-x");
@@ -225,7 +283,16 @@ fn an_expired_lease_cannot_commit() {
 
     // a short lease that is already expired by the time it commits
     coordinator
-        .start_attempt(&operator(), &pop, "branch-a", "run-branch-a", 100, -1, now(), "att-zombie")
+        .start_attempt(
+            &operator(),
+            &pop,
+            "branch-a",
+            "run-branch-a",
+            100,
+            -1,
+            now(),
+            "att-zombie",
+        )
         .unwrap();
 
     let err = coordinator
@@ -242,7 +309,16 @@ fn a_cancelled_attempt_cannot_speak_again() {
     let (store, coordinator) = population_store("cancel");
     let (pop, _a, _b, _) = seed_population(&store, &coordinator);
     coordinator
-        .start_attempt(&operator(), &pop, "branch-a", "run-branch-a", 100, 60_000, now(), "att-1")
+        .start_attempt(
+            &operator(),
+            &pop,
+            "branch-a",
+            "run-branch-a",
+            100,
+            60_000,
+            now(),
+            "att-1",
+        )
         .unwrap();
     coordinator.cancel_attempt(&operator(), "att-1").unwrap();
 
@@ -258,7 +334,16 @@ fn a_stale_head_version_is_refused() {
     let (store, coordinator) = population_store("stale-head");
     let (pop, _a, _b, _) = seed_population(&store, &coordinator);
     coordinator
-        .start_attempt(&operator(), &pop, "branch-a", "run-branch-a", 100, 60_000, now(), "att-1")
+        .start_attempt(
+            &operator(),
+            &pop,
+            "branch-a",
+            "run-branch-a",
+            100,
+            60_000,
+            now(),
+            "att-1",
+        )
         .unwrap();
 
     // a newer worker moved the head first
@@ -271,7 +356,10 @@ fn a_stale_head_version_is_refused() {
         .commit_attempt(&operator(), "att-1", "ckpt-stale", 0, now())
         .unwrap_err();
     assert_eq!(err.kind, ErrorKind::Conflict);
-    assert_eq!(store.get_branch("branch-a").unwrap().head.as_deref(), Some("ckpt-new"));
+    assert_eq!(
+        store.get_branch("branch-a").unwrap().head.as_deref(),
+        Some("ckpt-new")
+    );
 }
 
 // ── real parallelism ───────────────────────────────────────────────
@@ -307,14 +395,26 @@ fn train_branch(
             attempt_id: format!("att-{lineage}"),
             graph,
             weights: seed_weights.to_string_lossy().into_owned(),
-            data: task_dir().join("data/train.bin").to_string_lossy().into_owned(),
-            val_data: Some(task_dir().join("data/val.bin").to_string_lossy().into_owned()),
+            data: task_dir()
+                .join("data/train.bin")
+                .to_string_lossy()
+                .into_owned(),
+            val_data: Some(
+                task_dir()
+                    .join("data/val.bin")
+                    .to_string_lossy()
+                    .into_owned(),
+            ),
             out: out.to_string_lossy().into_owned(),
             steps,
             seed,
             resume: None,
             save_at,
-            state_out: save_at.map(|_| dir.join(format!("state-{lineage}.json")).to_string_lossy().into_owned()),
+            state_out: save_at.map(|_| {
+                dir.join(format!("state-{lineage}.json"))
+                    .to_string_lossy()
+                    .into_owned()
+            }),
             stop_after_save: save_at.map(|_| true),
         })
         .unwrap();
@@ -323,7 +423,9 @@ fn train_branch(
         let remaining = deadline.saturating_duration_since(Instant::now());
         assert!(!remaining.is_zero(), "{lineage} never finished");
         match worker.next_frame(remaining).unwrap() {
-            Frame::Done { loss, val_accuracy, .. } => {
+            Frame::Done {
+                loss, val_accuracy, ..
+            } => {
                 let report = LegReport {
                     started,
                     finished: Instant::now(),
@@ -454,7 +556,10 @@ fn a_branch_killed_at_its_checkpoint_resumes_without_touching_the_other() {
     // A's process is gone (train_branch killed it); a fresh process resumes
     // its ledger: 100 inherited + 100 more
     let b = handle_b.join().unwrap();
-    assert!(b.accuracy > 0.9, "branch b finished regardless of a's death");
+    assert!(
+        b.accuracy > 0.9,
+        "branch b finished regardless of a's death"
+    );
 
     // resume A from its checkpoint in a new process
     let mut worker_a2 = Worker::spawn(&config, &iso).unwrap();
@@ -469,8 +574,16 @@ fn a_branch_killed_at_its_checkpoint_resumes_without_touching_the_other() {
             attempt_id: "att-a2".into(),
             graph: graph.clone(),
             weights: seed_weights.to_string_lossy().into_owned(),
-            data: task_dir().join("data/train.bin").to_string_lossy().into_owned(),
-            val_data: Some(task_dir().join("data/val.bin").to_string_lossy().into_owned()),
+            data: task_dir()
+                .join("data/train.bin")
+                .to_string_lossy()
+                .into_owned(),
+            val_data: Some(
+                task_dir()
+                    .join("data/val.bin")
+                    .to_string_lossy()
+                    .into_owned(),
+            ),
             out: out_a2.to_string_lossy().into_owned(),
             steps: 100,
             seed: 3,
@@ -486,7 +599,10 @@ fn a_branch_killed_at_its_checkpoint_resumes_without_touching_the_other() {
         assert!(!remaining.is_zero(), "a's resume never finished");
         match worker_a2.next_frame(remaining).unwrap() {
             Frame::Done { val_accuracy, .. } => {
-                assert!(val_accuracy.unwrap_or(0.0) > 0.9, "the resumed branch learns");
+                assert!(
+                    val_accuracy.unwrap_or(0.0) > 0.9,
+                    "the resumed branch learns"
+                );
                 break;
             }
             Frame::Failed { error, .. } => panic!("a's resume failed: {error}"),

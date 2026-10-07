@@ -13,13 +13,18 @@ pub struct ClassRegistry {
 
 impl ClassRegistry {
     pub fn new() -> Self {
-        ClassRegistry { classes: Vec::new() }
+        ClassRegistry {
+            classes: Vec::new(),
+        }
     }
 
     /// Register a class. Returns error if name already taken.
     pub fn register(&mut self, class: ClassRef) -> Result<(), EvalError> {
         if self.find_by_name(&class.name).is_some() {
-            return Err(EvalError::custom(format!("class already defined: {}", class.name)));
+            return Err(EvalError::custom(format!(
+                "class already defined: {}",
+                class.name
+            )));
         }
         self.classes.push(class);
         Ok(())
@@ -44,9 +49,13 @@ impl ClassRegistry {
             Value::Vector(_) => self.find_by_name("Vector").unwrap_or_else(|| top.clone()),
             Value::Map(_) => self.find_by_name("Map").unwrap_or_else(|| top.clone()),
             Value::Function(_) => self.find_by_name("Function").unwrap_or_else(|| top.clone()),
-            Value::NativeFunction(_) => self.find_by_name("NativeFunction").unwrap_or_else(|| top.clone()),
+            Value::NativeFunction(_) => self
+                .find_by_name("NativeFunction")
+                .unwrap_or_else(|| top.clone()),
             Value::Macro(_) => self.find_by_name("Macro").unwrap_or_else(|| top.clone()),
-            Value::Char(_) => self.find_by_name("Character").unwrap_or_else(|| top.clone()),
+            Value::Char(_) => self
+                .find_by_name("Character")
+                .unwrap_or_else(|| top.clone()),
             Value::Object(o) => o.header().class.clone(),
             Value::Buffer(_) => self.find_by_name("Buffer").unwrap_or_else(|| top.clone()),
             Value::Future(_) => self.find_by_name("Future").unwrap_or_else(|| top.clone()),
@@ -70,9 +79,23 @@ pub fn make_builtin_classes() -> Vec<ClassRef> {
 
     // Immediate type classes
     for name in &[
-        "Nil", "Boolean", "Integer", "Float", "String", "Symbol",
-        "Keyword", "List", "Vector", "Map", "Function", "NativeFunction",
-        "Macro", "Character", "Buffer", "Future", "Channel",
+        "Nil",
+        "Boolean",
+        "Integer",
+        "Float",
+        "String",
+        "Symbol",
+        "Keyword",
+        "List",
+        "Vector",
+        "Map",
+        "Function",
+        "NativeFunction",
+        "Macro",
+        "Character",
+        "Buffer",
+        "Future",
+        "Channel",
     ] {
         let cpl = vec![name.to_string(), "TObject".into()];
         let c = Arc::new(Class {
@@ -204,4 +227,3 @@ mod tests {
         assert_eq!(cpl, vec!["C", "A", "B", "O"]);
     }
 }
-

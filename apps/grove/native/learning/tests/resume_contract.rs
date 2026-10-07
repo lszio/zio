@@ -68,7 +68,11 @@ fn seed_lineage(store: &Store) -> (String, String) {
     });
     let state = store
         .artifacts()
-        .put(serde_json::to_vec(&manifest).expect("manifest json").as_slice())
+        .put(
+            serde_json::to_vec(&manifest)
+                .expect("manifest json")
+                .as_slice(),
+        )
         .expect("state artifact");
 
     let parent = Run {
@@ -97,7 +101,9 @@ fn seed_lineage(store: &Store) -> (String, String) {
         budget_spent_steps: 30,
         created_at_ms: grove::api_time_ms(),
     };
-    store.commit_checkpoint(&operator(), &checkpoint).expect("checkpoint");
+    store
+        .commit_checkpoint(&operator(), &checkpoint)
+        .expect("checkpoint");
     (snapshot.to_hex(), "run-parent".into())
 }
 
@@ -154,7 +160,11 @@ fn a_resume_does_not_overwrite_the_run_it_came_from() {
     // resume that rewrote the parent would destroy the record of where
     // the lineage was when it stopped.
     let parent = store.get_run("run-parent").expect("parent");
-    assert_eq!(parent.state, RunState::Paused, "the parent is not overwritten");
+    assert_eq!(
+        parent.state,
+        RunState::Paused,
+        "the parent is not overwritten"
+    );
     assert_eq!(parent.steps_consumed, 30);
 
     // And the new run is separate, queued, and says what it came from.
@@ -207,10 +217,9 @@ fn a_resume_that_cannot_restore_state_is_refused_before_anything_is_queued() {
     use grove::contracts::{ArtifactRef, Checkpoint, ResumeLevel, Run, SCHEMA_VERSION};
     // A checkpoint whose state artifact is gone. `resume_plan` must
     // refuse rather than queue a run that would restart from nothing.
-    let snapshot = ArtifactRef::parse_hex(
-        "0000000000000000000000000000000000000000000000000000000000000009",
-    )
-    .unwrap();
+    let snapshot =
+        ArtifactRef::parse_hex("0000000000000000000000000000000000000000000000000000000000000009")
+            .unwrap();
     let parent = Run {
         schema: SCHEMA_VERSION,
         id: "run-x".into(),
@@ -224,10 +233,9 @@ fn a_resume_that_cannot_restore_state_is_refused_before_anything_is_queued() {
         resumed_from: None,
     };
     store.put_run(&operator(), &parent).expect("parent");
-    let missing = ArtifactRef::parse_hex(
-        "00000000000000000000000000000000000000000000000000000000000000ff",
-    )
-    .unwrap();
+    let missing =
+        ArtifactRef::parse_hex("00000000000000000000000000000000000000000000000000000000000000ff")
+            .unwrap();
     let cp = Checkpoint {
         schema: SCHEMA_VERSION,
         id: "cp-broken".into(),

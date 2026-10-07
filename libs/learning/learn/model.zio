@@ -123,4 +123,3 @@
                          (> aa ab))))
                    scored)))))
 
-(println "zio.learn.model loaded (model descriptions as data, structural rewrites, candidate lifecycle; pure)")

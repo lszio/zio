@@ -7,11 +7,12 @@
 use std::path::PathBuf;
 use std::process::Command;
 
-use grove_app::{demo, inspect, open_store, operator, Paths};
+use grove_app::{Paths, demo, inspect, open_store, operator};
 
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .ancestors().nth(4)
+        .ancestors()
+        .nth(4)
         .unwrap()
         .to_path_buf()
 }
@@ -59,7 +60,10 @@ fn the_dual_demo_clears_the_frozen_gates_end_to_end() {
 
     // the substance: real numbers on both populations, the lift, the pause
     assert!(report.contains("baseline (linear fusion)"), "{report}");
-    assert!(report.contains("candidate (nonlinear, paused+resumed)"), "{report}");
+    assert!(
+        report.contains("candidate (nonlinear, paused+resumed)"),
+        "{report}"
+    );
     assert!(report.contains("paused at step 150"), "{report}");
     // The demo produced a candidate and stopped. It did not publish:
     // reaching the publisher role by calling a function is not a human
@@ -90,7 +94,10 @@ fn the_dual_demo_clears_the_frozen_gates_end_to_end() {
     // boundary plus 150 for its own leg. Summing records would double-count
     // the inherited part — the latest record IS the ledger.
     assert_eq!(resumed.steps_consumed, 300, "150 inherited + 150 leg two");
-    assert_eq!(joint.steps_consumed, 150, "the paused run keeps its own ledger");
+    assert_eq!(
+        joint.steps_consumed, 150,
+        "the paused run keeps its own ledger"
+    );
     assert!(
         store.active_publication().unwrap().is_none(),
         "the demo left the deployment alone"
@@ -109,8 +116,7 @@ fn the_dual_demo_clears_the_frozen_gates_end_to_end() {
         .expect("the demo names the candidate it produced");
     let candidate = grove::contracts::ArtifactRef::parse_hex(hex).unwrap();
     assert_ne!(
-        candidate,
-        joint_run.base_snapshot,
+        candidate, joint_run.base_snapshot,
         "the candidate must be the trained weights, not the run's placeholder"
     );
     assert!(
@@ -166,7 +172,11 @@ fn the_dual_demo_clears_the_frozen_gates_end_to_end() {
     );
     // and the decision is on the record, naming who made it
     let approvals = store.approval_log().unwrap();
-    assert_eq!(approvals.len(), 1, "one approval, one publication: {approvals:?}");
+    assert_eq!(
+        approvals.len(),
+        1,
+        "one approval, one publication: {approvals:?}"
+    );
     assert_eq!(approvals[0]["authenticated_actor"], "grove-cli");
 }
 
@@ -217,10 +227,16 @@ fn inspect_reports_the_history_the_store_holds() {
 
     let store = open_store(&root).unwrap();
     let report = inspect(&store).unwrap();
-    assert!(report.contains("runs (3)"), "all three run records: {report}");
+    assert!(
+        report.contains("runs (3)"),
+        "all three run records: {report}"
+    );
     assert!(report.contains("run-baseline"), "{report}");
     assert!(report.contains("run-joint-resumed"), "{report}");
-    assert!(report.contains("checkpoints (1)"), "the pause checkpoint: {report}");
+    assert!(
+        report.contains("checkpoints (1)"),
+        "the pause checkpoint: {report}"
+    );
     // the demo alone published nothing, and `inspect` says so
     assert!(
         report.contains("publication: none"),
@@ -250,7 +266,10 @@ fn inspect_reports_the_history_the_store_holds() {
 
     let after = inspect(&store).unwrap();
     assert!(after.contains("publication: v1"), "{after}");
-    assert!(after.contains("approvals (1)"), "the decision is on the record: {after}");
+    assert!(
+        after.contains("approvals (1)"),
+        "the decision is on the record: {after}"
+    );
 
     // and through the binary, same story
     let (out, _, ok) = grove(&["inspect", "--root", root.to_str().unwrap()]);

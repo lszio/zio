@@ -1,5 +1,5 @@
-use std::sync::atomic::{AtomicUsize, Ordering};
 use parking_lot::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// A byte position in source text.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -33,7 +33,13 @@ impl Span {
     /// Create a new span from a source file and byte range.
     /// The line/col are lazily resolved from the SourceMap.
     pub fn new(source_id: SourceId, start: BytePos, end: BytePos, line: usize, col: usize) -> Self {
-        Span { source_id, start, end, line, col }
+        Span {
+            source_id,
+            start,
+            end,
+            line,
+            col,
+        }
     }
 
     /// Format a human-readable location like `file.zio:12:5`.
@@ -69,7 +75,12 @@ pub struct SourceFile {
 impl SourceFile {
     pub fn new(id: SourceId, name: String, source: String) -> Self {
         let line_starts = compute_line_starts(&source);
-        SourceFile { id, name, source, line_starts }
+        SourceFile {
+            id,
+            name,
+            source,
+            line_starts,
+        }
     }
 
     /// Given a byte offset, return (line_number, col_number) — both 1-indexed.
@@ -187,6 +198,17 @@ impl SourceMap {
         id
     }
 
+    /// Most recent registered revision, used to retain a loaded source identity.
+    pub fn get_latest_id(&self, name: &str) -> Option<SourceId> {
+        self.files
+            .lock()
+            .iter()
+            .rev()
+            .flatten()
+            .find(|file| file.name == name)
+            .map(|file| file.id)
+    }
+
     /// Look up a source file by ID, returning a guard.
     pub fn get(&self, id: SourceId) -> Option<SourceFile> {
         let files = self.files.lock();
@@ -247,11 +269,11 @@ mod tests {
         let source = "line1\nline2\nline3\n";
         let file = SourceFile::new(SourceId(1), "test.zio".into(), source.into());
 
-        assert_eq!(file.line_col(BytePos(0)), (1, 1));   // 'l' of line1
-        assert_eq!(file.line_col(BytePos(5)), (1, 6));   // '\n' of line1
-        assert_eq!(file.line_col(BytePos(6)), (2, 1));   // 'l' of line2
-        assert_eq!(file.line_col(BytePos(11)), (2, 6));  // '\n' of line2
-        assert_eq!(file.line_col(BytePos(12)), (3, 1));  // 'l' of line3
+        assert_eq!(file.line_col(BytePos(0)), (1, 1)); // 'l' of line1
+        assert_eq!(file.line_col(BytePos(5)), (1, 6)); // '\n' of line1
+        assert_eq!(file.line_col(BytePos(6)), (2, 1)); // 'l' of line2
+        assert_eq!(file.line_col(BytePos(11)), (2, 6)); // '\n' of line2
+        assert_eq!(file.line_col(BytePos(12)), (3, 1)); // 'l' of line3
     }
 
     #[test]

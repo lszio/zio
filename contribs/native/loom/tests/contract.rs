@@ -3,11 +3,11 @@
 
 use std::sync::Arc;
 
+use loom::harness::ModelHost;
 use loom::mock::{
     MockEmbedHost, MockLlmHost, RecordingEmbedHost, RecordingLlmHost, ScriptedEmbedHost,
     ScriptedLlmHost, SyntheticEmbedHost,
 };
-use loom::harness::ModelHost;
 use loom::{EmbedHost, HostErrorKind, LlmHost, install};
 use zio_core::context::{EvalContext, EvalRuntime};
 use zio_core::env::Env;
@@ -25,7 +25,9 @@ fn test_ctx(llm: Option<Arc<dyn ModelHost>>, embed: Option<Arc<dyn EmbedHost>>) 
 /// Evaluate every top-level form; return the last value (script-runner
 /// semantics, no stdlib — the bindings under test are self-contained).
 fn eval_str(ctx: &EvalContext, src: &str) -> Result<Value, EvalError> {
-    let source_id = ctx.source_map().register("contract-test".into(), src.to_string());
+    let source_id = ctx
+        .source_map()
+        .register("contract-test".into(), src.to_string());
     let forms = zio_core::reader::reader::read_program_with_source(src, source_id)
         .map_err(|e| EvalError::custom(format!("parse error: {e}")))?;
     let mut last = Value::Nil;
@@ -87,7 +89,11 @@ fn llm_complete_passes_prompt_and_options_to_the_host() {
         "the prompt must reach the host inside the conversation: {seen:?}"
     );
     let opts = handle.last_opts.lock();
-    assert_eq!(opts.temperature, Some(0.5), "the temperature must not be dropped");
+    assert_eq!(
+        opts.temperature,
+        Some(0.5),
+        "the temperature must not be dropped"
+    );
     assert_eq!(opts.stop, vec!["\n".to_string()]);
 }
 
@@ -125,7 +131,10 @@ fn record_then_replay_is_deterministic_for_llm() {
 
 #[test]
 fn record_then_replay_is_deterministic_for_embeddings() {
-    let scripted = Arc::new(ScriptedEmbedHost::new([vec![vec![0.5, -1.25], vec![0.0, 2.0]]]));
+    let scripted = Arc::new(ScriptedEmbedHost::new([vec![
+        vec![0.5, -1.25],
+        vec![0.0, 2.0],
+    ]]));
     let recorder = Arc::new(RecordingEmbedHost::new(scripted));
     let host: Arc<dyn EmbedHost> = recorder.clone();
     let ctx = test_ctx(None, Some(host));
@@ -150,10 +159,8 @@ fn record_then_replay_is_deterministic_for_embeddings() {
 fn recordings_survive_escapes_and_utf8() {
     let prompt = "quote \" backslash \\ newline \n tab \t 中文 ✓";
     let response = "line1\nline2";
-    let text = loom::mock::test_support::llm_recording_text(&[(
-        prompt.to_string(),
-        response.to_string(),
-    )]);
+    let text =
+        loom::mock::test_support::llm_recording_text(&[(prompt.to_string(), response.to_string())]);
     let mock = MockLlmHost::from_recording_text(&text).unwrap();
     let answer = mock.complete(prompt, &Default::default()).unwrap();
     assert_eq!(answer, response);
@@ -164,7 +171,9 @@ fn recordings_survive_escapes_and_utf8() {
 #[test]
 fn replay_miss_fails_fast_instead_of_touching_the_network() {
     let mock = MockLlmHost::from_recording_text(r#"["known prompt" "known answer"]"#).unwrap();
-    let err = mock.complete("unknown prompt", &Default::default()).unwrap_err();
+    let err = mock
+        .complete("unknown prompt", &Default::default())
+        .unwrap_err();
     assert_eq!(err.kind, HostErrorKind::ReplayMiss);
     assert!(err.to_string().contains("replay-miss"), "{err}");
     assert!(err.to_string().contains("fail-fast"), "{err}");

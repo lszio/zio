@@ -12,16 +12,17 @@
 //! 3. **Text is not evidence.** A program that *prints* the word "trace"
 //!    produces output, not events; only the evaluator can write an event.
 
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
-use zio_core::bootstrap::{eval_source, language_context, ModuleRoots};
-use zio_core::context::EvalContext;
+use zio_core::bootstrap::{ModuleRoots, eval_source, language_context};
 use zio_core::error::EvalError;
 use zio_core::observer::{Event, EventKind, Observer, RecordingObserver};
 
 /// A context with an observer attached, returning the recording.
-fn observed(src: &str) -> Result<(Vec<Event>, Result<zio_core::value::Value, EvalError>), EvalError> {
+fn observed(
+    src: &str,
+) -> Result<(Vec<Event>, Result<zio_core::value::Value, EvalError>), EvalError> {
     let observer = Arc::new(RecordingObserver::new());
     let ctx = language_context(ModuleRoots::empty()).expect("bootstrap");
     ctx.attach_observer(observer.clone());
@@ -47,7 +48,10 @@ fn a_trace_reports_the_branch_that_ran_and_not_the_one_that_did_not() {
         seen.contains(&"branch"),
         "the conditional must produce a branch event: {seen:?}"
     );
-    let branches: Vec<&Event> = events.iter().filter(|e| e.kind == EventKind::Branch).collect();
+    let branches: Vec<&Event> = events
+        .iter()
+        .filter(|e| e.kind == EventKind::Branch)
+        .collect();
     assert!(
         branches.iter().any(|e| e.detail.contains("then")),
         "the taken branch must be reported: {:?}",
@@ -69,10 +73,17 @@ fn a_trace_reports_the_branch_that_ran_and_not_the_one_that_did_not() {
 fn an_error_is_observed_with_its_source() {
     let (events, result) = observed("(error \"boom\")").expect("the program runs");
     let err = result.expect_err("error raises");
-    let errors: Vec<&Event> = events.iter().filter(|e| e.kind == EventKind::Error).collect();
+    let errors: Vec<&Event> = events
+        .iter()
+        .filter(|e| e.kind == EventKind::Error)
+        .collect();
     assert_eq!(errors.len(), 1, "one raise is one event: {events:?}");
     let event = errors[0];
-    assert!(event.detail.contains("boom"), "the message must be reported: {}", event.detail);
+    assert!(
+        event.detail.contains("boom"),
+        "the message must be reported: {}",
+        event.detail
+    );
     // The event carries the location the error carries: evidence that
     // says *where* something happened, not only that it did.
     assert!(
@@ -86,7 +97,10 @@ fn an_error_is_observed_with_its_source() {
         (1, 1),
         "the event's span must be the error's own location"
     );
-    assert!(err.to_string().contains("boom"), "the error is unchanged: {err}");
+    assert!(
+        err.to_string().contains("boom"),
+        "the error is unchanged: {err}"
+    );
 }
 
 #[test]
@@ -94,10 +108,8 @@ fn a_macro_expansion_is_observed_with_its_call_site() {
     // A macro call produces two things: the macro that ran, and the code
     // it produced. The generated code is a fact about this call, not
     // about the program text.
-    let (events, result) = observed(
-        "(defmacro twice [form] (list '+ form form))\n(twice 21)\n",
-    )
-    .expect("the program runs");
+    let (events, result) = observed("(defmacro twice [form] (list '+ form form))\n(twice 21)\n")
+        .expect("the program runs");
     assert_eq!(result.expect("twice 21 evaluates").to_string(), "42");
 
     let seen = kinds(&events);
@@ -116,7 +128,10 @@ fn a_macro_expansion_is_observed_with_its_call_site() {
     );
     // The call site is preserved: a generated node is not the source.
     let site = expansions[0].span.expect("a macro call site");
-    assert_eq!(site.line, 2, "the call site is the line the macro was called on");
+    assert_eq!(
+        site.line, 2,
+        "the call site is the line the macro was called on"
+    );
 }
 
 // ── off means off ────────────────────────────────────────────────
@@ -130,7 +145,11 @@ fn an_unobserved_run_behaves_exactly_the_same() {
 
     let a = observed_result.expect("observed run succeeds");
     let b = unobserved.expect("unobserved run succeeds");
-    assert_eq!(a.to_string(), b.to_string(), "the observer must not change values");
+    assert_eq!(
+        a.to_string(),
+        b.to_string(),
+        "the observer must not change values"
+    );
 }
 
 #[test]
@@ -159,7 +178,12 @@ fn an_observer_that_is_never_attached_costs_nothing() {
     // move the number underneath this measurement.
     let ctx = language_context(ModuleRoots::empty()).expect("bootstrap");
     for _ in 0..4 {
-        eval_source(&ctx, "quiet.zio", "(defn f [x] (if (> x 0) (+ x 1) x))\n(f 5)").unwrap();
+        eval_source(
+            &ctx,
+            "quiet.zio",
+            "(defn f [x] (if (> x 0) (+ x 1) x))\n(f 5)",
+        )
+        .unwrap();
     }
     assert_eq!(
         ctx.payloads_built(),
@@ -172,7 +196,12 @@ fn an_observer_that_is_never_attached_costs_nothing() {
     let loud = language_context(ModuleRoots::empty()).expect("bootstrap");
     loud.attach_observer(Arc::new(RecordingObserver::new()));
     for _ in 0..4 {
-        eval_source(&loud, "loud.zio", "(defn f [x] (if (> x 0) (+ x 1) x))\n(f 5)").unwrap();
+        eval_source(
+            &loud,
+            "loud.zio",
+            "(defn f [x] (if (> x 0) (+ x 1) x))\n(f 5)",
+        )
+        .unwrap();
     }
     assert!(
         loud.payloads_built() > 0,
@@ -188,7 +217,12 @@ fn an_attached_observer_does_see_payloads() {
     let observer = Arc::new(RecordingObserver::new());
     let ctx = language_context(ModuleRoots::empty()).expect("bootstrap");
     ctx.attach_observer(observer.clone());
-    eval_source(&ctx, "loud.zio", "(defn f [x] (if (> x 0) (+ x 1) x))\n(f 5)").unwrap();
+    eval_source(
+        &ctx,
+        "loud.zio",
+        "(defn f [x] (if (> x 0) (+ x 1) x))\n(f 5)",
+    )
+    .unwrap();
     assert!(
         ctx.payloads_built() > 0,
         "an attached observer must build payloads"
@@ -202,11 +236,13 @@ fn an_attached_observer_does_see_payloads() {
 fn a_program_that_prints_the_word_trace_writes_no_events() {
     // Candidate stdout is output. A model that prints a fake trace is
     // printing a string, and the event log must not grow because of it.
-    let (events, result) = observed(
-        "(println \"trace: branch then; call choose; error none\")\n(println \"trace\")",
-    )
-    .expect("the program runs");
-    assert_eq!(result.expect("printing succeeds"), zio_core::value::Value::Nil);
+    let (events, result) =
+        observed("(println \"trace: branch then; call choose; error none\")\n(println \"trace\")")
+            .expect("the program runs");
+    assert_eq!(
+        result.expect("printing succeeds"),
+        zio_core::value::Value::Nil
+    );
     let seen = kinds(&events);
     assert!(
         !events.iter().any(|e| e.detail.contains("trace")),
@@ -215,7 +251,9 @@ fn a_program_that_prints_the_word_trace_writes_no_events() {
     // Only the two real print effects are recorded, and neither is a
     // branch or an error.
     assert!(
-        !events.iter().any(|e| matches!(e.kind, EventKind::Branch | EventKind::Error)),
+        !events
+            .iter()
+            .any(|e| matches!(e.kind, EventKind::Branch | EventKind::Error)),
         "printing is not branching: {seen:?}"
     );
 }
@@ -237,7 +275,10 @@ fn an_event_carries_its_own_sequence_and_kind() {
         .iter()
         .find(|e| e.kind == EventKind::Branch)
         .expect("a branch happened");
-    assert!(branch.span.is_some(), "a branch must carry where it happened");
+    assert!(
+        branch.span.is_some(),
+        "a branch must carry where it happened"
+    );
 }
 
 // ── the observer is a port, not a store ───────────────────────────
@@ -258,5 +299,8 @@ fn any_observer_implementation_receives_the_events() {
     let ctx = language_context(ModuleRoots::empty()).expect("bootstrap");
     ctx.attach_observer(observer.clone());
     eval_source(&ctx, "counted.zio", "(if (> 1 0) 1 2)").unwrap();
-    assert!(observer.0.load(Ordering::Relaxed) > 0, "the custom observer saw nothing");
+    assert!(
+        observer.0.load(Ordering::Relaxed) > 0,
+        "the custom observer saw nothing"
+    );
 }

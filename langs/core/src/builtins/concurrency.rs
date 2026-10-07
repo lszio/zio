@@ -54,7 +54,12 @@ pub fn deliver_fn(args: Vector<Value>, _engine: &dyn EvalEngine) -> Result<Value
     }
     let pair = match &args[0] {
         Value::Future(p) => p.clone(),
-        other => return Err(EvalError::type_error("future or promise", other.value_type())),
+        other => {
+            return Err(EvalError::type_error(
+                "future or promise",
+                other.value_type(),
+            ));
+        }
     };
     let val = args[1].clone();
     let (lock, cvar) = &*pair;
@@ -87,7 +92,10 @@ pub fn deref_fn(args: Vector<Value>, _engine: &dyn EvalEngine) -> Result<Value, 
                 )),
             }
         }
-        other => Err(EvalError::type_error("future or promise", other.value_type())),
+        other => Err(EvalError::type_error(
+            "future or promise",
+            other.value_type(),
+        )),
     }
 }
 
@@ -95,7 +103,12 @@ pub fn chan_fn(args: Vector<Value>, _engine: &dyn EvalEngine) -> Result<Value, E
     let (tx, rx) = if args.len() == 1 {
         let cap = match &args[0] {
             Value::Integer(n) => (*n).max(1) as usize,
-            other => return Err(EvalError::type_error("integer capacity", other.value_type())),
+            other => {
+                return Err(EvalError::type_error(
+                    "integer capacity",
+                    other.value_type(),
+                ));
+            }
         };
         let (tx, rx) = std::sync::mpsc::sync_channel(cap);
         (crate::value::ChannelTx::Sync(tx), rx)
@@ -120,7 +133,8 @@ pub fn send_fn(args: Vector<Value>, _engine: &dyn EvalEngine) -> Result<Value, E
     };
     let val = args[1].clone();
     let tx = chan.tx.lock();
-    tx.send(val).map_err(|e| EvalError::custom(format!("send! error: {e}")))?;
+    tx.send(val)
+        .map_err(|e| EvalError::custom(format!("send! error: {e}")))?;
     Ok(Value::Nil)
 }
 
@@ -140,11 +154,32 @@ pub fn recv_fn(args: Vector<Value>, _engine: &dyn EvalEngine) -> Result<Value, E
 }
 
 pub fn register(env: &Arc<Env>) {
-    env.set("future-call".into(), Value::NativeFunction(NativeFn::new("future-call", future_call_fn)));
-    env.set("promise".into(), Value::NativeFunction(NativeFn::new("promise", promise_fn)));
-    env.set("deliver".into(), Value::NativeFunction(NativeFn::new("deliver", deliver_fn)));
-    env.set("deref".into(), Value::NativeFunction(NativeFn::new("deref", deref_fn)));
-    env.set("chan".into(), Value::NativeFunction(NativeFn::new("chan", chan_fn)));
-    env.set("send!".into(), Value::NativeFunction(NativeFn::new("send!", send_fn)));
-    env.set("recv!".into(), Value::NativeFunction(NativeFn::new("recv!", recv_fn)));
+    env.set(
+        "future-call".into(),
+        Value::NativeFunction(NativeFn::new("future-call", future_call_fn)),
+    );
+    env.set(
+        "promise".into(),
+        Value::NativeFunction(NativeFn::new("promise", promise_fn)),
+    );
+    env.set(
+        "deliver".into(),
+        Value::NativeFunction(NativeFn::new("deliver", deliver_fn)),
+    );
+    env.set(
+        "deref".into(),
+        Value::NativeFunction(NativeFn::new("deref", deref_fn)),
+    );
+    env.set(
+        "chan".into(),
+        Value::NativeFunction(NativeFn::new("chan", chan_fn)),
+    );
+    env.set(
+        "send!".into(),
+        Value::NativeFunction(NativeFn::new("send!", send_fn)),
+    );
+    env.set(
+        "recv!".into(),
+        Value::NativeFunction(NativeFn::new("recv!", recv_fn)),
+    );
 }

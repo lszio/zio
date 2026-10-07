@@ -1,0 +1,401 @@
+;; Learning policy; the backend only owns tensors, autodiff, Adam and RNG.
+(load "libs/learning/learn/recipes.zio")
+
+(defn learn--get [m k fallback]
+  (get m k (get m (name k) fallback)))
+(defn learn--require [ok message]
+  (if ok true (error (str "learning: " message))))
+(defn learn--contains [xs x]
+  (reduce (fn [found v] (if found true (= v x))) false xs))
+(defn learn--flat [rows] (reduce (fn [a r] (into a r)) [] rows))
+(defn learn--counter [b] (host/binary-decode "u64-le" b 0))
+(defn learn--set-counter [b n]
+  (let* [raw (host/binary-encode "u64-le" n)]
+    (map (fn [i] (buffer-set! b i (buffer-get raw i))) (range 8)) n))
+(defn learn--call [model op] (host/tensor-call (get model :tensor) op))
+(defn learn--temp [model]
+  (let* [b (get model :counter) n (learn--counter b)]
+    (learn--set-counter b (+ n 1)) (str "t." n)))
+(defn learn--op [model op inputs attrs]
+  (let* [out (learn--temp model)]
+    (learn--call model (assoc attrs :op op :inputs inputs :out out)) out))
+(defn learn--create [model data shape dtype]
+  (let* [out (learn--temp model)]
+    (learn--call model {:op "create" :out out :data data :shape shape :dtype dtype}) out))
+(defn learn--scalar [model n] (learn--create model [n] [] "float32"))
+(defn learn--value [model ref] (learn--get (learn--call model {:op "value" :input ref}) :data []))
+(defn learn--number [model ref] (first (learn--value model ref)))
+(defn learn--drop-since [model start]
+  (let* [end (learn--counter (get model :counter))]
+    (if (> end start)
+      (learn--call model {:op "drop" :inputs (map (fn [n] (str "t." n)) (range start end))}) nil)))
+
+(defn learn--features [row space]
+  (let* [pixels (learn--get row :pixels []) readings (learn--get row :readings [])
+         image (learn--get row :image_present (learn--get row :image-present false))
+         numeric (learn--get row :numeric_present (learn--get row :numeric-present false))
+         base (into (map (fn [p] (/ p 255.0)) pixels)
+                    (map (fn [r] (/ r (+ (if (< r 0) (- 0 r) r) 1.0))) readings))]
+    (learn--require (= 258 (count base)) "observation needs exactly 256 pixels and two readings")
+    (cond ((= space "grove.fused/260@1") (into base [(if image 1.0 0.0) (if numeric 1.0 0.0)]))
+          ((= space "grove.fused/258@1") base)
+          (else (error "learning: undeclared feature space")))))
+
+;; The historic width-258 / width-260 spaces are TWO DISTINCT versioned
+;; spaces, not the same space at different lengths. A model built
+;; against one will refuse to import a snapshot built against the
+;; other. Width, encoder id and version all travel together.
+(def learn--space-specs
+  {"grove.fused/258@1" {:width 258 :encoder-id "grove.pixel@1" :space-version "258@1"
+                         :description "256 image pixels + 2 sensor readings, no presence flags"}
+   "grove.fused/260@1" {:width 260 :encoder-id "grove.pixel@1" :space-version "260@1"
+                         :description "256 image pixels + 2 sensor readings + 2 presence flags"}})
+
+(defn learn--space-spec [space]
+  ;; Returns the spec for `space`, or nil when the space is undeclared.
+  ;; A nil spec is a refusal: the model cannot be built against an
+  ;; unknown space because the input width and encoder identity are
+  ;; part of the artifact.
+  (get learn--space-specs space nil))
+
+(defn learn--spaces-equal? [a b]
+  ;; Two feature spaces are equal only when they share the same id and
+  ;; version. A near-match is not a match: a 258 vs 260 swap would feed
+  ;; the wrong rows to the head.
+  (let* [spec-a (learn--space-spec a) spec-b (learn--space-spec b)]
+    (and (not (nil? spec-a)) (not (nil? spec-b))
+         (= (get spec-a :width 0) (get spec-b :width 0))
+         (= (get spec-a :encoder-id "") (get spec-b :encoder-id ""))
+         (= (get spec-a :space-version "") (get spec-b :space-version "")))))
+(defn learn--decidable [row]
+  (and (learn--get row :image_present (learn--get row :image-present false))
+       (learn--get row :numeric_present (learn--get row :numeric-present false))))
+(defn learn--read-gvd1 [path]
+  (let* [blob (host/fs-read path) size (host/byte-length blob)
+         magic (host/bytes-utf8 (host/byte-slice blob 0 4))
+         header-size (host/binary-decode "u32-le" blob 4)
+         start (+ 8 header-size)]
+    (learn--require (= magic "GVD1") "bad GVD1 magic")
+    (learn--require (<= start size) "truncated GVD1 header")
+    (let* [header (host/json-read (host/byte-slice blob 8 header-size))
+           stride (learn--get header :record_bytes 0)]
+      (learn--require (>= stride 272) "invalid GVD1 stride")
+      (learn--require (= 0 (mod (- size start) stride)) "truncated GVD1 record")
+      (map (fn [i]
+             (let* [p (+ start (* i stride))]
+               {:observation-id (str "gvd1:" path ":" i)
+                :scene_id (host/binary-decode "u32-le" blob p)
+                :image_present (= 1 (host/binary-decode "u8" blob (+ p 4)))
+                :numeric_present (= 1 (host/binary-decode "u8" blob (+ p 5)))
+                :label (host/binary-decode "u8" blob (+ p 6))
+                :flags (host/binary-decode "u8" blob (+ p 7))
+                :readings [(host/binary-decode "f32-le" blob (+ p 8))
+                           (host/binary-decode "f32-le" blob (+ p 12))]
+                :pixels (map (fn [j] (host/binary-decode "u8" blob (+ p 16 j))) (range 256))}))
+           (range (/ (- size start) stride))))))
+
+(defn learn--linear-init [model layer input-width output-width params trainable]
+  (let* [key (str layer) w (str key ".weight") b (str key ".bias")
+         entry (learn--get params (keyword key) nil)
+         limit (/ 1.0 (sqrt input-width))]
+    (learn--require (> output-width 0) "nonpositive layer width")
+    (if (nil? entry)
+      (let* [rw (learn--op model "rand" [] {:shape [output-width input-width]})
+             rb (learn--op model "rand" [] {:shape [output-width]})
+             two (learn--scalar model 2.0) one (learn--scalar model 1.0)
+             scale (learn--scalar model limit)
+             wi (learn--op model "mul" [(learn--op model "sub" [(learn--op model "mul" [rw two] {}) one] {}) scale] {})
+             bi (learn--op model "mul" [(learn--op model "sub" [(learn--op model "mul" [rb two] {}) one] {}) scale] {})]
+        (learn--call model {:op "create" :out w :data (learn--value model wi) :shape [output-width input-width] :requires_grad trainable})
+        (learn--call model {:op "create" :out b :data (learn--value model bi) :shape [output-width] :requires_grad trainable}))
+      (let* [weights (learn--get entry :w []) bias (learn--get entry :b (map (fn [i] 0.0) (range output-width)))]
+        (learn--require (= output-width (count weights)) "parameter output width differs from graph")
+        (map (fn [row] (learn--require (= input-width (count row)) "parameter input width differs from graph")) weights)
+        (learn--call model {:op "create" :out w :data (learn--flat weights) :shape [output-width input-width] :requires_grad trainable})
+        (learn--call model {:op "create" :out b :data bias :shape [output-width] :requires_grad trainable})))
+    {:w w :b b :in input-width :out output-width :trainable trainable}))
+
+(defn learn--build [tensor config]
+  (let* [graph (learn--get config :graph nil)
+         space (learn--get config :feature-space (if (nil? graph) "grove.fused/260@1" "grove.fused/258@1"))
+         spec (learn--space-spec space)
+         _declared (learn--require (not (nil? spec)) (str "unknown feature space: " space))
+         width (get spec :width 0)
+         hidden (learn--get config :hidden 24) out (learn--get config :out 2)
+         ops (if (nil? graph)
+               [{:kind "linear" :inputs ["fused"] :output "h0" :attrs {:out hidden}}
+                {:kind "relu" :inputs ["h0"] :output "a0" :attrs {}}
+                {:kind "linear" :inputs ["a0"] :output "h1" :attrs {:out out}}]
+               (learn--get graph :ops []))
+         declared (learn--get config :trainable (if (nil? graph) ["h0" "h1"] (learn--get graph :trainable [])))
+         linears (filter (fn [o] (= "linear" (learn--get o :kind nil))) ops)
+         names (map (fn [o] (learn--get o :output nil)) linears)
+         chosen (if (= 0 (count declared)) names declared)
+         params (learn--get config :params {})
+         model {:tensor tensor :counter (bytes 8) :step-counter (bytes 8) :config config
+                :feature-space space :input-width width
+                :encoder-id (get spec :encoder-id "") :space-version (get spec :space-version "")}]
+    (learn--require (> (count linears) 0) "model has no linear layer")
+    (map (fn [n] (learn--require (learn--contains names n) "unknown trainable layer")) chosen)
+    (learn--call model {:op "seed" :seed (learn--get config :seed 0)})
+    (let* [built (reduce (fn [acc o]
+                   (let* [kind (learn--get o :kind nil) key (learn--get o :output nil)
+                          deps (learn--get o :inputs []) widths (get acc :widths {})
+                          attrs (learn--get o :attrs {})]
+                     (learn--require (not (nil? key)) "graph output name missing")
+                     (cond ((= kind "linear")
+                            (let* [input-width (get widths (first deps) width)
+                                   entry (learn--get params (keyword key) nil)
+                                   ow (learn--get attrs :out (if (nil? entry) 2 (count (learn--get entry :w []))))
+                                   layer (learn--linear-init model key input-width ow params (learn--contains chosen key))]
+                              (assoc acc :layers (put (get acc :layers) key layer) :widths (put widths key ow))))
+                           ((= kind "concat") (assoc acc :widths (put widths key width) :fused key))
+                           ((learn--contains ["normalize" "relu" "softmax" "input"] kind)
+                            (assoc acc :widths (put widths key (get widths (first deps) width))))
+                           (else (error (str "learning: unsupported graph operator " kind))))))
+                 {:layers {} :widths {"image" 256 "numeric" 2 "fused" width} :fused (first (learn--get (first linears) :inputs ["fused"]))} ops)
+           layers (get built :layers) parameters (learn--flat (map (fn [n] [(get (get layers n) :w) (get (get layers n) :b)]) names))
+           optimizer "learning.adam"
+           output (if (nil? graph) "h1" (first (vals (learn--get graph :outputs {}))))
+           complete (assoc model :layers layers :ops ops :fused (get built :fused) :output output :parameters parameters :optimizer optimizer)]
+      (learn--require (learn--contains (get built :widths {}) output) "graph output undefined")
+      (learn--call complete {:op "adam-create" :name optimizer :parameters parameters :lr (learn--get config :lr 0.02)})
+      (learn--drop-since complete 0) complete)))
+
+(defn learn--forward-values [model x]
+  (reduce (fn [values o]
+            (let* [kind (learn--get o :kind nil) key (learn--get o :output nil)
+                   deps (learn--get o :inputs []) input (get values (first deps) x)]
+              (cond ((= kind "linear") (let* [layer (get (get model :layers) key)]
+                                        (put values key (learn--op model "linear" [input (get layer :w) (get layer :b)] {}))))
+                    ((= kind "relu") (put values key (learn--op model "relu" [input] {})))
+                    ((= kind "softmax") (put values key (learn--op model "softmax" [input] {:dim 1})))
+                    (else values))))
+          {(get model :fused) x} (get model :ops)))
+(defn learn--forward [model x] (get (learn--forward-values model x) (get model :output)))
+(defn learn--input [model rows]
+  (learn--create model (learn--flat (map (fn [r] (learn--features r (get model :feature-space))) rows))
+                 [(count rows) (get model :input-width)] "float32"))
+(defn learn--pick [model n cap]
+  (let* [order (learn--op model "randperm" [] {:n n})]
+    (slice (learn--value model order) 0 (if (< n cap) n cap))))
+(defn learn--weighted-ce [model logits targets mask]
+  (let* [y (learn--create model targets [(count targets)] "int64")
+         m (learn--create model mask [(count mask)] "float32")
+         ce (learn--op model "cross-entropy" [logits y] {:reduction "none"})
+         total (learn--op model "sum" [(learn--op model "mul" [ce m] {})] {})
+         divisor (learn--op model "clamp" [(learn--op model "sum" [m] {})] {:min 1.0})]
+    (learn--op model "div" [total divisor] {})))
+(defn learn--source-id [row]
+  (learn--get row :signal-id (learn--get row :observation-id nil)))
+(defn learn--source-allowed [row]
+  (learn--require (not (learn--get row :retracted false)) "retracted training source")
+  (learn--require (not (= "forbidden" (learn--get row :licence "train-student"))) "forbidden training source")
+  (learn--require (not (= "display-only" (learn--get row :licence "train-student"))) "display-only training source") row)
+(defn learn--temper [model soft temperature]
+  (let* [p (learn--op model "clamp" [soft] {:min 0.000000000001})
+         power (learn--scalar model (/ 1.0 temperature))
+         scaled (learn--op model "pow" [p power] {})
+         total (learn--op model "sum" [scaled] {:dim 1 :keepdim true})]
+    (learn--op model "div" [scaled total] {})))
+(defn learn--soft-loss [model logits scores temperature]
+  (let* [target (learn--create model (learn--flat scores) [(count scores) (count (first scores))] "float32")
+         tempered (learn--temper model target temperature)
+         logq (learn--op model "log-softmax" [logits] {:dim 1})]
+    (learn--op model "neg" [(learn--op model "mean" [(learn--op model "sum" [(learn--op model "mul" [tempered logq] {})] {:dim 1})] {})] {})))
+(defn learn--chosen [model logits actions]
+  (let* [logp (learn--op model "log-softmax" [logits] {:dim 1})
+         indexes (learn--create model actions [(count actions) 1] "int64")]
+    (learn--op model "mean" [(learn--op model "gather" [logp indexes] {:dim 1})] {})))
+(defn learn--trajectory-loss [model trajectory advantage]
+  (let* [states (learn--get trajectory :states []) actions (learn--get trajectory :actions [])]
+    (learn--require (> (count states) 0) "empty trajectory")
+    (learn--require (= (count states) (count actions)) "trajectory state/action length mismatch")
+    (let* [x (learn--create model (learn--flat states) [(count states) (get model :input-width)] "float32")
+           selected (learn--chosen model (learn--forward model x) actions)]
+      (learn--op model "mul" [selected (learn--scalar model (- 0.0 advantage))] {}))))
+
+(defn learn--env-state [model position env]
+  (let* [width (learn--get env :width 6) goal (learn--get env :goal (- width 1))]
+    (map (fn [i] (cond ((= i position) 1.0) ((= i width) (/ position (if (> width 1) (- width 1) 1.0)))
+                      ((= i (+ width 1)) (if (= position goal) 1.0 0.0)) (else 0.0))) (range (get model :input-width)))))
+(defn learn--rollout [model env greedy]
+  (let* [width (learn--get env :width 6) goal (learn--get env :goal (- width 1)) max-steps (learn--get env :max_steps 20)]
+    (learn--require (and (> width 1) (<= (+ width 2) (get model :input-width)) (>= goal 0) (< goal width) (> max-steps 0)) "invalid lineworld environment")
+    (loop [position 0 states [] actions [] total 0.0 step 0]
+      (if (or (= position goal) (>= step max-steps))
+        {:states states :actions actions :return total :steps step :terminated (= position goal)}
+        (let* [start (learn--counter (get model :counter)) state (learn--env-state model position env)
+               x (learn--create model state [1 (get model :input-width)] "float32")
+               logits (learn--forward model x)
+               chosen (if greedy (learn--op model "argmax" [logits] {:dim 1})
+                        (learn--op model "multinomial" [(learn--op model "softmax" [logits] {:dim 1})] {:num_samples 1}))
+               action (first (learn--value model chosen))
+               next-position (cond ((= action 0) (if (> position 0) (- position 1) 0))
+                                   ((= action 1) (if (< position (- width 1)) (+ position 1) position)) (else position))
+               reward (+ (learn--get env :step_reward -0.05) (if (= next-position goal) (learn--get env :goal_reward 1.0) 0.0))]
+          (learn--drop-since model start)
+          (recur next-position (vector-conj states state) (vector-conj actions action) (+ total reward) (+ step 1)))))))
+
+(defn learn--objective [model request contract]
+  (let* [recipe (learn--get request :recipe "supervised@1") rows (learn--get request :rows [])
+         out (get (get (get model :layers) (get model :output)) :out 0)]
+    (cond
+      ((learn--contains ["supervised@1" "hard-distill@1" "soft-distill@1"] recipe)
+       (let* [teacher (learn--get request :teacher nil) labels (learn--get teacher :hard nil)
+              pick (learn--pick model (count rows) 64) selected (map (fn [i] (learn--source-allowed (get rows i))) pick)
+              logits (learn--forward model (learn--input model selected))
+              mask (map (fn [r] (if (learn--decidable r) 1.0 0.0)) selected)]
+         (learn--require (> (count rows) 0) "empty training split")
+         (if (= recipe "soft-distill@1")
+           (let* [scores (learn--get teacher :soft []) vocab (learn--get teacher :vocab []) temperature (learn--get contract :temperature 0.0)]
+             (learn--require (= vocab (learn--get contract :teacher-vocab nil)) "teacher vocabulary mismatch")
+             (learn--require (= out (count vocab)) "teacher/head width mismatch")
+             (learn--require (= (count rows) (count scores)) "teacher/sample count mismatch")
+             (learn--require (> temperature 0.0) "temperature must be positive")
+             (map (fn [p] (learn--require (= out (count p)) "teacher score width mismatch")
+                          (map (fn [v] (learn--require (>= v 0.0) "negative teacher probability")) p)
+                          (let* [total (reduce + 0.0 p)] (learn--require (and (>= total 0.999) (<= total 1.001)) "teacher probabilities must sum to one"))) scores)
+             {:loss (learn--soft-loss model logits (map (fn [i] (get scores i)) pick) temperature)
+              :consumed selected :metrics {:temperature temperature :label_source "teacher-soft"}})
+           (do
+             (if (nil? teacher) nil (learn--require (= (count rows) (count labels)) "hard teacher/sample count mismatch"))
+             {:loss (learn--weighted-ce model logits
+                      (map (fn [i] (let* [label (if (nil? teacher) (learn--get (get rows i) :label 255) (get labels i))]
+                                     (if (= label 255) 0 label))) pick) mask)
+              :consumed (filter learn--decidable selected)
+              :metrics {:label_source (if (nil? teacher) "split-label" "teacher-label")}}))))
+      ((= recipe "preference@1")
+       (let* [pairs (learn--get request :pairs [])
+              usable (filter (fn [p] (not (or (learn--get p :preferred_abstain false) (learn--get p :unpreferred_abstain false)))) pairs)
+              pick (learn--pick model (count usable) 64) batch (map (fn [i] (get usable i)) pick)
+              selected (map (fn [p] (learn--source-allowed (get rows (learn--get p :index -1)))) batch)
+              logits (learn--forward model (learn--input model selected))
+              a (learn--create model (map (fn [p] (learn--get p :preferred -1)) batch) [(count batch) 1] "int64")
+              b (learn--create model (map (fn [p] (learn--get p :unpreferred -1)) batch) [(count batch) 1] "int64")
+              gap (learn--op model "sub" [(learn--op model "gather" [logits a] {:dim 1}) (learn--op model "gather" [logits b] {:dim 1})] {})]
+         (learn--require (= false (learn--get contract :abstain-is-loss nil)) "abstention cannot be a loss")
+         (learn--require (> (count usable) 0) "all preference pairs abstained")
+         {:loss (learn--op model "neg" [(learn--op model "mean" [(learn--op model "logsigmoid" [gap] {})] {})] {})
+          :consumed selected :metrics {:pairs_total (count pairs) :pairs_abstained (- (count pairs) (count usable)) :pairs_trained (count batch)}}))
+      ((= recipe "demonstration@1")
+       (let* [legal (learn--get contract :legal-actions []) entries (learn--get request :actions [])
+              usable (filter (fn [e] (learn--contains legal (learn--get e :action nil))) entries)
+              batch (map (fn [i] (get usable i)) (learn--pick model (count usable) 64))
+              selected (map (fn [e] (learn--source-allowed (get rows (learn--get e :index -1)))) batch)
+              targets (map (fn [e] (first (filter (fn [i] (= (get legal i) (learn--get e :action nil))) (range (count legal))))) batch)]
+         (learn--require (= out (count legal)) "demonstration action/head width mismatch")
+         (learn--require (> (count usable) 0) "every demonstration action is illegal")
+         {:loss (learn--weighted-ce model (learn--forward model (learn--input model selected)) targets (map (fn [e] 1.0) batch))
+          :consumed selected :metrics {:actions_total (count entries) :actions_illegal_masked (- (count entries) (count usable)) :legal_actions legal}}))
+      ((= recipe "self-supervised@1")
+       (let* [ratio (learn--get request :mask_ratio 0.25) _ (learn--require (and (> ratio 0.0) (< ratio 1.0)) "mask ratio outside (0,1)")
+              _gate (learn--require (not (nil? (learn--get contract :task-gate nil))) "reconstruction cannot replace task acceptance")
+              selected (map learn--source-allowed rows) x (learn--input model selected)
+              pixels (learn--op model "slice" [x] {:dim 1 :end 256})
+              rest (learn--op model "slice" [x] {:dim 1 :start 256})
+              random (learn--op model "rand" [] {:shape [(count rows) 256]})
+              keep (learn--op model "cast" [(learn--op model "ge" [random (learn--scalar model ratio)] {})] {:dtype "float32"})
+              masked (learn--op model "cat" [(learn--op model "mul" [pixels keep] {}) rest] {:dim 1})
+              values (learn--forward-values model masked) hidden (get values "a0")
+              _hidden (learn--require (not (nil? hidden)) "reconstruction needs hidden representation a0")
+              decoder (get model :decoder)
+              recon (learn--op model "linear" [hidden (get decoder :w) (get decoder :b)] {})
+              predicted (learn--op model "slice" [recon] {:dim 1 :end 256})
+              diff (learn--op model "sub" [predicted pixels] {})
+              squared (learn--op model "mul" [diff diff] {})
+              total (learn--op model "sum" [(learn--op model "mul" [squared keep] {})] {})
+              denominator (learn--op model "mul" [(learn--op model "clamp" [(learn--op model "sum" [keep] {})] {:min 1.0}) (learn--scalar model (count rows))] {})]
+         {:loss (learn--op model "div" [total denominator] {}) :consumed selected
+          :metrics {:mask_ratio ratio :task_gate (learn--get contract :task-gate nil)}}))
+      ((= recipe "environment-feedback@1")
+       (let* [trajectories (learn--get request :trajectories [])
+              _bind (learn--require (learn--contains ["trajectory" :trajectory] (learn--get contract :binds nil)) "delayed feedback must bind trajectory")
+              settled (filter (fn [t] (> (count (learn--get t :results [])) 0)) trajectories)]
+         (map (fn [t] (let* [id (learn--get t :trajectory_id (learn--get t :trajectory-id nil))]
+                        (learn--require (and (not (nil? id)) (not (= id ""))) "unnamed trajectory")
+                        (map (fn [r] (learn--require (= id (learn--get r :trajectory_id (learn--get r :trajectory-id nil))) "foreign delayed result")) (learn--get t :results [])))) trajectories)
+         (learn--require (> (count settled) 0) "no attributable delayed outcome")
+         (let* [batch (map (fn [i] (get settled i)) (learn--pick model (count settled) 32))
+                losses (map (fn [t] (learn--trajectory-loss model t (reduce (fn [a r] (+ a (learn--get r :reward 0.0))) 0.0 (learn--get t :results [])))) batch)]
+           {:loss (learn--op model "mean" [(learn--op model "stack" losses {})] {}) :consumed batch
+            :metrics {:trajectories (count trajectories) :results_settled (count settled)}})))
+      ((= recipe "policy-gradient@1")
+       (let* [actions (learn--get contract :actions []) env (learn--get request :env {}) batch-size (learn--get request :batch 16)]
+         (learn--require (= actions ["left" "right" "stay"]) "restricted lineworld action set differs")
+         (learn--require (= out 3) "lineworld head needs three actions")
+         (learn--require (= "step-cost-and-goal-bonus" (learn--get contract :reward nil)) "unsupported reward")
+         (learn--require (= "reach-goal-or-max-steps" (learn--get contract :termination nil)) "unsupported termination")
+         (learn--require (> batch-size 0) "empty policy batch")
+         (let* [batch (map (fn [i] (learn--rollout model env false)) (range batch-size))
+                baseline (/ (reduce (fn [a t] (+ a (get t :return))) 0.0 batch) batch-size)
+                losses (map (fn [t] (learn--trajectory-loss model t (- (get t :return) baseline))) batch)]
+           {:loss (learn--op model "mean" [(learn--op model "stack" losses {})] {}) :consumed []
+            :metrics {:batch_return baseline :actions actions :termination (learn--get contract :termination nil) :reward (learn--get contract :reward nil)}})))
+      (else (error (str "learning: unsupported recipe " recipe))))))
+
+(defn learn--ensure-decoder [model]
+  (if (nil? (get model :decoder nil))
+    (let* [hidden (get (get (get model :layers) "h0") :out)
+           decoder (learn--linear-init model "reconstruction" hidden (get model :input-width) {} false)]
+      ;; Historic reconstruction uses a fixed seeded decoder; only the representation moves.
+      (assoc model :decoder decoder)) model))
+(defn learn--train-step [model request]
+  (let* [recipe (learn--get request :recipe "supervised@1")
+         contract (learn--get request :contract (recipes--lookup (recipes--load-registry) recipe))
+         _known (learn--require (not (nil? contract)) "unknown recipe")
+         _cap (learn--require (< (learn--counter (get model :step-counter)) (learn--get contract :budget-steps 0)) "recipe step budget exhausted")
+         active (if (= recipe "self-supervised@1") (learn--ensure-decoder model) model)
+         start (learn--counter (get active :counter))
+         objective (learn--objective active request contract) loss-ref (get objective :loss)
+         loss (learn--number active loss-ref)]
+    (learn--call active {:op "zero-grad" :inputs (get active :parameters)})
+    (learn--call active {:op "backward" :input loss-ref})
+    (learn--call active {:op "adam-step" :optimizer (get active :optimizer)})
+    (learn--set-counter (get active :step-counter) (+ 1 (learn--counter (get active :step-counter))))
+    (learn--drop-since active start)
+    {:model active :step (learn--counter (get active :step-counter)) :loss loss :metrics (get objective :metrics)
+     :consumed (filter (fn [id] (not (nil? id))) (map learn--source-id (get objective :consumed)))
+     :source-records (get objective :consumed)}))
+(defn learn--evaluate [model rows]
+  (let* [start (learn--counter (get model :counter)) x (learn--input model rows)
+         logits (learn--forward model x) predictions (learn--value model (learn--op model "argmax" [logits] {:dim 1}))
+         indexes (filter (fn [i] (learn--decidable (get rows i))) (range (count rows)))
+         correct (count (filter (fn [i] (= (get predictions i) (learn--get (get rows i) :label 255))) indexes))
+         n (count indexes) values (learn--value model logits)]
+    (learn--drop-since model start)
+    {:predictions predictions :logits values :decidable n :correct correct :accuracy (if (= n 0) nil (/ correct (* n 1.0)))}))
+(defn learn--export [model]
+  {:schema "zio.learning.state/1" :config (get model :config)
+   :feature-space (get model :feature-space)
+   :input-width (get model :input-width)
+   :encoder-id (get model :encoder-id "")
+   :space-version (get model :space-version "")
+   :layers (get model :layers) :ops (get model :ops)
+   :fused (get model :fused) :output (get model :output) :parameters (get model :parameters)
+   :optimizer (get model :optimizer) :decoder (get model :decoder nil)
+   :step (learn--counter (get model :step-counter)) :counter (learn--counter (get model :counter))
+   :tensor_state (learn--call model {:op "state-export"})})
+(defn learn--import [tensor snapshot]
+  (learn--require (= "zio.learning.state/1" (learn--get snapshot :schema nil)) "unsupported learning state")
+  ;; The feature-space width, encoder id and space version travel with
+  ;; the snapshot and must agree with the current registry. A snapshot
+  ;; from a different space is a foreign snapshot: refuse rather than
+  ;; silently retarget the input width.
+  (let* [space (learn--get snapshot :feature-space nil)
+         spec (learn--space-spec space)]
+    (learn--require (not (nil? spec)) (str "unknown feature space in snapshot: " space))
+    (learn--require (= (get spec :width 0) (learn--get snapshot :input-width 0))
+                    "snapshot input width disagrees with declared feature space")
+    (learn--require (= (get spec :encoder-id "") (learn--get snapshot :encoder-id ""))
+                    "snapshot encoder id disagrees with declared feature space")
+    (learn--require (= (get spec :space-version "") (learn--get snapshot :space-version ""))
+                    "snapshot space version disagrees with declared feature space"))
+  (host/tensor-call tensor {:op "state-import" :state (learn--get snapshot :tensor_state nil)})
+  (let* [model (reduce (fn [a k] (put a k (learn--get snapshot k nil)))
+                      {:tensor tensor :counter (bytes 8) :step-counter (bytes 8)}
+                      [:config :feature-space :input-width :encoder-id :space-version
+                       :layers :ops :fused :output :parameters :optimizer :decoder])]
+    (learn--set-counter (get model :counter) (learn--get snapshot :counter 0))
+    (learn--set-counter (get model :step-counter) (learn--get snapshot :step 0)) model))
+(export learn--build learn--evaluate learn--train-step learn--export learn--import learn--read-gvd1 learn--features learn--rollout)

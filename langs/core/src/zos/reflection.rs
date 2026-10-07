@@ -1,9 +1,8 @@
-
+use crate::value::Value;
 use crate::zos::class::ClassRegistry;
 use crate::zos::gf::GenericFunction;
 use crate::zos::mop::ClassReflectionInfo;
 use crate::zos::object::ClassRef;
-use crate::value::Value;
 
 /// Reflective inspector for ZOS runtime entities.
 pub struct ReflectionEngine;
@@ -47,8 +46,8 @@ impl ReflectionEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Arc;
     use crate::zos::object::Class;
+    use std::sync::Arc;
 
     #[test]
     fn test_reflection_engine() {

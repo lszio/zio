@@ -26,7 +26,12 @@ pub fn bytes_fn(args: Vector<Value>, _engine: &dyn EvalEngine) -> Result<Value, 
             }
             buf
         }
-        other => return Err(EvalError::type_error("size, list, or string", other.value_type())),
+        other => {
+            return Err(EvalError::type_error(
+                "size, list, or string",
+                other.value_type(),
+            ));
+        }
     };
     Ok(Value::Buffer(Arc::new(parking_lot::Mutex::new(data))))
 }
@@ -57,7 +62,10 @@ pub fn buffer_get_fn(args: Vector<Value>, _engine: &dyn EvalEngine) -> Result<Va
     if idx < lock.len() {
         Ok(Value::Integer(lock[idx] as i64))
     } else {
-        Err(EvalError::custom(format!("buffer index out of bounds: {idx} (len {})", lock.len())))
+        Err(EvalError::custom(format!(
+            "buffer index out of bounds: {idx} (len {})",
+            lock.len()
+        )))
     }
 }
 
@@ -82,13 +90,28 @@ pub fn buffer_set_fn(args: Vector<Value>, _engine: &dyn EvalEngine) -> Result<Va
         lock[idx] = val;
         Ok(Value::Nil)
     } else {
-        Err(EvalError::custom(format!("buffer index out of bounds: {idx} (len {})", lock.len())))
+        Err(EvalError::custom(format!(
+            "buffer index out of bounds: {idx} (len {})",
+            lock.len()
+        )))
     }
 }
 
 pub fn register(env: &Arc<Env>) {
-    env.set("bytes".into(), Value::NativeFunction(NativeFn::new("bytes", bytes_fn)));
-    env.set("buffer-length".into(), Value::NativeFunction(NativeFn::new("buffer-length", buffer_length_fn)));
-    env.set("buffer-get".into(), Value::NativeFunction(NativeFn::new("buffer-get", buffer_get_fn)));
-    env.set("buffer-set!".into(), Value::NativeFunction(NativeFn::new("buffer-set!", buffer_set_fn)));
+    env.set(
+        "bytes".into(),
+        Value::NativeFunction(NativeFn::new("bytes", bytes_fn)),
+    );
+    env.set(
+        "buffer-length".into(),
+        Value::NativeFunction(NativeFn::new("buffer-length", buffer_length_fn)),
+    );
+    env.set(
+        "buffer-get".into(),
+        Value::NativeFunction(NativeFn::new("buffer-get", buffer_get_fn)),
+    );
+    env.set(
+        "buffer-set!".into(),
+        Value::NativeFunction(NativeFn::new("buffer-set!", buffer_set_fn)),
+    );
 }

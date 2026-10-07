@@ -60,7 +60,7 @@ use zio_core::error::EvalError;
 use zio_core::value::Value;
 
 use crate::contracts::{
-    Actor, ActorRole, Error, ErrorKind, Observation, Result, SchemaVersion, SCHEMA_VERSION,
+    Actor, ActorRole, Error, ErrorKind, Observation, Result, SCHEMA_VERSION, SchemaVersion,
 };
 use crate::store::Store;
 
@@ -146,12 +146,8 @@ pub fn memory_context() -> Result<EvalContext> {
     load_source(&ctx, "core.zio", zio_core::stdlib_source());
     for lib in ["learning/memory.zio", "numa/vector.zio"] {
         let path = lib_path(lib);
-        let source = std::fs::read_to_string(&path).map_err(|e| {
-            Error::new(
-                ErrorKind::ArtifactUnavailable,
-                format!("read {lib}: {e}"),
-            )
-        })?;
+        let source = std::fs::read_to_string(&path)
+            .map_err(|e| Error::new(ErrorKind::ArtifactUnavailable, format!("read {lib}: {e}")))?;
         load_source(&ctx, lib, &source);
     }
     Ok(ctx)
@@ -159,7 +155,8 @@ pub fn memory_context() -> Result<EvalContext> {
 
 fn lib_path(lib: &str) -> std::path::PathBuf {
     std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .ancestors().nth(4)
+        .ancestors()
+        .nth(4)
         .expect("crate lives in the repository layout")
         .join("libs")
         .join(lib)
@@ -176,7 +173,9 @@ fn load_source(ctx: &EvalContext, name: &str, source: &str) {
 }
 
 fn eval_str(ctx: &EvalContext, src: &str) -> std::result::Result<Value, EvalError> {
-    let source_id = ctx.source_map().register("memory-host".into(), src.to_string());
+    let source_id = ctx
+        .source_map()
+        .register("memory-host".into(), src.to_string());
     let forms = zio_core::reader::reader::read_program_with_source(src, source_id)
         .map_err(|e| EvalError::custom(format!("parse error: {e}")))?;
     let mut last = Value::Nil;
@@ -200,7 +199,11 @@ pub fn eval_public(ctx: &EvalContext, src: &str) -> Value {
 /// byte-identical. Vector proximity is deliberately not consulted: a
 /// near-neighbour is a *hint*, and a hint that could rewrite a program's
 /// identity is exactly the failure this refuses.
-pub fn merge_structural(ctx: &EvalContext, a: &ExperienceIndexEntry, b: &ExperienceIndexEntry) -> Result<ExperienceIndexEntry> {
+pub fn merge_structural(
+    ctx: &EvalContext,
+    a: &ExperienceIndexEntry,
+    b: &ExperienceIndexEntry,
+) -> Result<ExperienceIndexEntry> {
     if a.ast != b.ast {
         return Err(Error::new(
             ErrorKind::IncompatibleState,
@@ -224,7 +227,10 @@ pub fn merge_structural(ctx: &EvalContext, a: &ExperienceIndexEntry, b: &Experie
     .map_err(eval_err)?;
     let new_id = value_string_field(&merged, "memory/id")
         .ok_or_else(|| Error::new(ErrorKind::BackendFailed, "merge produced no id"))?;
-    Ok(ExperienceIndexEntry { id: new_id, ..a.clone() })
+    Ok(ExperienceIndexEntry {
+        id: new_id,
+        ..a.clone()
+    })
 }
 
 // ── refusal 2: different probe sets are never compared ───────────
@@ -251,10 +257,7 @@ pub fn behaviour_match(a: &ExperienceIndexEntry, b: &ExperienceIndexEntry) -> Re
 /// The licence gate. A retrieval returns nothing at all if any candidate
 /// would cross a licence — an error, so a forbidden row can never be
 /// mistaken for an empty result set.
-pub fn check_retrievable(
-    store: &Store,
-    entry: &ExperienceIndexEntry,
-) -> Result<()> {
+pub fn check_retrievable(store: &Store, entry: &ExperienceIndexEntry) -> Result<()> {
     if !entry.usage_permitted {
         return Err(Error::denied(format!(
             "index entry {} carries usage_permitted=false; retrieval is refused",
@@ -287,10 +290,7 @@ pub fn check_retrievable(
 /// Licence resolution from the *store*, not from the entry's own copy:
 /// a signal's live status is the fact, an entry's cached flag is a
 /// claim. This reads the real store.
-pub fn resolve_licence(
-    store: &Store,
-    entry: &ExperienceIndexEntry,
-) -> Result<LicenseView> {
+pub fn resolve_licence(store: &Store, entry: &ExperienceIndexEntry) -> Result<LicenseView> {
     check_retrievable(store, entry)?;
     let mut observation_permitted = true;
     for obs_id in &entry.source_observation_ids {
@@ -351,7 +351,7 @@ pub fn semantic_nearest(
                          migrated explicitly",
                         c.id, other, query.encoder, query.space_version
                     ),
-                ))
+                ));
             }
         }
     }
@@ -413,7 +413,7 @@ fn parse_hit(value: &Value) -> Result<SemanticHit> {
                     return Err(Error::new(
                         ErrorKind::BackendFailed,
                         "semantic hit has no integer similarity",
-                    ))
+                    ));
                 }
             };
             let rec = items.get(1).ok_or_else(|| {
@@ -422,7 +422,10 @@ fn parse_hit(value: &Value) -> Result<SemanticHit> {
             let id = value_string_field(rec, "memory/id").ok_or_else(|| {
                 Error::new(ErrorKind::BackendFailed, "semantic hit record has no id")
             })?;
-            Ok(SemanticHit { id, similarity_bp: bp })
+            Ok(SemanticHit {
+                id,
+                similarity_bp: bp,
+            })
         }
         other => Err(Error::new(
             ErrorKind::BackendFailed,
@@ -454,7 +457,9 @@ pub struct MemoryIndex {
 impl MemoryIndex {
     /// Build the index and its zio context.
     pub fn new() -> Result<Self> {
-        Ok(Self { ctx: memory_context()? })
+        Ok(Self {
+            ctx: memory_context()?,
+        })
     }
 
     /// The zio context, so callers can run further zio-side checks.
@@ -574,9 +579,8 @@ pub fn extract_abstraction(
     let literal: Vec<String> = programs
         .iter()
         .map(|p| {
-            let forms = zio_core::reader::reader::read_program(p).map_err(|e| {
-                Error::invalid(format!("program {p:?} does not parse: {e}"))
-            })?;
+            let forms = zio_core::reader::reader::read_program(p)
+                .map_err(|e| Error::invalid(format!("program {p:?} does not parse: {e}")))?;
             match forms.as_slice() {
                 [one] => Ok(format!("'{}", one)),
                 other => Err(Error::invalid(format!(
@@ -604,16 +608,10 @@ pub fn extract_abstraction(
     let macro_candidate = if is_macro {
         let m = eval_str(
             ctx,
-            &format!(
-                "(memory--macro-candidate [{}])",
-                literal.join(" ")
-            ),
+            &format!("(memory--macro-candidate [{}])", literal.join(" ")),
         )
         .map_err(eval_err)?;
-        match &m {
-            Value::List(_) | Value::Vector(_) => true,
-            _ => false,
-        }
+        matches!(&m, Value::List(_) | Value::Vector(_))
     } else {
         false
     };
@@ -709,12 +707,7 @@ fn build_function(spine: &[String], programs: &[String]) -> Result<String> {
             args.push(body.clone());
         }
         for _ in 0..*arity {
-            args.push(
-                params
-                    .get(idx)
-                    .cloned()
-                    .unwrap_or_else(|| "0".to_string()),
-            );
+            args.push(params.get(idx).cloned().unwrap_or_else(|| "0".to_string()));
             idx += 1;
         }
         body = format!("({op} {})", args.join(" "));
@@ -735,9 +728,7 @@ fn first_form(program: &str) -> Result<zio_core::sexp::Sexp> {
 fn call_items(sexp: &zio_core::sexp::Sexp) -> Option<Vec<zio_core::sexp::Sexp>> {
     match sexp {
         zio_core::sexp::Sexp::List(items, _) if !items.is_empty() => match items.get(0) {
-            Some(zio_core::sexp::Sexp::Symbol(_, _)) => {
-                Some(items.iter().cloned().collect())
-            }
+            Some(zio_core::sexp::Sexp::Symbol(_, _)) => Some(items.iter().cloned().collect()),
             _ => None,
         },
         _ => None,
@@ -804,10 +795,7 @@ pub fn with_abstraction(base: &AbstractionCandidate) -> Result<EvalContext> {
 /// Run the original program and its abstracted call site on the same
 /// bindings in the same interpreter. `true` means the abstraction really
 /// is the program — the regression a promotion gate needs.
-pub fn regression_holds(
-    base: &AbstractionCandidate,
-    program: &str,
-) -> Result<bool> {
+pub fn regression_holds(base: &AbstractionCandidate, program: &str) -> Result<bool> {
     let ctx = with_abstraction(base)?;
     let call = instantiate(base, program)?;
     // The bindings come from the ORIGINAL program, so both sides see
@@ -855,11 +843,7 @@ fn eval_bound(ctx: &EvalContext, form: &str, leaves: &[String]) -> Result<i64> {
 /// before/after numbers in a [`DescriptionLengthReport`] are one
 /// measure rather than two vocabularies.
 fn zio_count(ctx: &EvalContext, form: &str) -> Result<i64> {
-    match eval_str(
-        ctx,
-        &format!("(count (read-string {:?}))", form),
-    )
-    .map_err(eval_err)? {
+    match eval_str(ctx, &format!("(count (read-string {:?}))", form)).map_err(eval_err)? {
         Value::Integer(i) => Ok(i),
         other => Err(Error::new(
             ErrorKind::BackendFailed,
@@ -916,7 +900,7 @@ pub struct DescriptionLengthReport {
 ///
 /// Several call sites are the interesting case: the definition is paid
 /// for ONCE, so the honest total is (sum of the abstracted call sites)
-/// + the definition, and whether that beats the raw programs is a
+/// plus the definition, and whether that beats the raw programs is a
 /// RESULT to be measured, not a win to be assumed.
 pub fn measure_reuse(
     ctx: &EvalContext,
@@ -924,7 +908,9 @@ pub fn measure_reuse(
     fresh_task_bodies: &[&str],
 ) -> Result<DescriptionLengthReport> {
     if fresh_task_bodies.is_empty() {
-        return Err(Error::invalid("reuse measurement needs at least one task body"));
+        return Err(Error::invalid(
+            "reuse measurement needs at least one task body",
+        ));
     }
     // Before: the raw programs, counted with the SAME counter the
     // library uses, so before/after are one measure and not two
@@ -949,10 +935,7 @@ pub fn measure_reuse(
     );
     let call_dl = eval_str(
         ctx,
-        &format!(
-            "(reduce (fn [acc c] (+ acc (count c))) 0 {})",
-            call_src
-        ),
+        &format!("(reduce (fn [acc c] (+ acc (count c))) 0 {})", call_src),
     )
     .map_err(eval_err)?;
     let after_call_dl = as_int(&call_dl, "call-site node count")?;
@@ -1048,7 +1031,10 @@ pub fn promote_abstraction(
     evidence: &PromotionEvidence,
     now_ms: i64,
 ) -> Result<PromotedCapability> {
-    actor.require(ActorRole::Operator, "promoting an abstraction to a capability")?;
+    actor.require(
+        ActorRole::Operator,
+        "promoting an abstraction to a capability",
+    )?;
 
     // Gate (b) is checked first because it is the one that cannot be
     // faked by a caller-supplied flag: a "new task" that is actually a
@@ -1124,12 +1110,7 @@ pub fn promote_abstraction(
 
 /// A minimal observation whose training permission and modality mask are
 /// explicit, for building a fact base to index over.
-pub fn observation(
-    id: &str,
-    task_id: &str,
-    source: &str,
-    training_permitted: bool,
-) -> Observation {
+pub fn observation(id: &str, task_id: &str, source: &str, training_permitted: bool) -> Observation {
     Observation {
         schema: SCHEMA_VERSION,
         id: id.to_string(),

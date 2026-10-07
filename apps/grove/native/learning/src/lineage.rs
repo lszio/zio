@@ -10,7 +10,7 @@
 //! identity: re-deriving is a new snapshot id, never an edit of an old
 //! one.
 
-use rusqlite::{params, OptionalExtension};
+use rusqlite::{OptionalExtension, params};
 
 use crate::contracts::{Actor, ArtifactRef, Derivation, Error, ErrorKind, Result};
 use crate::store::Store;
@@ -93,8 +93,8 @@ impl Store {
             .map_err(|e| Error::new(ErrorKind::BackendFailed, format!("read lineage: {e}")))?;
         let mut out = Vec::new();
         for row in rows {
-            let (parent, derivation) =
-                row.map_err(|e| Error::new(ErrorKind::BackendFailed, format!("read lineage: {e}")))?;
+            let (parent, derivation) = row
+                .map_err(|e| Error::new(ErrorKind::BackendFailed, format!("read lineage: {e}")))?;
             out.push((
                 ArtifactRef::parse_hex(&parent)?,
                 parse_derivation(&derivation)?,
@@ -167,8 +167,9 @@ impl Store {
             .map_err(|e| Error::new(ErrorKind::BackendFailed, format!("list snapshots: {e}")))?;
         let mut out = Vec::new();
         for row in rows {
-            let (name, hex, at_ms) = row
-                .map_err(|e| Error::new(ErrorKind::BackendFailed, format!("list snapshots: {e}")))?;
+            let (name, hex, at_ms) = row.map_err(|e| {
+                Error::new(ErrorKind::BackendFailed, format!("list snapshots: {e}"))
+            })?;
             out.push((name, ArtifactRef::parse_hex(&hex)?, at_ms));
         }
         Ok(out)
@@ -186,7 +187,7 @@ fn parse_derivation(text: &str) -> Result<Derivation> {
             return Err(Error::new(
                 ErrorKind::IncompatibleState,
                 format!("unknown derivation edge {other:?}"),
-            ))
+            ));
         }
     })
 }

@@ -1,0 +1,57 @@
+==================
+Collections and dispatch vectors, not anonymous functions
+==================
+(plus [1 2] #(3 4) #{:a :b} {:x 5 :y 6})
+---
+(source_file (list (symbol) (vector (number) (number)) (dispatch_vector (number) (number)) (set (keyword) (keyword)) (map (keyword) (number) (keyword) (number))))
+
+==================
+Reader quote and symbols with Unicode
+==================
+'中文 '(😀 #t #_foo 123abc trueish nilpotent)
+---
+(source_file (quote (symbol)) (quote (list (symbol) (symbol) (symbol) (symbol) (symbol) (symbol))))
+
+==================
+Numbers and reader constants
+==================
+0 -42 +17 1.0 .5 -2. 1e3 -2.5E-4 true false nil NaN inf -infinity
+---
+(source_file (number) (number) (number) (number) (number) (number) (number) (number) (boolean) (boolean) (nil) (number) (number) (number))
+
+==================
+Character scalars and names
+==================
+#\a #\中 #\😀 #\space #\newline #\tab #\) #\; #\"
+---
+(source_file (character) (character) (character) (character) (character) (character) (character) (character) (character))
+
+==================
+Strings preserve unknown escapes and permit newlines
+==================
+"中文😀" "a\n\t\r\\\"\q" "line
+break"
+---
+(source_file (string (string_content)) (string (string_content) (escape_sequence) (escape_sequence) (escape_sequence) (escape_sequence) (escape_sequence) (escape_sequence)) (string (string_content)))
+
+==================
+Comments, keywords and separators stay reader forms
+==================
+; 中文😀 comment
+[:x : , 2] {"x" : 3 , :y 4} ; end
+---
+(source_file (comment) (vector (keyword) (keyword) (symbol) (number)) (map (string (string_content)) (keyword) (number) (symbol) (keyword) (number)) (comment))
+
+==================
+Incomplete collection remains inspectable
+==================
+(def x
+---
+(source_file (list (symbol) (symbol) (MISSING ")")))
+
+==================
+Incomplete quote remains inspectable
+==================
+'
+---
+(source_file (ERROR))

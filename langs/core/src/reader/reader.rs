@@ -1,9 +1,9 @@
-use im::{vector, Vector};
+use im::{Vector, vector};
 
 use crate::error::ReaderError;
+use crate::reader::lexer::{Token, tokenize};
 use crate::sexp::Sexp;
 use crate::span::{BytePos, SourceId, Span};
-use crate::reader::lexer::{Token, tokenize};
 
 /// Read a single S-expression from the input string.
 /// Produces a Sexp with source spans attached (using SourceId::NONE,
@@ -12,6 +12,16 @@ pub fn read(input: &str) -> Result<Sexp, ReaderError> {
     let tokens = tokenize(input);
     let mut tokens = tokens.into_iter().peekable();
     let (sexp, _) = read_from_tokens(&mut tokens, SourceId::NONE, input)?;
+    if let Some(token) = tokens.peek() {
+        return Err(
+            ReaderError::UnexpectedToken(token.text.clone()).at(token_span(
+                input,
+                SourceId::NONE,
+                token.start,
+                token.end(),
+            )),
+        );
+    }
     Ok(strip_spans(sexp))
 }
 
@@ -28,10 +38,9 @@ fn strip_spans(sexp: Sexp) -> Sexp {
             Sexp::Keyword(k, _) => Sexp::Keyword(k, None),
             Sexp::List(list, _) => Sexp::List(list.into_iter().map(go).collect(), None),
             Sexp::Vector(v, _) => Sexp::Vector(v.into_iter().map(go).collect(), None),
-            Sexp::Map(m, _) => Sexp::Map(
-                m.into_iter().map(|(k, v)| (go(k), go(v))).collect(),
-                None,
-            ),
+            Sexp::Map(m, _) => {
+                Sexp::Map(m.into_iter().map(|(k, v)| (go(k), go(v))).collect(), None)
+            }
             Sexp::Char(c, _) => Sexp::Char(c, None),
         }
     }
@@ -43,6 +52,16 @@ pub fn read_with_source(input: &str, source_id: SourceId) -> Result<Sexp, Reader
     let tokens = tokenize(input);
     let mut tokens = tokens.into_iter().peekable();
     let (sexp, _) = read_from_tokens(&mut tokens, source_id, input)?;
+    if let Some(token) = tokens.peek() {
+        return Err(
+            ReaderError::UnexpectedToken(token.text.clone()).at(token_span(
+                input,
+                source_id,
+                token.start,
+                token.end(),
+            )),
+        );
+    }
     Ok(sexp)
 }
 
@@ -60,7 +79,10 @@ pub fn read_program(input: &str) -> Result<Vec<Sexp>, ReaderError> {
 
 /// Read multiple top-level S-expressions, keeping source spans attached
 /// so runtime errors inside the program carry line/column information.
-pub fn read_program_with_source(input: &str, source_id: SourceId) -> Result<Vec<Sexp>, ReaderError> {
+pub fn read_program_with_source(
+    input: &str,
+    source_id: SourceId,
+) -> Result<Vec<Sexp>, ReaderError> {
     let tokens = tokenize(input);
     let mut tokens = tokens.into_iter().peekable();
     let mut results = Vec::new();
@@ -69,6 +91,17 @@ pub fn read_program_with_source(input: &str, source_id: SourceId) -> Result<Vec<
         results.push(sexp);
     }
     Ok(results)
+}
+
+fn token_span(input: &str, source_id: SourceId, start: BytePos, end: BytePos) -> Span {
+    let (line, col) = crate::span::line_col_of(input, &crate::span::line_starts_of(input), start.0);
+    Span {
+        source_id,
+        start,
+        end,
+        line,
+        col,
+    }
 }
 
 /// Read from tokens using an explicit stack.
@@ -84,7 +117,13 @@ fn read_from_tokens(
     let line_starts = crate::span::line_starts_of(input);
     let span_of = |start: BytePos, end: BytePos| {
         let (line, col) = crate::span::line_col_of(input, &line_starts, start.0);
-        Span { source_id, start, end, line, col }
+        Span {
+            source_id,
+            start,
+            end,
+            line,
+            col,
+        }
     };
 
     while let Some(token) = tokens.next() {
@@ -93,14 +132,19 @@ fn read_from_tokens(
 
         match token.text.as_str() {
             "'" => {
+                if tokens.peek().is_none()
+                    || tokens
+                        .peek()
+                        .is_some_and(|t| matches!(t.text.as_str(), ")" | "]" | "}"))
+                {
+                    return Err(ReaderError::MissingQuoteExpr.at(span_of(start, end)));
+                }
                 // Reader macro: 'x → (quote x)
                 let (inner, _) = read_from_tokens(tokens, source_id, input)?;
-                let inner_span = inner.span().unwrap_or(Span::DUMMY);
+                let inner_end = tokens.peek().map_or(BytePos(input.len()), |t| t.start);
+                let inner_span = inner.span().unwrap_or(span_of(start, inner_end));
                 let sym = Sexp::Symbol("quote".into(), Some(span_of(start, start)));
-                let quoted = Sexp::List(
-                    vector![sym, inner],
-                    Some(span_of(start, inner_span.end)),
-                );
+                let quoted = Sexp::List(vector![sym, inner], Some(span_of(start, inner_span.end)));
                 if let Some(parent) = stack.last_mut() {
                     parent.1.push_back(quoted);
                 } else {
@@ -121,7 +165,10 @@ fn read_from_tokens(
                                     last_end = tokens.next().unwrap().end();
                                     break;
                                 }
-                                None => return Err(ReaderError::UnexpectedEOF),
+                                None => {
+                                    return Err(ReaderError::UnexpectedEOF
+                                        .at(span_of(start, BytePos(input.len()))));
+                                }
                                 _ => {
                                     let (inner, _) = read_from_tokens(tokens, source_id, input)?;
                                     last_end = inner.span().map(|s| s.end).unwrap_or(last_end);
@@ -148,7 +195,10 @@ fn read_from_tokens(
                                     last_end = tokens.next().unwrap().end();
                                     break;
                                 }
-                                None => return Err(ReaderError::UnexpectedEOF),
+                                None => {
+                                    return Err(ReaderError::UnexpectedEOF
+                                        .at(span_of(start, BytePos(input.len()))));
+                                }
                                 _ => {
                                     let (inner, _) = read_from_tokens(tokens, source_id, input)?;
                                     last_end = inner.span().map(|s| s.end).unwrap_or(last_end);
@@ -170,8 +220,11 @@ fn read_from_tokens(
                             "space" => ' ',
                             "newline" => '\n',
                             "tab" => '\t',
-                            _ if name.len() == 1 => name.chars().next().unwrap(),
-                            _ => return Err(ReaderError::UnexpectedToken(name.to_string())),
+                            _ if name.chars().count() == 1 => name.chars().next().unwrap(),
+                            _ => {
+                                return Err(ReaderError::UnexpectedToken(name.to_string())
+                                    .at(span_of(start, tok.end())));
+                            }
                         };
                         let ch_span = Some(span_of(start, tok.end()));
                         let val = Sexp::Char(ch, ch_span);
@@ -182,10 +235,11 @@ fn read_from_tokens(
                         }
                     }
                     Some(other) => {
-                        return Err(ReaderError::UnexpectedToken(other.text.clone()));
+                        return Err(ReaderError::UnexpectedToken(other.text.clone())
+                            .at(span_of(start, other.end())));
                     }
                     None => {
-                        return Err(ReaderError::UnexpectedEOF);
+                        return Err(ReaderError::UnexpectedEOF.at(span_of(start, end)));
                     }
                 }
             }
@@ -193,35 +247,22 @@ fn read_from_tokens(
                 stack.push((token.text.clone(), Vector::new(), start));
             }
             ")" | "]" | "}" => {
-                let (open, items, open_start) = stack
-                    .pop()
-                    .ok_or_else(|| ReaderError::UnexpectedToken(token.text.clone()))?;
+                let (open, items, open_start) = stack.pop().ok_or_else(|| {
+                    ReaderError::UnexpectedToken(token.text.clone()).at(span_of(start, end))
+                })?;
                 if (open == "(" && token.text != ")")
                     || (open == "[" && token.text != "]")
                     || (open == "{" && token.text != "}")
                 {
-                    return Err(ReaderError::UnexpectedToken(token.text));
+                    return Err(ReaderError::UnexpectedToken(token.text).at(span_of(start, end)));
                 }
                 let span = Some(span_of(open_start, end));
-                let items = if open == "[" {
-                    items.into_iter().filter(|s| !is_json_separator(s)).collect()
-                } else {
-                    items
-                };
                 let val = match open.as_str() {
                     "(" => Sexp::List(items, span),
                     "[" => Sexp::Vector(items, span),
                     "{" => {
-                        // Tolerate JSON-style `key: value` colons and
-                        // commas: bare ":" parses as an empty keyword and
-                        // bare "," as a "," symbol — drop both before
-                        // pairing, so json-parse can read real JSON.
-                        let items: im::Vector<Sexp> = items
-                            .into_iter()
-                            .filter(|s| !is_json_separator(s))
-                            .collect();
                         if items.len() % 2 != 0 {
-                            return Err(ReaderError::OddMapElements);
+                            return Err(ReaderError::OddMapElements.at(span_of(open_start, end)));
                         }
                         let mut map = im::HashMap::new();
                         let mut iter = items.into_iter();
@@ -242,7 +283,7 @@ fn read_from_tokens(
             _ => {
                 // Atom token — parse with position info
                 let span = Some(span_of(start, end));
-                let val = parse_atom(&token.text, span);
+                let val = parse_atom(&token.text, span).map_err(|e| e.at(span_of(start, end)))?;
                 if let Some(parent) = stack.last_mut() {
                     parent.1.push_back(val);
                 } else {
@@ -253,26 +294,25 @@ fn read_from_tokens(
     }
 
     if !stack.is_empty() {
-        Err(ReaderError::UnexpectedEOF)
+        Err(ReaderError::UnexpectedEOF.at(span_of(stack.last().unwrap().2, BytePos(input.len()))))
     } else {
         // Input was empty or all whitespace — return Nil
         Ok((Sexp::Nil, false))
     }
 }
 
-/// JSON separators the reader tolerates inside `{}` and `[]`:
-/// a bare ":" (parsed as an empty keyword) and a bare "," (parsed as a
-/// "," symbol).
-fn is_json_separator(s: &Sexp) -> bool {
-    match s {
-        Sexp::Keyword(k, _) if k.is_empty() => true,
-        Sexp::Symbol(c, _) if c == "," => true,
-        _ => false,
-    }
-}
-
-fn parse_atom(token: &str, span: Option<Span>) -> Sexp {
-    if token.starts_with('"') && token.ends_with('"') && token.len() >= 2 {
+fn parse_atom(token: &str, span: Option<Span>) -> Result<Sexp, ReaderError> {
+    Ok(if token.starts_with('"') {
+        let escaped_last_quote = token.as_bytes()[..token.len().saturating_sub(1)]
+            .iter()
+            .rev()
+            .take_while(|c| **c == b'\\')
+            .count()
+            % 2
+            == 1;
+        if token.len() < 2 || !token.ends_with('"') || escaped_last_quote {
+            return Err(ReaderError::MalformedString("unterminated literal".into()));
+        }
         // Basic unescaping for common characters
         let s = &token[1..token.len() - 1];
         let mut unescaped = String::new();
@@ -289,7 +329,7 @@ fn parse_atom(token: &str, span: Option<Span>) -> Sexp {
                         unescaped.push('\\');
                         unescaped.push(c);
                     }
-                    None => unescaped.push('\\'),
+                    None => return Err(ReaderError::MalformedString("dangling escape".into())),
                 }
             } else {
                 unescaped.push(c);
@@ -313,7 +353,7 @@ fn parse_atom(token: &str, span: Option<Span>) -> Sexp {
                 }
             }
         }
-    }
+    })
 }
 
 #[cfg(test)]
@@ -383,14 +423,29 @@ mod tests {
 
     #[test]
     fn test_unexpected_eof() {
-        assert_eq!(parse_for_test("("), Err(ReaderError::UnexpectedEOF));
+        // A located error is the real contract: the reader reports where
+        // the input ran out, not merely that it did.
+        let error = parse_for_test("(").expect_err("unbalanced open should fail");
+        assert!(
+            error.span().is_some(),
+            "reader error should carry a location"
+        );
+        assert!(
+            matches!(error.root_cause(), ReaderError::UnexpectedEOF),
+            "got {error:?}"
+        );
     }
 
     #[test]
     fn test_unexpected_token() {
-        assert_eq!(
-            parse_for_test(")"),
-            Err(ReaderError::UnexpectedToken(")".to_string()))
+        let error = parse_for_test(")").expect_err("stray close should fail");
+        assert!(
+            error.span().is_some(),
+            "reader error should carry a location"
+        );
+        assert!(
+            matches!(error.root_cause(), ReaderError::UnexpectedToken(token) if token == ")"),
+            "got {error:?}"
         );
     }
 
@@ -404,7 +459,10 @@ mod tests {
 
     #[test]
     fn test_read_keyword() {
-        assert_eq!(parse_for_test(":foo"), Ok(Sexp::Keyword("foo".into(), None)));
+        assert_eq!(
+            parse_for_test(":foo"),
+            Ok(Sexp::Keyword("foo".into(), None))
+        );
     }
 
     #[test]
@@ -455,10 +513,7 @@ mod tests {
         assert_eq!(
             parse_for_test("'42"),
             Ok(Sexp::List(
-                vector![
-                    Sexp::Symbol("quote".into(), None),
-                    Sexp::Integer(42, None),
-                ],
+                vector![Sexp::Symbol("quote".into(), None), Sexp::Integer(42, None),],
                 None
             ))
         );
@@ -513,11 +568,23 @@ mod tests {
 
     #[test]
     fn test_comment() {
-        // read() only returns the first expression; comments separate tokens
-        // so "a ; comment\n b" reads as two separate expressions.
+        // `read` parses exactly one form and refuses trailing tokens, so
+        // the input here is a comment between one symbol and end of
+        // input. The comment must be consumed rather than surfaced as a
+        // token. `read` strips spans, so the range check goes through
+        // `read_with_source`, which is the path a real caller uses.
+        let form = parse_for_test("a ; comment\n").expect("comment should be consumed");
+        assert!(
+            matches!(&form, Sexp::Symbol(name, _) if name == "a"),
+            "got {form:?}"
+        );
+
+        let located = read_with_source("a ; comment\n", SourceId(3)).expect("located read");
+        let span = located.span().expect("located form should carry a span");
         assert_eq!(
-            parse_for_test("a ; comment\n b"),
-            Ok(Sexp::Symbol("a".into(), None))
+            span.end.0 - span.start.0,
+            1,
+            "symbol span must not include the comment"
         );
     }
 

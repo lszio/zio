@@ -17,9 +17,7 @@
 //! This is additive on purpose: it lives beside the store rather than
 //! inside it, and it changes no existing signature.
 
-use crate::contracts::{
-    Actor, Error, ErrorKind, LearningSignal, Recipe, Result, Run, SignalKind,
-};
+use crate::contracts::{Actor, Error, ErrorKind, LearningSignal, Recipe, Result, Run, SignalKind};
 use crate::store::Store;
 
 impl Store {

@@ -132,10 +132,7 @@ pub fn validate_modules(modules: &[ModuleSpec]) -> Result<()> {
             if !seen.contains(&dep.as_str()) {
                 return Err(Error::new(
                     ErrorKind::ProtocolViolation,
-                    format!(
-                        "module {:?} depends on unknown module {dep:?}",
-                        module.name
-                    ),
+                    format!("module {:?} depends on unknown module {dep:?}", module.name),
                 ));
             }
             // The edge is checked HERE, not at each call site: the product
@@ -184,10 +181,7 @@ pub fn require_compatible(consumer: &ModuleSpec, producer: &ModuleSpec) -> Resul
             format!(
                 "module {:?} consumes space {:?} but module {:?} emits {:?}; \
                  same width is not the same meaning",
-                consumer.name,
-                consumer.input_space,
-                producer.name,
-                producer.output_space
+                consumer.name, consumer.input_space, producer.name, producer.output_space
             ),
         ));
     }
@@ -211,7 +205,9 @@ pub fn compose(
 ) -> Result<CompositionResult> {
     actor.require(ActorRole::Operator, "composing modules")?;
     if parents.is_empty() {
-        return Err(Error::invalid("a composition needs at least one parent snapshot"));
+        return Err(Error::invalid(
+            "a composition needs at least one parent snapshot",
+        ));
     }
     validate_modules(&modules)?;
 
@@ -462,10 +458,7 @@ pub fn commit_joint(
         })?;
         // The artifact may hold one module or a map of them; compare the
         // slice that names this module.
-        let before_module = before
-            .get(name)
-            .cloned()
-            .unwrap_or_else(|| before.clone());
+        let before_module = before.get(name).cloned().unwrap_or_else(|| before.clone());
         if &before_module != after {
             return Err(Error::new(
                 ErrorKind::ProtocolViolation,

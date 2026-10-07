@@ -22,6 +22,17 @@ pub trait IoHost: Send + Sync {
     fn write_file(&self, path: &str, data: &str) -> Result<(), EvalError>;
     /// Check whether a file exists.
     fn file_exists(&self, path: &str) -> Result<bool, EvalError>;
+
+    /// Canonical authority identity. Hosts without filesystem authority refuse.
+    fn canonicalize_path(&self, _path: &str) -> Result<String, EvalError> {
+        Err(EvalError::custom("host does not grant path resolution"))
+    }
+
+    fn is_directory(&self, _path: &str) -> Result<bool, EvalError> {
+        Err(EvalError::custom(
+            "host does not grant directory inspection",
+        ))
+    }
 }
 
 /// Standard I/O host using std::io stdout/stdin and the real filesystem.
@@ -68,6 +79,18 @@ impl IoHost for StdIoHost {
 
     fn file_exists(&self, path: &str) -> Result<bool, EvalError> {
         Ok(std::path::Path::new(path).exists())
+    }
+
+    fn canonicalize_path(&self, path: &str) -> Result<String, EvalError> {
+        std::fs::canonicalize(path)
+            .map(|p| p.to_string_lossy().into_owned())
+            .map_err(|e| EvalError::custom(format!("cannot canonicalize {path}: {e}")))
+    }
+
+    fn is_directory(&self, path: &str) -> Result<bool, EvalError> {
+        Ok(std::fs::metadata(path)
+            .map_err(|e| EvalError::custom(format!("cannot inspect {path}: {e}")))?
+            .is_dir())
     }
 }
 
@@ -139,7 +162,9 @@ impl IoHost for BufferIoHost {
     }
 
     fn current_dir(&self) -> Result<String, EvalError> {
-        Err(EvalError::custom("BufferIoHost: sandboxed, no working directory"))
+        Err(EvalError::custom(
+            "BufferIoHost: sandboxed, no working directory",
+        ))
     }
 
     fn read_file(&self, path: &str) -> Result<String, EvalError> {
@@ -151,14 +176,37 @@ impl IoHost for BufferIoHost {
     }
 
     fn write_file(&self, path: &str, data: &str) -> Result<(), EvalError> {
-        self.files
-            .lock()
-            .insert(path.to_string(), data.to_string());
+        self.files.lock().insert(path.to_string(), data.to_string());
         Ok(())
     }
 
     fn file_exists(&self, path: &str) -> Result<bool, EvalError> {
         Ok(self.files.lock().contains_key(path))
+    }
+
+    fn canonicalize_path(&self, path: &str) -> Result<String, EvalError> {
+        let path = std::path::Path::new(path);
+        if !path.is_absolute() {
+            return Err(EvalError::custom("virtual paths must be absolute"));
+        }
+        let mut result = std::path::PathBuf::new();
+        for part in path.components() {
+            match part {
+                std::path::Component::ParentDir => {
+                    if !result.pop() {
+                        return Err(EvalError::custom("virtual path escapes root"));
+                    }
+                }
+                std::path::Component::CurDir => {}
+                other => result.push(other.as_os_str()),
+            }
+        }
+        Ok(result.to_string_lossy().into_owned())
+    }
+
+    fn is_directory(&self, path: &str) -> Result<bool, EvalError> {
+        self.canonicalize_path(path)?;
+        Ok(!self.files.lock().contains_key(path))
     }
 }
 

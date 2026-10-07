@@ -3,9 +3,9 @@ use std::sync::Arc;
 
 use crate::env::Env;
 use crate::error::EvalError;
+use crate::module::{Module, ModuleTable};
 use crate::sexp::Sexp;
 use crate::special::TailResult;
-use crate::module::{Module, ModuleTable};
 
 /// Minimal evaluation capability — eval and environment access.
 /// Embedding scenarios that don't need modules or ZOS only need this trait.
@@ -20,6 +20,16 @@ pub trait EvalRuntime {
     /// spans from every loaded file resolve against one registry.
     fn source_map(&self) -> &Arc<crate::span::SourceMap>;
 
+    /// The directory a `load`ed relative path resolves against.
+    ///
+    /// `None` means the host named none, and resolution falls back to
+    /// the process working directory. An installed application sets
+    /// this so a `(load "contracts.zio")` finds the sibling it shipped
+    /// with, whichever directory the launcher was run from.
+    fn source_dir(&self) -> Option<std::path::PathBuf> {
+        None
+    }
+
     /// Get the host I/O implementation for this evaluation runtime (ADR-011).
     fn io(&self) -> &dyn crate::io::IoHost {
         &DEFAULT_STD_IO
@@ -30,6 +40,19 @@ pub trait EvalRuntime {
     /// is running in. Inert when no observer is attached.
     fn observation(&self) -> &crate::observer::Observation {
         crate::observer::inert()
+    }
+
+    /// Charge `units` of execution against this runtime's ceiling.
+    ///
+    /// Every path that does work charges here: the tree-walking
+    /// evaluator, macro expansion, a native callback re-entering the
+    /// evaluator, and the compiled instruction loop. A ceiling that only
+    /// one of those paths honours is not a ceiling — it is a number in
+    /// a report. A runtime with no ceiling accepts the charge and
+    /// returns `Ok`.
+    fn spend(&self, units: u64) -> Result<(), EvalError> {
+        let _ = units;
+        Ok(())
     }
 }
 
@@ -68,16 +91,25 @@ pub trait ModuleRegistry {
 pub trait EvalEngine: EvalRuntime + ModuleRegistry {}
 
 /// Type for the injectable module loader function.
-pub type ModuleLoader = dyn Fn(&[String], &str, &Arc<Env>) -> Result<Module, EvalError> + Send + Sync;
+pub type ModuleLoader = dyn Fn(&[String], &str, &Arc<Env>) -> Result<Module, EvalError>;
 
 /// Evaluation context — holds all mutable state needed during eval.
 pub struct EvalContext {
     pub env: Arc<Env>,
-    pub modules: std::cell::RefCell<ModuleTable>,
+    pub modules: std::rc::Rc<std::cell::RefCell<ModuleTable>>,
     pub loader: std::cell::RefCell<Option<Box<ModuleLoader>>>,
     pub io: Arc<dyn crate::io::IoHost>,
     /// Registry of parsed sources; spans from eval errors resolve here.
     pub source_map: Arc<crate::span::SourceMap>,
+    /// Directory a `load`ed path is resolved against, when the host
+    /// named one.
+    ///
+    /// An installed application is launched from wherever the user
+    /// happens to be, so resolving `(load "contracts.zio")` against the
+    /// process CWD finds nothing the moment the launcher is run from
+    /// another directory. Resolving against the source's own directory
+    /// is what makes an application relocatable.
+    pub source_dir: std::cell::RefCell<Option<std::path::PathBuf>>,
     /// Stack of export accumulators for modules being defined. The
     /// `(export a b)` form appends to the top; `module` forms and module
     /// loaders push before evaluating a body and take the result after.
@@ -96,17 +128,22 @@ impl EvalContext {
     ) -> Self {
         EvalContext {
             env,
-            modules: std::cell::RefCell::new(ModuleTable::new()),
+            modules: std::rc::Rc::new(std::cell::RefCell::new(ModuleTable::new())),
             loader: std::cell::RefCell::new(None),
             io,
             source_map,
+            source_dir: std::cell::RefCell::new(None),
             module_exports: std::cell::RefCell::new(Vec::new()),
             observation: crate::observer::Observation::default(),
         }
     }
 
     pub fn new(env: Arc<Env>) -> Self {
-        Self::build(env, Arc::new(crate::io::StdIoHost), Arc::new(crate::span::SourceMap::new()))
+        Self::build(
+            env,
+            Arc::new(crate::io::StdIoHost),
+            Arc::new(crate::span::SourceMap::new()),
+        )
     }
 
     /// Attach an execution observer. See [`crate::observer`]: this is the
@@ -134,6 +171,17 @@ impl EvalContext {
         self.observation.fuel_spent()
     }
 
+    /// Charge `units` of execution. Every evaluator path funnels
+    /// through here so a ceiling cannot be side-stepped by taking a
+    /// different route through the same program.
+    pub fn spend(&self, units: u64) -> Result<(), EvalError> {
+        if self.observation.spend_fuel_by(units) {
+            Ok(())
+        } else {
+            Err(EvalError::custom("execution stopped: step ceiling reached"))
+        }
+    }
+
     pub fn with_io(env: Arc<Env>, io: Arc<dyn crate::io::IoHost>) -> Self {
         Self::build(env, io, Arc::new(crate::span::SourceMap::new()))
     }
@@ -151,6 +199,18 @@ impl EvalContext {
     ) -> Self {
         let ctx = Self::build(env, io, source_map);
         *ctx.loader.borrow_mut() = Some(loader);
+        ctx
+    }
+
+    pub fn with_shared_modules(
+        env: Arc<Env>,
+        loader: Box<ModuleLoader>,
+        io: Arc<dyn crate::io::IoHost>,
+        source_map: Arc<crate::span::SourceMap>,
+        modules: std::rc::Rc<std::cell::RefCell<ModuleTable>>,
+    ) -> Self {
+        let mut ctx = Self::with_loader_and_io(env, loader, io, source_map);
+        ctx.modules = modules;
         ctx
     }
 }

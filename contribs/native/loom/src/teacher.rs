@@ -102,7 +102,10 @@ impl TeacherCapability {
         if licence == UsageLicence::Forbidden {
             return Err(HostError::new(
                 HostErrorKind::Config,
-                format!("teacher {} was called with a forbidden licence", self.teacher_id),
+                format!(
+                    "teacher {} was called with a forbidden licence",
+                    self.teacher_id
+                ),
             ));
         }
         if licence.allows_training() && !self.permits_training_use {
@@ -125,19 +128,30 @@ impl TeacherCapability {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum ContentPart {
-    Text { text: String },
+    Text {
+        text: String,
+    },
     /// Reference to content the host already holds.
-    Reference { artifact: String, media_type: String },
+    Reference {
+        artifact: String,
+        media_type: String,
+    },
     /// A numeric vector, small enough to inline.
-    Numbers { values: Vec<f64> },
+    Numbers {
+        values: Vec<f64>,
+    },
 }
 
 impl ContentPart {
     pub fn modality(&self) -> Modality {
         match self {
             Self::Text { .. } => Modality::Text,
-            Self::Reference { media_type, .. } if media_type.starts_with("image/") => Modality::Image,
-            Self::Reference { media_type, .. } if media_type.starts_with("audio/") => Modality::Audio,
+            Self::Reference { media_type, .. } if media_type.starts_with("image/") => {
+                Modality::Image
+            }
+            Self::Reference { media_type, .. } if media_type.starts_with("audio/") => {
+                Modality::Audio
+            }
             Self::Reference { .. } => Modality::Text,
             Self::Numbers { .. } => Modality::Numeric,
         }
@@ -296,7 +310,10 @@ pub struct RecordingTeacher<H: TeacherHost> {
 
 impl<H: TeacherHost> RecordingTeacher<H> {
     pub fn new(inner: H) -> Self {
-        Self { inner, calls: std::sync::Mutex::new(Vec::new()) }
+        Self {
+            inner,
+            calls: std::sync::Mutex::new(Vec::new()),
+        }
     }
 
     pub fn recorded(&self) -> Vec<TeacherRequest> {

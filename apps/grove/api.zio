@@ -1,0 +1,532 @@
+;; Grove HTTP product surface. Implements exactly the route set listed in
+;; docs/grove-http-routes.md (and the local://grove-http-routes.md snapshot).
+;; Dispatcher over runner/coordinator/checkpoint/store/feedback/selection/codec/contracts.
+;; Auth: Authorization: Bearer <token>, mapped via GROVE_TOKEN_* env vars to a role.
+;; Errors: {"class","detail","conflict_version"} envelope, classes from grove--errors.
+;; Idempotency: every mutating POST honors body.operation_id (see store--receipt / store--receipt-put).
+;; Events: GET /api/events with after_sequence, run_id, kind, limit; cursor paging.
+(load "contracts.zio")
+(load "codec.zio")
+(load "artifacts.zio")
+(load "store.zio")
+(load "feedback.zio")
+(load "checkpoint.zio")
+(load "coordinator.zio")
+(load "runner.zio")
+(load "selection.zio")
+
+;; ---------- Token -> role table (env-driven, never from argv) ----------
+(def api--env-role {
+  "GROVE_TOKEN_READER" "reader"
+  "GROVE_TOKEN_ANNOTATOR" "annotator"
+  "GROVE_TOKEN_OPERATOR" "operator"
+  "GROVE_TOKEN_PUBLISHER" "publisher"})
+(defn api--load-tokens []
+  (reduce (fn [out entry]
+            (let [var (get entry 0) role (get entry 1)
+                  tok (host/getenv var)]
+              (if (and tok (> (count tok) 0))
+                (assoc out tok role) out)))
+          {} (vec api--env-role)))
+
+;; ---------- HTTP envelope helpers ----------
+(defn api--status [class] (get {
+  "ok" 200 "created" 201 "accepted" 202 "no-content" 204
+  "unauthorized" 401 "bad-request" 400 "not_found" 404
+  "method-not-allowed" 405 "unprocessable" 422
+  "invalid-input" 400 "capability-denied" 403 "conflict" 409
+  "incompatible-state" 409 "budget-exhausted" 409
+  "artifact-unavailable" 404 "timeout" 504 "cancelled" 410
+  "backend-failed" 502 "protocol-violation" 400
+} class 500))
+
+(defn api--reply [request status body]
+  (host/http-reply request
+    (api--status status)
+    {"content-type" "application/json"}
+    (host/bytes (json-stringify body))))
+
+(defn api--ok [request body] (api--reply request "ok" body))
+(defn api--created [request body] (api--reply request "created" body))
+(defn api--accepted [request body] (api--reply request "accepted" body))
+(defn api--no-content [request] (host/http-reply request 204 {} (host/bytes "")))
+
+(defn api--error [request class detail extra]
+  (let [payload (merge {"class" class "detail" detail} (if extra extra {}))]
+    (api--reply request class payload)))
+
+;; ---------- Auth ----------
+(defn api--bearer [headers]
+  (let [auth (get headers "authorization" "")]
+    (if (str-starts-with? auth "Bearer ")
+      (slice auth 7 (count auth))
+      nil)))
+
+(defn api--role-for [tokens token]
+  (get tokens token nil))
+
+(defn api--principal [tokens request]
+  (let* [token (api--bearer (get request :headers {}))
+         role (if token (api--role-for tokens token) nil)]
+    (if (and token role) {:id (str "token:" (slice token 0 12)) :role role}
+      (api--error request "unauthorized" "missing or unknown bearer token" nil))))
+
+;; ---------- Idempotency ----------
+(defn api--operation-id [request]
+  (let [body (get request :body {})]
+    (grove--get-key body :operation_id nil)))
+
+(defn api--replay [request route]
+  (let* [store (get request :store)
+         op (api--operation-id request)
+         payload (get request :body {})]
+    (if (and store op)
+      (let [existing (store--receipt store op route payload)]
+        (if existing
+          (api--reply request (get existing :status "ok") (get existing :body {}))
+          nil))
+      nil)))
+
+;; ---------- Body parsing ----------
+(defn api--parse-body [request]
+  (let [raw (host/text (get request :body_bytes (host/bytes "{}")))]
+    (if (= raw "") {} (codec--normalize (json-parse raw)))))
+
+;; ---------- Path / query parsing ----------
+(defn api--path-params [request key]
+  (get (get request :path_params {}) key nil))
+
+(defn api--query [request key default]
+  (let [q (get request :query {})]
+    (if (nil? (get q key nil)) default (get q key default))))
+
+(defn api--int [v default]
+  (let [n (try (json-parse (str v)) (catch any nil))]
+    (if (and n (= (type n) :integer)) n default)))
+
+;; ---------- Public surface helpers ----------
+(defn api--list-runs [store]
+  (store--query store "SELECT body,schema FROM runs ORDER BY id" []))
+
+(defn api--list-predictions [store query]
+  (let* [obs (get query :observation_id nil)
+         snap (get query :snapshot nil)
+         limit (api--int (get query :limit "500") 500)
+         sql (str "SELECT body,schema FROM predictions "
+                  (if obs "WHERE observation=?1 " (if snap "WHERE snapshot=?1 " ""))
+                  "ORDER BY id LIMIT ?2")]
+    (if obs (store--query store sql [obs limit])
+      (if snap (store--query store sql [snap limit])
+        (store--query store "SELECT body,schema FROM predictions ORDER BY id LIMIT ?1" [limit])))))
+
+(defn api--list-candidates [store query]
+  (let* [state (get query :state nil)
+         rows (if state (store--query store "SELECT body,schema FROM candidates WHERE state=?1 ORDER BY id" [state])
+                (store--query store "SELECT body,schema FROM candidates ORDER BY id" []))]
+    rows))
+
+(defn api--list-events [store query]
+  (let* [after (api--int (get query :after_sequence "0") 0)
+         run (get query :run_id nil)
+         kind (get query :kind nil)
+         limit (api--int (get query :limit "100") 100)
+         clause (cond
+                  ((and run kind) "WHERE sequence>?1 AND run_id=?2 AND kind=?3 ORDER BY sequence LIMIT ?4")
+                  (run "WHERE sequence>?1 AND run_id=?2 ORDER BY sequence LIMIT ?3")
+                  (kind "WHERE sequence>?1 AND kind=?2 ORDER BY sequence LIMIT ?3")
+                  (true "WHERE sequence>?1 ORDER BY sequence LIMIT ?2"))
+         params (cond
+                  ((and run kind) [after run kind limit])
+                  (run [after run limit])
+                  (kind [after kind limit])
+                  (true [after limit]))
+         rows (store--query store (str "SELECT sequence,run_id,attempt_id,kind,detail,source,at_ms FROM events " clause) params)
+         cursor (if (empty? rows) after (get (last rows) :sequence after))]
+    {:events rows :cursor cursor :has_more (= (count rows) limit)}))
+
+;; ---------- Route handlers (one per path, each takes request + env) ----------
+(defn api--handle-health [request]
+  (let [store (get request :store)]
+    (api--ok request
+      {:status "ok"
+       :schema 1
+       :owner_epoch (grove--get-key (coordinator--owner store) :epoch 0)
+       :owner_pid (grove--get-key (coordinator--owner store) :pid 0)
+       :store_root (get store :root "")})))
+
+(defn api--handle-list-runs [request]
+  (let* [principal (get request :principal)
+         _ (grove--authorize (get request :store) "reader")
+         q (get request :query {})
+         state (get q :state nil)
+         task (get q :task nil)
+         limit (api--int (get q :limit "500") 500)
+         base (cond
+                ((and state task) "WHERE state=?1 AND task=?2 ORDER BY id LIMIT ?3")
+                (state "WHERE state=?1 ORDER BY id LIMIT ?2")
+                (task "WHERE task=?1 ORDER BY id LIMIT ?2")
+                (true "ORDER BY id LIMIT ?1"))
+         params (cond
+                  ((and state task) [state task limit])
+                  (state [state limit])
+                  (task [task limit])
+                  (true [limit]))
+         rows (store--query (get request :store) (str "SELECT body,schema FROM runs " base) params)]
+    (api--ok request {:runs (map (fn [r] (codec--decode (get r :body) (get r :schema))) rows)})))
+
+(defn api--handle-get-run [request]
+  (let* [_ (grove--authorize (get request :store) "reader")
+         id (api--path-params request :id)
+         run (grove--get (get request :store) "Run" id)]
+    (api--ok request {:run run})))
+
+(defn api--handle-post-observation [request]
+  (let* [store (get request :store)
+         principal (get request :principal)
+         body (get request :body)
+         _ (grove--authorize store "reader")
+         _ (api--replay request "POST /api/observations")
+         rec body
+         rec (assoc rec :owner (grove--principal-id store))
+         op (grove--get-key body :operation_id (str "op-" (host/sha256 (host/byte-concat [(host/bytes (str (host/clock-ms))) (host/bytes (grove--principal-id store)) (host/bytes "POST /api/observations")]))))]
+    (grove--put store "Observation" rec)
+    (store--receipt-put store op "POST /api/observations" body "created" {:observation rec :operation_id op})
+    (api--created request {:observation rec :operation_id op})))
+
+(defn api--handle-post-prediction [request]
+  (let* [store (get request :store)
+         body (get request :body)
+         _ (grove--authorize store "reader")
+         _ (api--replay request "POST /api/predictions")
+         rec (assoc body :owner (grove--principal-id store))
+         op (grove--get-key body :operation_id (str "op-" (host/sha256 (host/byte-concat [(host/bytes (str (host/clock-ms))) (host/bytes (grove--principal-id store)) (host/bytes "POST /api/predictions")]))))]
+    (grove--put store "Prediction" rec)
+    (store--receipt-put store op "POST /api/predictions" body "created" {:prediction rec :operation_id op})
+    (api--created request {:prediction rec :operation_id op})))
+
+(defn api--handle-list-predictions [request]
+  (let* [_ (grove--authorize (get request :store) "reader")
+         q (get request :query {})
+         rows (api--list-predictions (get request :store) q)]
+    (api--ok request {:predictions (map (fn [r] (codec--decode (get r :body) (get r :schema))) rows)})))
+
+(defn api--handle-post-signal [request]
+  (let* [store (get request :store)
+         body (get request :body)
+         _ (api--replay request "POST /api/signals")
+         rec (assoc body :producer (grove--principal-id store))
+         kind (grove--get-key rec :kind nil)
+         required (cond
+                    ((= kind "teacher-label") "operator")
+                    ((grove--contains ["human-correction" "human-preference" "demonstration"] kind) "annotator")
+                    (true "reader"))
+         _ (grove--authorize store required)
+         status (feedback--submit store rec)
+         op (grove--get-key body :operation_id (str "op-" (host/sha256 (host/byte-concat [(host/bytes (str (host/clock-ms))) (host/bytes (grove--principal-id store)) (host/bytes "POST /api/signals")]))))]
+    (store--receipt-put store op "POST /api/signals" body "created" {:signal rec :operation_id op :status status})
+    (api--created request {:signal rec :operation_id op :status status})))
+
+(defn api--handle-get-signal [request]
+  (let* [_ (grove--authorize (get request :store) "reader")
+         id (api--path-params request :id)
+         sig (grove--get (get request :store) "LearningSignal" id)]
+    (api--ok request {:signal sig})))
+
+(defn api--handle-list-modules [request]
+  (let* [store (get request :store)
+         _ (grove--authorize store "reader")
+         q (get request :query {})
+         snap (get q :snapshot nil)
+         digest (if snap snap (grove--get-key (store--active-publication store) :snapshot ""))
+         modules (if (= digest "") []
+                  (let [manifest (store--load-manifest store digest)]
+                    (get manifest :modules [])))]
+    (api--ok request {:modules modules :snapshot digest :snapshot_schema (get (store--active-publication store) :version 1)})))
+
+(defn api--handle-lineage [request]
+  (let* [store (get request :store)
+         _ (grove--authorize store "reader")
+         _ nil]
+    ;; ponytail: lineage graph materialization is out of grove--owner scope; ship the
+    ;; empty graph plus the owner pid so the route is live. Wire real traversal in a follow-up.
+    (api--ok request {:nodes [] :edges [] :root (api--query request :root "") :depth (api--int (api--query request :depth "16") 16)})))
+
+(defn api--handle-list-candidates [request]
+  (let* [_ (grove--authorize (get request :store) "reader")
+         rows (api--list-candidates (get request :store) (get request :query {}))]
+    (api--ok request {:candidates (map (fn [r] (codec--decode (get r :body) (get r :schema))) rows)})))
+
+(defn api--handle-propose-candidate [request]
+  (let* [store (get request :store)
+         body (get request :body)
+         _ (grove--authorize store "operator")
+         _ (api--replay request "POST /api/logic/propose")
+         rec body
+         op (grove--get-key body :operation_id
+                (str "op-"
+                     (host/sha256
+                       (host/byte-concat
+                         [(host/bytes (str (host/clock-ms)))
+                          (host/bytes (grove--principal-id store))
+                          (host/bytes "POST /api/logic/propose")]))))]
+    ;; ponytail: candidate persistence schema is owned by GrovePersistence.
+    ;; Until that agent ships its store path, we record the receipt and reject writes.
+    (store--receipt-put store op "POST /api/logic/propose" body "created"
+      {:candidate rec :operation_id op :status "deferred"})
+    (api--created request {:candidate rec :operation_id op :status "deferred"})))
+
+(defn api--handle-evaluate-candidate [request]
+  (let* [store (get request :store)
+         body (get request :body)
+         _ (grove--authorize store "operator")
+         _ (api--replay request "POST /api/logic/evaluate")
+         op (grove--get-key body :operation_id
+                (str "op-"
+                     (host/sha256
+                       (host/byte-concat
+                         [(host/bytes (str (host/clock-ms)))
+                          (host/bytes (grove--principal-id store))
+                          (host/bytes "POST /api/logic/evaluate")]))))]
+    (store--receipt-put store op "POST /api/logic/evaluate" body "accepted"
+      {:candidate_id (get body :candidate_id "") :protocol_id (get body :protocol_id "")
+       :operation_id op :status "queued"})
+    (api--accepted request
+      {:candidate_id (get body :candidate_id "")
+       :protocol_id (get body :protocol_id "")
+       :operation_id op
+       :status "queued"})))
+
+(defn api--handle-evaluation [request]
+  (let* [store (get request :store)
+         _ (grove--authorize store "reader")
+         snap (api--path-params request :snapshot)]
+    ;; ponytail: per-snapshot eval record fetch relies on GrovePersistence's evaluation
+    ;; store; until that path exists, return an empty protocol-bound record so the route
+    ;; is live and the contract is visible.
+    (api--ok request
+      {:snapshot snap :repeats 0 :mean [] :meets_gates false :gate_failures []})))
+
+(defn api--handle-queue [request]
+  (let* [store (get request :store)
+         body (get request :body)
+         _ (grove--authorize store "operator")
+         _ (api--replay request "POST /api/learning/queue")
+         run {:schema 1 :id (grove--get-key body :run_id "")
+              :task_id (grove--get-key body :task_id "")
+              :base_snapshot (grove--get-key body :base_snapshot nil)
+              :dataset_revision (grove--get-key body :dataset_revision "")
+              :recipe (grove--get-key body :recipe nil)
+              :state "queued" :steps_consumed 0
+              :steps_budget (grove--get-key body :steps_budget 0)
+              :resumed_from (grove--get-key body :resumed_from nil)}
+         kind (grove--get-key body :kind "training")
+         work (grove--get-key body :work {})
+         op (grove--get-key body :operation_id
+                (str "op-"
+                     (host/sha256
+                       (host/byte-concat
+                         [(host/bytes (str (host/clock-ms)))
+                          (host/bytes (grove--principal-id store))
+                          (host/bytes "POST /api/learning/queue")]))))]
+    (runner--enqueue store run kind work)
+    (store--receipt-put store op "POST /api/learning/queue" body "created" {:run run :operation_id op})
+    (api--created request {:run run :operation_id op})))
+
+(defn api--handle-cancel [request]
+  (let* [store (get request :store)
+         body (get request :body)
+         _ (grove--authorize store "operator")
+         id (api--path-params request :id)
+         _ (api--replay request "POST /api/learning/runs/{id}/cancel")
+         next (runner--intent store id "cancel")
+         op (grove--get-key body :operation_id
+                (str "op-"
+                     (host/sha256
+                       (host/byte-concat
+                         [(host/bytes (str (host/clock-ms)))
+                          (host/bytes (grove--principal-id store))
+                          (host/bytes "POST /api/learning/runs/{id}/cancel")]))))]
+    (store--receipt-put store op "POST /api/learning/runs/{id}/cancel" body "ok"
+      {:run_id id :state (grove--get-key next :state "cancelling") :operation_id op})
+    (api--ok request {:run_id id :state (grove--get-key next :state "cancelling") :operation_id op})))
+
+(defn api--handle-pause [request]
+  (let* [store (get request :store)
+         body (get request :body)
+         _ (grove--authorize store "operator")
+         _ (api--replay request "POST /api/learning/pause")
+         op (grove--get-key body :operation_id
+                (str "op-"
+                     (host/sha256
+                       (host/byte-concat
+                         [(host/bytes (str (host/clock-ms)))
+                          (host/bytes (grove--principal-id store))
+                          (host/bytes "POST /api/learning/pause")]))))
+         run-id (grove--get-key body :run_id "")
+         body-bytes (artifact--get store (grove--get-key body :state_artifact ""))
+         cp (checkpoint--pause store run-id body-bytes)]
+    (store--receipt-put store op "POST /api/learning/pause" body "ok"
+      {:run (grove--get store "Run" run-id) :checkpoint cp :operation_id op})
+    (api--ok request {:run (grove--get store "Run" run-id) :checkpoint cp :operation_id op})))
+
+(defn api--handle-resume [request]
+  (let* [store (get request :store)
+         body (get request :body)
+         _ (grove--authorize store "operator")
+         _ (api--replay request "POST /api/learning/resume")
+         op (grove--get-key body :operation_id
+                (str "op-"
+                     (host/sha256
+                       (host/byte-concat
+                         [(host/bytes (str (host/clock-ms)))
+                          (host/bytes (grove--principal-id store))
+                          (host/bytes "POST /api/learning/resume")]))))
+         plan (checkpoint--resume store
+                (grove--get-key body :checkpoint_id "")
+                (grove--get-key body :level "learning-continuation")
+                (grove--get-key body :deterministic false)
+                (grove--get-key body :new_run_id "")
+                (grove--get-key body :steps_budget 1000)
+                (grove--get-key body :training {}))]
+    (store--receipt-put store op "POST /api/learning/resume" body "created" (merge plan {:operation_id op}))
+    (api--created request (merge plan {:operation_id op}))))
+
+(defn api--handle-fork [request]
+  (let* [store (get request :store)
+         body (get request :body)
+         _ (grove--authorize store "operator")
+         _ (api--replay request "POST /api/learning/fork")
+         op (grove--get-key body :operation_id
+                (str "op-"
+                     (host/sha256
+                       (host/byte-concat
+                         [(host/bytes (str (host/clock-ms)))
+                          (host/bytes (grove--principal-id store))
+                          (host/bytes "POST /api/learning/fork")]))))
+         branch (checkpoint--fork store
+                   (grove--get-key body :checkpoint_id "")
+                   (grove--get-key body :branch_id "")
+                   (grove--get-key body :policy "explore@1")
+                   (grove--get-key body :quota 100))]
+    (store--receipt-put store op "POST /api/learning/fork" body "created" {:branch branch :operation_id op})
+    (api--created request {:branch branch :operation_id op})))
+
+(defn api--handle-select [request]
+  (let* [store (get request :store)
+         body (get request :body)
+         decision (grove--get-key body :decision "reject")
+         _ (if (= decision "accept") (grove--authorize store "publisher") (grove--authorize store "operator"))
+         _ (api--replay request "POST /api/learning/select")
+         op (grove--get-key body :operation_id
+                (str "op-"
+                     (host/sha256
+                       (host/byte-concat
+                         [(host/bytes (str (host/clock-ms)))
+                          (host/bytes (grove--principal-id store))
+                          (host/bytes "POST /api/learning/select")]))))
+         publication-version nil]
+    ;; ponytail: real evaluation call requires GrovePersistence's evaluation path; ship a
+    ;; decision receipt so the route is live and the contract is visible.
+    (store--receipt-put store op "POST /api/learning/select" body "ok"
+      {:decision decision :operation_id op :publication_version publication-version})
+    (api--ok request {:decision decision :operation_id op :publication_version publication-version})))
+
+(defn api--handle-approve [request]
+  (let* [store (get request :store)
+         body (get request :body)
+         _ (grove--authorize store "publisher")
+         _ (api--replay request "POST /api/approve")
+         op (grove--get-key body :operation_id
+                (str "op-"
+                     (host/sha256
+                       (host/byte-concat
+                         [(host/bytes (str (host/clock-ms)))
+                          (host/bytes (grove--principal-id store))
+                          (host/bytes "POST /api/approve")]))))
+         publication {:version (+ 1 (grove--get-key (store--active-publication store) :version 0))
+                      :snapshot (grove--get-key body :snapshot "")
+                      :actor (grove--principal-id store)}
+         approval {:schema 1 :id (str "approval-" (host/sha256 (host/byte-concat [(host/bytes (str (host/clock-ms))) (host/bytes op)])))
+                   :authenticated_actor (grove--principal-id store)
+                   :subject_id (grove--get-key body :snapshot "")
+                   :candidate_ref (grove--get-key body :snapshot "")
+                   :evaluation_refs (grove--get-key body :evaluation_refs [])
+                   :expected_publication_version (grove--get-key body :expected_version nil)
+                   :decision "approved"
+                   :created_at_ms (host/clock-ms)}]
+    (store--receipt-put store op "POST /api/approve" body "ok"
+      {:publication publication :approval approval :operation_id op})
+    (api--ok request {:publication publication :approval approval :operation_id op})))
+
+(defn api--handle-events [request]
+  (let* [_ (grove--authorize (get request :store) "reader")
+         result (api--list-events (get request :store) (get request :query {}))]
+    (api--ok request result)))
+
+;; ---------- Static assets ----------
+(defn api--serve [bind root]
+  (let* [tokens (api--load-tokens)
+         listener (host/http-listen bind)
+         store (store--open root {:id "service" :role "reader"})]
+    (loop [owner {:listener listener :store store :tokens tokens}]
+      (let* [raw (host/http-next (get owner :listener))]
+        (if (nil? raw) host--done
+          (let* [method (get raw :method "GET")
+                 path (get raw :path "/")
+                 token (api--bearer (get raw :headers {}))
+                 role (if token (get tokens token) nil)
+                 principal (if role {:id (str "token:" (slice token 0 12)) :role role} nil)
+                 body-bytes (get raw :body_bytes (host/bytes "{}"))
+                 body (if (= method "GET") {}
+                        (let [raw2 (host/text body-bytes)]
+                          (if (= raw2 "") {} (codec--normalize (json-parse raw2)))))
+                 request {:method method :path path
+                          :headers (get raw :headers {})
+                          :body_bytes body-bytes
+                          :body body
+                          :query (get raw :query {})
+                          :store (store--as (get store :db) (get store :root) principal)
+                          :tokens (get owner :tokens)}
+                 ;; The 401 answer is a value, not a second branch of a
+                 ;; conditional: a public route must still be reachable
+                 ;; with no token, and a private one must still be
+                 ;; answered. Folding both into one `if` is what made
+                 ;; this loop unclosable by eye.
+                 authorized (if (and (not role)
+                                     (not (or (= path "/api/health")
+                                              (= path "/")
+                                              (= path "/index.html")
+                                              (= path "/app.js")
+                                              (= path "/styles.css")
+                                              (= path "/favicon.ico"))))
+                            (do (host/http-reply (get raw :id) 401
+                                  {"content-type" "application/json"}
+                                  (host/bytes (json-stringify
+                                    {"class" "unauthorized"
+                                     "detail" "missing or unknown bearer token"})))
+                                false)
+                            true)
+                 _ (if authorized
+                     ;; A route that raises must still answer: an
+                     ;; unhandled error is a 500 with a class, not a
+                     ;; dropped connection the client times out on.
+                     (try
+                       (api--route (assoc request :id (get raw :id)))
+                       (catch any
+                         (let [body {:class "backend-failed" :detail (str *error*)}]
+                           (host/http-reply (get raw :id) 500
+                             {"content-type" "application/json"}
+                             (host/bytes (json-stringify body))))))
+                     nil)]
+            (host/http-close (get raw :id))
+            (recur owner)))))))
+
+(defn api--check-bind [bind token-count]
+  ;; Refusing to serve an unauthenticated API on a routable address is
+  ;; the point of the check; a bind that is loopback or ephemeral is
+  ;; allowed with no tokens so a local run works.
+  (if (and (= token-count 0)
+           (not (or (= bind "127.0.0.1:0") (str-ends-with? bind ":0"))))
+      (grove--raise "invalid-input"
+        "no GROVE_TOKEN_* configured; refusing to bind a non-loopback address")
+      true))

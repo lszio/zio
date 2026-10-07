@@ -14,9 +14,11 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use grove::contracts::{Actor, ArtifactRef, Error, ErrorKind, Observation, Prediction, Result, SCHEMA_VERSION};
-use grove::worker::{Frame, Isolation, Worker, WorkerConfig};
+use grove::contracts::{
+    Actor, ArtifactRef, Error, ErrorKind, Observation, Prediction, Result, SCHEMA_VERSION,
+};
 use grove::store::Store;
+use grove::worker::{Frame, Isolation, Worker, WorkerConfig};
 
 use crate::Paths;
 
@@ -112,7 +114,10 @@ pub fn predict(
             match worker.next_frame(remaining)? {
                 Frame::Done { predictions, .. } => {
                     let path = predictions.ok_or_else(|| {
-                        Error::new(ErrorKind::BackendFailed, "done frame without a prediction file")
+                        Error::new(
+                            ErrorKind::BackendFailed,
+                            "done frame without a prediction file",
+                        )
                     })?;
                     let raw = std::fs::read(&path).map_err(|e| {
                         Error::new(
@@ -198,14 +203,10 @@ pub fn predict(
 
 fn first_param_artifact(store: &Store, snapshot: &ArtifactRef) -> Result<ArtifactRef> {
     let snapshot = store.load_snapshot(snapshot)?;
-    snapshot
-        .params
-        .first()
-        .map(|p| p.artifact)
-        .ok_or_else(|| {
-            Error::new(
-                ErrorKind::IncompatibleState,
-                "this snapshot carries no parameters: there is nothing to predict with",
-            )
-        })
+    snapshot.params.first().map(|p| p.artifact).ok_or_else(|| {
+        Error::new(
+            ErrorKind::IncompatibleState,
+            "this snapshot carries no parameters: there is nothing to predict with",
+        )
+    })
 }

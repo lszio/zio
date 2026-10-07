@@ -164,10 +164,12 @@ fn health_needs_no_token_but_everything_else_does() {
 
     let bad = request(&base, "GET", "/api/runs", Some("not-a-token"), None);
     assert_eq!(bad.status, 403);
-    assert!(bad.body["detail"]
-        .as_str()
-        .unwrap_or_default()
-        .contains("unknown token"));
+    assert!(
+        bad.body["detail"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("unknown token")
+    );
 }
 
 // ── role separation ────────────────────────────────────────────────
@@ -249,11 +251,13 @@ fn roles_do_not_bleed_into_each_other() {
         })),
     );
     assert_eq!(train_by_annotator.status, 403);
-    assert!(train_by_annotator.body["detail"]
-        .as_str()
-        .unwrap_or_default()
-        .to_lowercase()
-        .contains("operator"));
+    assert!(
+        train_by_annotator.body["detail"]
+            .as_str()
+            .unwrap_or_default()
+            .to_lowercase()
+            .contains("operator")
+    );
 
     // an operator may start a run, and the recipe caps what it may ask for
     let run = request(
@@ -287,11 +291,13 @@ fn roles_do_not_bleed_into_each_other() {
         })),
     );
     assert_eq!(publish_by_operator.status, 403);
-    assert!(publish_by_operator.body["detail"]
-        .as_str()
-        .unwrap_or_default()
-        .to_lowercase()
-        .contains("publisher"));
+    assert!(
+        publish_by_operator.body["detail"]
+            .as_str()
+            .unwrap_or_default()
+            .to_lowercase()
+            .contains("publisher")
+    );
 }
 
 // ── idempotency and conflicts ──────────────────────────────────────
@@ -433,7 +439,10 @@ fn runs_events_and_evaluations_are_readable_with_correlated_ids() {
     let text = events.body.to_string();
     assert!(text.contains("run-visible"), "{text}");
     // no token ever appears in the event stream
-    assert!(!text.contains("reader-tok"), "events must not leak tokens: {text}");
+    assert!(
+        !text.contains("reader-tok"),
+        "events must not leak tokens: {text}"
+    );
 
     let evaluations = request(
         &base,

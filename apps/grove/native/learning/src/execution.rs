@@ -30,7 +30,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
-use zio_core::bootstrap::{eval_source, language_context, ModuleRoots};
+use zio_core::bootstrap::{ModuleRoots, eval_source, language_context};
 use zio_core::context::{EvalContext, EvalRuntime};
 use zio_core::error::EvalError;
 use zio_core::im::Vector;
@@ -39,7 +39,7 @@ use zio_core::observer;
 use zio_core::sexp::Sexp;
 use zio_core::value::Value;
 
-use crate::contracts::{digest_bytes, Actor, ActorRole, ArtifactRef, Error, ErrorKind, Result};
+use crate::contracts::{Actor, ActorRole, ArtifactRef, Error, ErrorKind, Result, digest_bytes};
 use crate::events;
 use crate::store::Store;
 
@@ -366,6 +366,12 @@ fn check_expansion(
 /// than on read, so a program printing a gigabyte does not make the host
 /// hold a gigabyte.
 struct SandboxIo {
+    /// Directories this execution was granted. A path inside one of
+    /// them resolves, even before any file in it has been read: a
+    /// module load asks whether a root is a directory before it asks
+    /// whether a file exists, and a root with no readable file yet is
+    /// still a root the host granted.
+    roots: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
     /// The output buffer is this type's own. Delegating to
     /// `BufferIoHost` looked simpler, but its `println` appends a
     /// newline the caller never charged for, so a program that printed
@@ -380,11 +386,30 @@ struct SandboxIo {
 impl SandboxIo {
     fn new(cap: usize) -> Self {
         SandboxIo {
-            output: Arc::new(std::sync::Mutex::new(String::new())),
-            files: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+            roots: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+            output: std::sync::Arc::new(std::sync::Mutex::new(String::new())),
+            files: std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
             cap,
-            truncated: Arc::new(std::sync::Mutex::new(false)),
+            truncated: std::sync::Arc::new(std::sync::Mutex::new(false)),
         }
+    }
+
+    /// Grant a directory. Everything under it resolves until the run
+    /// ends, which is the grant the caller asked for.
+    fn grant_root(&self, path: &str) {
+        self.roots
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .push(path.trim_end_matches('/').to_string());
+    }
+
+    fn granted_root(&self, path: &str) -> bool {
+        let path = path.trim_end_matches('/');
+        self.roots
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .iter()
+            .any(|root| path == root || path.starts_with(&format!("{root}/")))
     }
 
     fn grant_file(&self, path: &str, content: &str) {
@@ -423,7 +448,10 @@ impl SandboxIo {
     }
 
     fn output(&self) -> String {
-        self.output.lock().unwrap_or_else(|p| p.into_inner()).clone()
+        self.output
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone()
     }
 }
 
@@ -441,7 +469,9 @@ impl zio_core::io::IoHost for SandboxIo {
     fn read_line(&self) -> std::result::Result<String, EvalError> {
         // No input stream: a program that waits for a console is a
         // program that runs until the deadline.
-        Err(EvalError::custom("no input stream in a sandboxed execution"))
+        Err(EvalError::custom(
+            "no input stream in a sandboxed execution",
+        ))
     }
 
     fn current_dir(&self) -> std::result::Result<String, EvalError> {
@@ -456,9 +486,7 @@ impl zio_core::io::IoHost for SandboxIo {
             .unwrap_or_else(|p| p.into_inner())
             .get(path)
             .cloned()
-            .ok_or_else(|| {
-                EvalError::custom(format!("{path} was not granted to this execution"))
-            })
+            .ok_or_else(|| EvalError::custom(format!("{path} was not granted to this execution")))
     }
 
     fn write_file(&self, path: &str, data: &str) -> std::result::Result<(), EvalError> {
@@ -477,17 +505,51 @@ impl zio_core::io::IoHost for SandboxIo {
             .unwrap_or_else(|p| p.into_inner())
             .contains_key(path))
     }
+
+    /// Canonicalize a path, but only one this execution was granted.
+    ///
+    /// A module load resolves a name against its granted roots through
+    /// this method, so refusing it outright would make every granted
+    /// dependency unloadable. Returning the input unchanged is honest
+    /// here: a sandbox has no real filesystem to resolve against, and
+    /// the key space is the granted-file map, not a directory tree.
+    /// A path that was never granted is refused, so this cannot become a
+    /// way to reach one.
+    fn canonicalize_path(&self, path: &str) -> std::result::Result<String, EvalError> {
+        if self.granted_root(path) {
+            return Ok(path.to_string());
+        }
+        let files = self.files.lock().unwrap_or_else(|p| p.into_inner());
+        if files.contains_key(path) || files.keys().any(|granted| path.starts_with(granted)) {
+            Ok(path.to_string())
+        } else {
+            Err(EvalError::custom(format!(
+                "{path} was not granted to this execution"
+            )))
+        }
+    }
+
+    /// Whether a path names a granted directory: the parent of any
+    /// granted file, or a granted file itself.
+    fn is_directory(&self, path: &str) -> std::result::Result<bool, EvalError> {
+        if self.granted_root(path) {
+            return Ok(true);
+        }
+        let files = self.files.lock().unwrap_or_else(|p| p.into_inner());
+        if files.contains_key(path) {
+            return Ok(false);
+        }
+        Ok(files
+            .keys()
+            .any(|granted| granted.starts_with(&format!("{}/", path.trim_end_matches('/')))))
+    }
 }
 
 /// Run one generated program under one grant.
 ///
 /// The `actor` is the trusted host: it names the run, and only it can
 /// write the trace. A candidate never calls this directly.
-pub fn execute(
-    store: &Store,
-    actor: &Actor,
-    request: ExecutionRequest,
-) -> Result<ExecutionResult> {
+pub fn execute(store: &Store, actor: &Actor, request: ExecutionRequest) -> Result<ExecutionResult> {
     actor.require(ActorRole::Operator, "executing a generated program")?;
     let grant = request.grant.clone();
     let source_digest = digest_bytes(request.source.as_bytes());
@@ -522,10 +584,11 @@ pub fn execute(
     //    is refused rather than half-run.
     let parse_root = ModuleRoots::empty();
     let parse_ctx = language_context(parse_root).map_err(|e| eval_err(e, "bootstrap"))?;
-    let forms = match zio_core::bootstrap::parse_source(&parse_ctx, "candidate.zio", &request.source) {
-        Ok(forms) => forms,
-        Err(e) => return refused(format!("candidate does not parse: {e}")),
-    };
+    let forms =
+        match zio_core::bootstrap::parse_source(&parse_ctx, "candidate.zio", &request.source) {
+            Ok(forms) => forms,
+            Err(e) => return refused(format!("candidate does not parse: {e}")),
+        };
     if forms.is_empty() {
         return refused("candidate defines nothing to run".into());
     }
@@ -558,7 +621,9 @@ pub fn execute(
     }
     for form in &definitions {
         if let Err(found) = check_expansion(&parse_ctx, form, &grant, 0) {
-            return refused(format!("macro expansion yields {found}, which is not in this grant"));
+            return refused(format!(
+                "macro expansion yields {found}, which is not in this grant"
+            ));
         }
     }
 
@@ -600,11 +665,15 @@ pub fn execute(
 
     let io = Arc::new(SandboxIo::new(grant.limits.max_output_bytes));
     for frozen in &grant.frozen {
+        if let Some(parent) = frozen.path.parent() {
+            io.grant_root(&parent.to_string_lossy());
+        }
         if let Ok(text) = std::fs::read_to_string(&frozen.path) {
             io.grant_file(&frozen.path.to_string_lossy(), &text);
         }
     }
     for input in &request.inputs {
+        io.grant_root(&input.to_string_lossy());
         if let Ok(entries) = std::fs::read_dir(input) {
             for entry in entries.flatten() {
                 if let Ok(text) = std::fs::read_to_string(entry.path()) {
@@ -633,9 +702,10 @@ pub fn execute(
     // deadline is what the caller asked to be held to.
     let eval = (|| -> std::result::Result<Value, EvalError> {
         eval_source(&ctx, "candidate.zio", &source)?;
-        let entry = ctx.env.get(&entrypoint).ok_or_else(|| {
-            EvalError::symbol_not_found(entrypoint.clone())
-        })?;
+        let entry = ctx
+            .env
+            .get(&entrypoint)
+            .ok_or_else(|| EvalError::symbol_not_found(entrypoint.clone()))?;
         if let Value::Function(func) = &entry {
             if !func.params.is_empty() {
                 // A zero-argument entrypoint only. Passing candidate data
@@ -653,7 +723,9 @@ pub fn execute(
             match step {
                 zio_core::special::TailResult::Value(value) => return Ok(value),
                 zio_core::special::TailResult::Recur(_) => {
-                    return Err(EvalError::custom("entrypoint recurred without a loop frame"))
+                    return Err(EvalError::custom(
+                        "entrypoint recurred without a loop frame",
+                    ));
                 }
                 zio_core::special::TailResult::TailCall(next, args) => {
                     step = zio_core::eval::apply(next, args, &ctx)?;
@@ -676,7 +748,11 @@ pub fn execute(
     run_events.commit(store, actor)?;
 
     let (status, result, error) = match eval {
-        Ok(value) => (ExecutionStatus::Completed, Some(render(&value)), String::new()),
+        Ok(value) => (
+            ExecutionStatus::Completed,
+            Some(render(&value)),
+            String::new(),
+        ),
         Err(e) => (ExecutionStatus::Failed, None, e.to_string()),
     };
 
@@ -713,10 +789,8 @@ fn language_context_with_sandbox(
     roots: ModuleRoots,
     io: Arc<SandboxIo>,
 ) -> std::result::Result<EvalContext, EvalError> {
-    let ctx = zio_core::bootstrap::language_context_with_io(
-        roots,
-        io as Arc<dyn zio_core::io::IoHost>,
-    )?;
+    let ctx =
+        zio_core::bootstrap::language_context_with_io(roots, io as Arc<dyn zio_core::io::IoHost>)?;
     revoke_candidate_bindings(&ctx);
     Ok(ctx)
 }

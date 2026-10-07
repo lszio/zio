@@ -9,11 +9,12 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use grove::isolation::{IsolationProfile, MountSpec, ReadOnlyRoot};
-use grove::worker::{Frame, Worker, WorkerConfig, PROTOCOL_VERSION};
+use grove::worker::{Frame, PROTOCOL_VERSION, Worker, WorkerConfig};
 
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .ancestors().nth(4)
+        .ancestors()
+        .nth(4)
         .unwrap()
         .to_path_buf()
 }
@@ -106,7 +107,9 @@ fn a_profile_without_a_scratch_directory_is_refused() {
     let fx = Fixture::new("no_scratch");
     let mut profile = fx.profile();
     profile.scratch = PathBuf::from("/nonexistent/scratch");
-    let err = profile.validate().expect_err("a missing scratch is a missing boundary");
+    let err = profile
+        .validate()
+        .expect_err("a missing scratch is a missing boundary");
     assert!(
         err.to_string().contains("scratch"),
         "error must name the missing boundary: {err}"
@@ -122,7 +125,9 @@ fn a_profile_with_a_readonly_root_outside_it_is_refused() {
     // read-only mount that grants the database.
     profile.read_only.inputs = vec![repo_root().join("apps/grove/native/learning")];
     profile.read_only.inputs[0] = repo_root().join("apps/grove/native/learning/src/store.rs");
-    let err = profile.validate().expect_err("a file that is not a directory cannot be mounted");
+    let err = profile
+        .validate()
+        .expect_err("a file that is not a directory cannot be mounted");
     assert!(!err.to_string().is_empty());
 }
 
@@ -223,24 +228,30 @@ print(json.dumps(result))
     // did not carry them in.
     // Declared entries are mounted at stable jail-local paths, so the
     // worker addresses `/input0/probe.py`, not the host's layout.
-    let out = profile.run(
-        &venv_python(),
-        [
-            "/zio/input0/probe.py".to_string(),
-            canary.display().to_string(),
-            secret.display().to_string(),
-            repo_root().join("apps/grove/native/learning/src/store.rs").display().to_string(),
-        ],
-        &[],
-    )
-    .expect("the probe itself must run");
+    let out = profile
+        .run(
+            &venv_python(),
+            [
+                "/zio/input0/probe.py".to_string(),
+                canary.display().to_string(),
+                secret.display().to_string(),
+                repo_root()
+                    .join("apps/grove/native/learning/src/store.rs")
+                    .display()
+                    .to_string(),
+            ],
+            &[],
+        )
+        .expect("the probe itself must run");
 
     let report: serde_json::Value =
         serde_json::from_slice(&out.stdout).expect("probe must report JSON");
     let fail = |label: &str| {
         let v = &report[label];
         assert!(
-            v.as_str().map(|s| s.starts_with("PermissionError") || s.starts_with("FileNotFoundError")).unwrap_or(false),
+            v.as_str()
+                .map(|s| s.starts_with("PermissionError") || s.starts_with("FileNotFoundError"))
+                .unwrap_or(false),
             "worker {label} succeeded ({v}); it must be denied"
         );
     };
@@ -253,9 +264,16 @@ print(json.dumps(result))
     assert_eq!(report["cwd_is_scratch"], serde_json::json!(true));
 
     // The host's own files are byte-identical afterwards.
-    assert_eq!(std::fs::read(&canary).unwrap(), before, "canary was modified");
+    assert_eq!(
+        std::fs::read(&canary).unwrap(),
+        before,
+        "canary was modified"
+    );
     assert_eq!(std::fs::read_to_string(&secret).unwrap(), "s3cr3t\n");
-    assert!(!canary_dir.join("planted.txt").exists(), "escape symlink wrote to the host");
+    assert!(
+        !canary_dir.join("planted.txt").exists(),
+        "escape symlink wrote to the host"
+    );
 }
 
 /// A real training worker under the profile: it must produce weights, and
@@ -341,14 +359,19 @@ fn frozen_layers_are_actually_frozen_under_the_profile() {
         .unwrap_or_else(|e| panic!("training failed: {e}"));
 
     let done = match &frame {
-        Frame::Done { loss, first_loss, .. } => (*loss, *first_loss),
+        Frame::Done {
+            loss, first_loss, ..
+        } => (*loss, *first_loss),
         other => panic!("expected a done frame, got {other:?}"),
     };
     let (loss, first) = (
         done.0.expect("a finished run reports a loss"),
         done.1.expect("a finished run reports its first loss"),
     );
-    assert!(loss < first, "the trainable layer did not learn: {first} -> {loss}");
+    assert!(
+        loss < first,
+        "the trainable layer did not learn: {first} -> {loss}"
+    );
 
     let after: serde_json::Value =
         serde_json::from_slice(&std::fs::read(&trained).unwrap()).unwrap();
@@ -414,7 +437,9 @@ fn layer(rows: usize, cols: usize, seed: u64) -> serde_json::Value {
     // the frozen layer's neighbourhood and would hide a real change.
     let mut state = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
     let mut next = || {
-        state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        state = state
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         ((state >> 11) as f64 / (1u64 << 53) as f64) - 0.5
     };
     serde_json::json!({
@@ -433,7 +458,10 @@ fn a_mount_spec_binds_everything_read_only_except_the_scratch() {
     let profile = fx.profile();
     profile.validate().expect("a complete profile");
     let spec: MountSpec = profile.to_mount_spec();
-    assert!(spec.scratch.starts_with(&fx.scratch()), "scratch is the only writable path");
+    assert!(
+        spec.scratch.starts_with(&fx.scratch()),
+        "scratch is the only writable path"
+    );
     // The declared read-only set is what the worker's root contains.
     let sources: Vec<PathBuf> = spec
         .read_only_bindings
@@ -473,9 +501,8 @@ fn a_mount_spec_binds_everything_read_only_except_the_scratch() {
     // the profile check is what catches it.
     let mut contradictory = profile.clone();
     contradictory.read_only.inputs.push(fx.scratch());
-    let err = contradictory.validate().expect_err("scratch cannot also be an input mount");
+    let err = contradictory
+        .validate()
+        .expect_err("scratch cannot also be an input mount");
     assert!(err.to_string().contains("scratch"), "{err}");
 }
-
-
-

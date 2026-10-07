@@ -198,4 +198,3 @@
   (let [reg recipes--registry]
     (reduce (fn [acc r] (recipes--register acc r)) reg recipes--all)))
 
-(println "zio.learn.recipes loaded (supervised, hard/soft distill, preference, demonstration, self-supervised, environment feedback, restricted policy gradient; pure declaration, no host access)")

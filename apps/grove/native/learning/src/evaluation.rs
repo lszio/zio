@@ -17,8 +17,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::contracts::{
-    require_finite_metrics, Actor, ActorRole, ArtifactRef, Error, ErrorKind, EvaluationRecord,
-    Result, SCHEMA_VERSION,
+    Actor, ActorRole, ArtifactRef, Error, ErrorKind, EvaluationRecord, Result, SCHEMA_VERSION,
+    require_finite_metrics,
 };
 use crate::store::Store;
 
@@ -147,10 +147,7 @@ pub struct Comparison {
 /// repeat* — and a timed-out or crashed repeat is already recorded as a
 /// zero rather than dropped, so it drags the mean down instead of
 /// quietly shrinking the denominator.
-pub fn gate_failures(
-    records: &[&EvaluationRecord],
-    protocol: &EvaluationProtocol,
-) -> Vec<String> {
+pub fn gate_failures(records: &[&EvaluationRecord], protocol: &EvaluationProtocol) -> Vec<String> {
     let mut failures = Vec::new();
     for (gate, threshold) in &protocol.gates {
         let mean: f64 = records

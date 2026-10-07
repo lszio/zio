@@ -139,10 +139,22 @@ impl Default for GovernanceMap {
 /// undeclared is `Learnable`.
 pub fn default_governance() -> GovernanceMap {
     GovernanceMap::new()
-        .with("apps/grove/native/learning/src/evaluation.rs", Governance::Protected)
-        .with("apps/grove/native/learning/src/contracts.rs", Governance::Protected)
-        .with("apps/grove/native/learning/src/store.rs", Governance::Protected)
-        .with("apps/grove/native/learning/src/logic.rs", Governance::Protected)
+        .with(
+            "apps/grove/native/learning/src/evaluation.rs",
+            Governance::Protected,
+        )
+        .with(
+            "apps/grove/native/learning/src/contracts.rs",
+            Governance::Protected,
+        )
+        .with(
+            "apps/grove/native/learning/src/store.rs",
+            Governance::Protected,
+        )
+        .with(
+            "apps/grove/native/learning/src/logic.rs",
+            Governance::Protected,
+        )
         .with("libs/loom/agent.zio", Governance::Governed)
         .with("apps/grove/main.zio", Governance::Governed)
 }
@@ -155,7 +167,10 @@ pub fn under(path: &str, prefix: &str) -> bool {
     if prefix.is_empty() {
         return false;
     }
-    path == prefix || path.strip_prefix(prefix).is_some_and(|rest| rest.starts_with('/'))
+    path == prefix
+        || path
+            .strip_prefix(prefix)
+            .is_some_and(|rest| rest.starts_with('/'))
 }
 
 // ── the candidate ──────────────────────────────────────────────────
@@ -480,7 +495,8 @@ pub fn propose(
     parent_dependencies: &[String],
 ) -> Result<ArtifactRef> {
     actor.require(ActorRole::Operator, "proposing a logic candidate")?;
-    let source = String::from_utf8_lossy(&store.artifacts().get(&candidate.source_ref)?).into_owned();
+    let source =
+        String::from_utf8_lossy(&store.artifacts().get(&candidate.source_ref)?).into_owned();
     // What the source *declares*, read from the source. A candidate
     // that under-declares its dependencies is describing itself, not
     // the code that will run.
@@ -490,7 +506,9 @@ pub fn propose(
         if !actual.iter().any(|d| normalise_dep(d) == declared) {
             return Err(Error::new(
                 ErrorKind::ProtocolViolation,
-                format!("candidate declares dependency {declared}, which its source does not require"),
+                format!(
+                    "candidate declares dependency {declared}, which its source does not require"
+                ),
             ));
         }
     }
@@ -498,7 +516,11 @@ pub fn propose(
     // the source reaches something the proposal did not admit to.
     for dep in &actual {
         let dep = normalise_dep(dep);
-        if !candidate.declared_dependencies.iter().any(|d| normalise_dep(d) == dep) {
+        if !candidate
+            .declared_dependencies
+            .iter()
+            .any(|d| normalise_dep(d) == dep)
+        {
             return Err(Error::new(
                 ErrorKind::ProtocolViolation,
                 format!("candidate source requires {dep}, which the proposal does not declare"),
@@ -556,9 +578,11 @@ pub fn evaluate_candidate(
         return Ok(verdict);
     }
     for record in &mine {
-        verdict
-            .evaluation_refs
-            .push(store.commit_manifest("EvaluationRecord", &actor.id, record)?);
+        verdict.evaluation_refs.push(store.commit_manifest(
+            "EvaluationRecord",
+            &actor.id,
+            record,
+        )?);
     }
     verdict.gate_failures = crate::evaluation::gate_failures(&mine, protocol);
     verdict.state = if verdict.gate_failures.is_empty() {
@@ -596,9 +620,7 @@ pub fn approve_and_publish(
             ErrorKind::IncompatibleState,
             format!(
                 "candidate {} does not qualify under {}: {:?}; the active publication is untouched",
-                candidate.id,
-                protocol.id,
-                verdict.gate_failures
+                candidate.id, protocol.id, verdict.gate_failures
             ),
         ));
     }
@@ -719,7 +741,10 @@ pub(crate) fn publish_approved(
     if approval.decision != "approved" {
         return Err(Error::new(
             ErrorKind::IncompatibleState,
-            format!("approval {} is a {}, not an approval", approval.id, approval.decision),
+            format!(
+                "approval {} is a {}, not an approval",
+                approval.id, approval.decision
+            ),
         ));
     }
     if !store.approval_is_current(approval)? {
@@ -790,7 +815,15 @@ pub fn publish_snapshot_approved(
         refs.push(store.commit_manifest("EvaluationRecord", &actor.id, *record)?);
     }
     let subject = format!("{}@{}", snapshot.to_hex(), protocol.id);
-    let approval = record_approval(store, actor, &subject, snapshot, &refs, expected_version, now_ms)?;
+    let approval = record_approval(
+        store,
+        actor,
+        &subject,
+        snapshot,
+        &refs,
+        expected_version,
+        now_ms,
+    )?;
     let version = publish_approved(store, actor, &approval, expected_version)?;
     Ok((version, approval))
 }

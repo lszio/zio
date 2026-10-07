@@ -7,7 +7,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::teacher::{validate_request, ContentPart, TeacherHost, TeacherRequest, TeacherResponse};
+use crate::teacher::{ContentPart, TeacherHost, TeacherRequest, TeacherResponse, validate_request};
 use crate::{HostError, HostErrorKind};
 
 /// Wire shape of a teacher exchange. Only the fields the capability
@@ -57,7 +57,11 @@ impl HttpTeacherHost {
     }
 
     fn post(&self, body: &WireRequest) -> Result<WireResponse, HostError> {
-        let mut request = self.agent.post(&format!("{}/{}", self.base_url.trim_end_matches('/'), self.path));
+        let mut request = self.agent.post(&format!(
+            "{}/{}",
+            self.base_url.trim_end_matches('/'),
+            self.path
+        ));
         if let Some(key) = &self.api_key {
             request = request.set("Authorization", &format!("Bearer {key}"));
         }
@@ -72,16 +76,22 @@ impl HttpTeacherHost {
             let _ = limited.read_to_end(&mut body_bytes);
             return Err(HostError::new(
                 HostErrorKind::Http,
-                format!("{} answered {}: {}", self.path, status, String::from_utf8_lossy(&body_bytes)),
+                format!(
+                    "{} answered {}: {}",
+                    self.path,
+                    status,
+                    String::from_utf8_lossy(&body_bytes)
+                ),
             ));
         }
-        let bytes = crate::http::limited_read(
-            response.into_reader(),
-            self.max_response_bytes,
-            &self.path,
-        )?;
-        serde_json::from_slice(&bytes)
-            .map_err(|e| HostError::new(HostErrorKind::Protocol, format!("{}: invalid JSON: {e}", self.path)))
+        let bytes =
+            crate::http::limited_read(response.into_reader(), self.max_response_bytes, &self.path)?;
+        serde_json::from_slice(&bytes).map_err(|e| {
+            HostError::new(
+                HostErrorKind::Protocol,
+                format!("{}: invalid JSON: {e}", self.path),
+            )
+        })
     }
 }
 
@@ -155,9 +165,13 @@ impl TeacherHost for HttpTeacherHost {
             teacher_id: request.capability.teacher_id.clone(),
             model: request.capability.model_version.clone(),
             parts: request.parts.clone(),
-            want_hard: request.wants.contains(&crate::teacher::OutputKind::HardLabel),
+            want_hard: request
+                .wants
+                .contains(&crate::teacher::OutputKind::HardLabel),
             want_soft: request.capability.supports_soft_targets()
-                && request.wants.contains(&crate::teacher::OutputKind::SoftDistribution),
+                && request
+                    .wants
+                    .contains(&crate::teacher::OutputKind::SoftDistribution),
             want_program: request.wants.contains(&crate::teacher::OutputKind::Program),
             licence: serde_json::to_value(request.licence)
                 .ok()

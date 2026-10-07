@@ -305,4 +305,3 @@
   ;; the homoiconic payoff: synthesized DATA becomes a real function
   (eval (list 'fn '[x] expr)))
 
-(println "zio.learn loaded (generation loop: untrusted proposers feed it; reader+whitelist gates, canonical dedup, eval budget and error isolation live in the loop)")

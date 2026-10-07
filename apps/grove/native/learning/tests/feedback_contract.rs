@@ -52,7 +52,12 @@ fn seed_world(name: &str) -> (Store, ArtifactRef) {
         schema: SCHEMA_VERSION,
         owner: "trainer".to_string(),
         entrypoint: "predict".to_string(),
-        params: vec![ParamRef { module: "fusion".into(), shape: vec![1], dtype: "f32".into(), artifact: weights }],
+        params: vec![ParamRef {
+            module: "fusion".into(),
+            shape: vec![1],
+            dtype: "f32".into(),
+            artifact: weights,
+        }],
         libraries: vec![],
         preprocessing_version: "v1".to_string(),
         modules: vec![],
@@ -76,7 +81,10 @@ fn seed_observation(store: &Store) {
                 session_id: "s-1".to_string(),
                 source: "line-a".to_string(),
                 occurred_at_ms: 90,
-                blocks: vec![ContentBlock { media_type: "image/png".into(), artifact: content }],
+                blocks: vec![ContentBlock {
+                    media_type: "image/png".into(),
+                    artifact: content,
+                }],
                 modality_mask: vec![true, true],
                 training_permitted: true,
             },
@@ -99,10 +107,15 @@ fn feedback_binds_to_the_exact_prediction_not_the_current_head() {
         abstained: false,
         created_at_ms: 95,
     };
-    store.put_prediction(&Actor::new("trainer", ActorRole::Reader), &prediction).unwrap();
+    store
+        .put_prediction(&Actor::new("trainer", ActorRole::Reader), &prediction)
+        .unwrap();
 
     let loaded = store.get_prediction("pred-1").unwrap();
-    assert_eq!(loaded.snapshot_digest, snapshot, "a prediction must keep its own version");
+    assert_eq!(
+        loaded.snapshot_digest, snapshot,
+        "a prediction must keep its own version"
+    );
     assert_eq!(loaded.observation_id, "obs-1");
 
     // A later snapshot becomes the published one; the old prediction must
@@ -143,7 +156,9 @@ fn feedback_binds_to_the_exact_prediction_not_the_current_head() {
         &protocol,
         &newer_digest,
         None,
-    ).unwrap().0;
+    )
+    .unwrap()
+    .0;
 
     let reloaded = store.get_prediction("pred-1").unwrap();
     assert_ne!(reloaded.snapshot_digest, newer_digest);
@@ -166,12 +181,18 @@ fn two_conflicting_corrections_stay_conflicted_until_adjudicated() {
     // Both are in force, and the host reports them as a conflict rather
     // than picking a winner by arrival order.
     let conflicts = store.conflicts_for("obs-1").unwrap();
-    assert_eq!(conflicts.len(), 1, "two disagreeing human corrections must conflict");
+    assert_eq!(
+        conflicts.len(),
+        1,
+        "two disagreeing human corrections must conflict"
+    );
     assert_eq!(conflicts[0].target_field.as_deref(), Some("state"));
     assert_eq!(store.active_signals("obs-1").unwrap().len(), 2);
 
     // Adjudication is explicit: the loser leaves the in-force set.
-    store.resolve_conflict(&annotator(), "sig-b", "sig-a").unwrap();
+    store
+        .resolve_conflict(&annotator(), "sig-b", "sig-a")
+        .unwrap();
     assert_eq!(store.signal_status("sig-a").unwrap(), "superseded");
     let remaining = store.active_signals("obs-1").unwrap();
     assert_eq!(remaining.len(), 1);
@@ -189,7 +210,9 @@ fn adjudication_refuses_two_unrelated_signals() {
     store.submit_signal(&annotator(), &a).unwrap();
     store.submit_signal(&annotator(), &b).unwrap();
 
-    let err = store.resolve_conflict(&annotator(), "sig-a", "sig-b").unwrap_err();
+    let err = store
+        .resolve_conflict(&annotator(), "sig-a", "sig-b")
+        .unwrap_err();
     assert_eq!(err.kind, ErrorKind::InvalidInput);
     // Unrelated signals stay in force.
     assert_eq!(store.active_signals("obs-1").unwrap().len(), 2);
@@ -225,7 +248,10 @@ fn a_retraction_does_not_rewrite_a_frozen_view() {
     assert_eq!(loaded.signal_ids, vec!["sig-1".to_string()]);
 
     // The *next* view picks the change up.
-    assert!(store.pending_signals("task-1").unwrap().is_empty(), "a retracted signal is not pending");
+    assert!(
+        store.pending_signals("task-1").unwrap().is_empty(),
+        "a retracted signal is not pending"
+    );
     let mut next = frozen.clone();
     next.id = "ds-2".to_string();
     next.signal_ids = vec![];
@@ -253,7 +279,10 @@ fn a_frozen_view_refuses_signals_that_are_not_in_force() {
     };
     let err = store.freeze_dataset(&operator(), &revision).unwrap_err();
     assert_eq!(err.kind, ErrorKind::IncompatibleState);
-    assert!(store.get_dataset("ds-bad").is_err(), "a rejected freeze must not persist");
+    assert!(
+        store.get_dataset("ds-bad").is_err(),
+        "a rejected freeze must not persist"
+    );
 }
 
 #[test]
@@ -270,7 +299,11 @@ fn a_human_correction_outranks_a_teacher_pseudo_label() {
     store.submit_signal(&annotator(), &human).unwrap();
 
     let in_force = store.active_signals("obs-1").unwrap();
-    assert_eq!(in_force.len(), 2, "both are recorded; precedence is a policy decision");
+    assert_eq!(
+        in_force.len(),
+        2,
+        "both are recorded; precedence is a policy decision"
+    );
     // A human and a teacher disagreeing about the same field is not a
     // human-vs-human conflict — there is nothing for a human to adjudicate.
     assert!(store.conflicts_for("obs-1").unwrap().is_empty());
@@ -280,7 +313,9 @@ fn a_human_correction_outranks_a_teacher_pseudo_label() {
     let best = ranked
         .iter()
         .max_by_key(|s| match s.kind {
-            SignalKind::HumanCorrection | SignalKind::HumanPreference | SignalKind::Demonstration => 3,
+            SignalKind::HumanCorrection
+            | SignalKind::HumanPreference
+            | SignalKind::Demonstration => 3,
             SignalKind::TeacherLabel => 2,
             _ => 1,
         })
@@ -311,8 +346,14 @@ fn a_reader_cannot_annotate_but_an_annotator_cannot_publish() {
     let signal = base_signal("sig-1", "k1", SignalKind::HumanCorrection, "ann");
 
     let reader = Actor::new("viewer", ActorRole::Reader);
-    assert_eq!(store.submit_signal(&reader, &signal).unwrap_err().kind, ErrorKind::CapabilityDenied);
-    assert!(!annotator().may(ActorRole::Publisher), "annotating is not publishing");
+    assert_eq!(
+        store.submit_signal(&reader, &signal).unwrap_err().kind,
+        ErrorKind::CapabilityDenied
+    );
+    assert!(
+        !annotator().may(ActorRole::Publisher),
+        "annotating is not publishing"
+    );
     assert_eq!(
         grove::logic::decline(&store, &annotator(), &snapshot.to_hex(), "no", 1)
             .unwrap_err()
@@ -330,7 +371,13 @@ fn retracting_a_signal_that_is_not_in_force_is_an_explicit_failure() {
     let signal = base_signal("sig-1", "k1", SignalKind::HumanCorrection, "ann");
     store.submit_signal(&annotator(), &signal).unwrap();
     store.retract_signal(&annotator(), "sig-1").unwrap();
-    assert_eq!(store.retract_signal(&annotator(), "sig-1").unwrap_err().kind, ErrorKind::IncompatibleState);
+    assert_eq!(
+        store
+            .retract_signal(&annotator(), "sig-1")
+            .unwrap_err()
+            .kind,
+        ErrorKind::IncompatibleState
+    );
 }
 
 #[test]
@@ -353,11 +400,18 @@ fn a_submitted_signal_survives_a_store_restart() {
     let store = Store::open(&root).unwrap();
     let conflicts = store.conflicts_for("obs-1").unwrap();
     assert_eq!(conflicts.len(), 1);
-    let mut found: Vec<String> = store.active_signals("obs-1").unwrap().iter().map(|s| s.id.clone()).collect();
+    let mut found: Vec<String> = store
+        .active_signals("obs-1")
+        .unwrap()
+        .iter()
+        .map(|s| s.id.clone())
+        .collect();
     found.sort();
     assert_eq!(found, signal_ids);
 
-    store.resolve_conflict(&annotator(), "sig-a", "sig-b").unwrap();
+    store
+        .resolve_conflict(&annotator(), "sig-a", "sig-b")
+        .unwrap();
     drop(store);
     let store = Store::open(&root).unwrap();
     assert_eq!(store.signal_status("sig-b").unwrap(), "superseded");
@@ -372,7 +426,10 @@ fn pending_signals_report_what_the_next_view_would_add() {
 
     let first = base_signal("sig-1", "k1", SignalKind::HumanCorrection, "ann");
     store.submit_signal(&annotator(), &first).unwrap();
-    assert_eq!(store.pending_signals("task-1").unwrap(), vec!["sig-1".to_string()]);
+    assert_eq!(
+        store.pending_signals("task-1").unwrap(),
+        vec!["sig-1".to_string()]
+    );
 
     let revision = DatasetRevision {
         schema: SCHEMA_VERSION,
@@ -385,11 +442,17 @@ fn pending_signals_report_what_the_next_view_would_add() {
         frozen_at_ms: 1,
     };
     store.freeze_dataset(&operator(), &revision).unwrap();
-    assert!(store.pending_signals("task-1").unwrap().is_empty(), "a frozen signal is no longer pending");
+    assert!(
+        store.pending_signals("task-1").unwrap().is_empty(),
+        "a frozen signal is no longer pending"
+    );
 
     let second = base_signal("sig-2", "k2", SignalKind::TeacherLabel, "teacher-local");
     store.submit_signal(&operator(), &second).unwrap();
-    assert_eq!(store.pending_signals("task-1").unwrap(), vec!["sig-2".to_string()]);
+    assert_eq!(
+        store.pending_signals("task-1").unwrap(),
+        vec!["sig-2".to_string()]
+    );
 }
 
 #[test]
@@ -399,7 +462,10 @@ fn duplicate_submission_after_restart_is_still_a_duplicate() {
     {
         let store = Store::open(&root).unwrap();
         seed_observation(&store);
-        assert_eq!(store.submit_signal(&annotator(), &signal).unwrap(), Receipt::Accepted);
+        assert_eq!(
+            store.submit_signal(&annotator(), &signal).unwrap(),
+            Receipt::Accepted
+        );
     }
     let store = Store::open(&root).unwrap();
     assert_eq!(

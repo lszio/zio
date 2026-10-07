@@ -38,7 +38,8 @@ pub fn macroexpand_1_fn(args: Vector<Value>, engine: &dyn EvalEngine) -> Result<
             if let Sexp::Symbol(name, _) = &list[0] {
                 let macro_args: Vec<Sexp> = list.iter().skip(1).cloned().collect();
                 let env = engine.env();
-                if let Some(expanded) = macros::try_expand_by_name(name, &macro_args, env, engine)? {
+                if let Some(expanded) = macros::try_expand_by_name(name, &macro_args, env, engine)?
+                {
                     return Ok(Value::from(expanded));
                 }
             }
@@ -79,7 +80,16 @@ pub fn macroexpand_fn(args: Vector<Value>, engine: &dyn EvalEngine) -> Result<Va
 }
 
 pub fn register(env: &Arc<Env>) {
-    env.set("eval".into(), Value::NativeFunction(NativeFn::new("eval", eval_fn)));
-    env.set("macroexpand-1".into(), Value::NativeFunction(NativeFn::new("macroexpand-1", macroexpand_1_fn)));
-    env.set("macroexpand".into(), Value::NativeFunction(NativeFn::new("macroexpand", macroexpand_fn)));
+    env.set(
+        "eval".into(),
+        Value::NativeFunction(NativeFn::new("eval", eval_fn)),
+    );
+    env.set(
+        "macroexpand-1".into(),
+        Value::NativeFunction(NativeFn::new("macroexpand-1", macroexpand_1_fn)),
+    );
+    env.set(
+        "macroexpand".into(),
+        Value::NativeFunction(NativeFn::new("macroexpand", macroexpand_fn)),
+    );
 }

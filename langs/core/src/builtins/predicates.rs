@@ -35,6 +35,20 @@ pub fn is_string(args: Vector<Value>, _engine: &dyn EvalEngine) -> Result<Value,
     unary_pred(&args, |v| matches!(v, Value::String(_)))
 }
 
+/// `(integer? x)` — exact integers only, not reals.
+///
+/// Separate from `number?` because the two are not interchangeable: a
+/// constant pool that tagged `1.0` as an integer would round-trip it
+/// through `i64` and silently change the program's arithmetic.
+pub fn is_integer(args: Vector<Value>, _engine: &dyn EvalEngine) -> Result<Value, EvalError> {
+    unary_pred(&args, |v| matches!(v, Value::Integer(_)))
+}
+
+/// `(float? x)` — real numbers only, not exact integers.
+pub fn is_float(args: Vector<Value>, _engine: &dyn EvalEngine) -> Result<Value, EvalError> {
+    unary_pred(&args, |v| matches!(v, Value::Float(_)))
+}
+
 pub fn is_symbol(args: Vector<Value>, _engine: &dyn EvalEngine) -> Result<Value, EvalError> {
     unary_pred(&args, |v| matches!(v, Value::Symbol(_)))
 }
@@ -57,7 +71,10 @@ pub fn is_map(args: Vector<Value>, _engine: &dyn EvalEngine) -> Result<Value, Ev
 
 pub fn is_fn(args: Vector<Value>, _engine: &dyn EvalEngine) -> Result<Value, EvalError> {
     unary_pred(&args, |v| {
-        matches!(v, Value::Function(_) | Value::NativeFunction(_) | Value::Macro(_))
+        matches!(
+            v,
+            Value::Function(_) | Value::NativeFunction(_) | Value::Macro(_)
+        )
     })
 }
 
@@ -86,7 +103,9 @@ pub fn integer_to_char(args: Vector<Value>, _engine: &dyn EvalEngine) -> Result<
             if let Some(c) = char::from_u32(*i as u32) {
                 Ok(Value::Char(c))
             } else {
-                Err(EvalError::custom(format!("invalid character codepoint: {i}")))
+                Err(EvalError::custom(format!(
+                    "invalid character codepoint: {i}"
+                )))
             }
         }
         other => Err(EvalError::type_error("integer", other.value_type())),
@@ -136,10 +155,13 @@ pub fn type_fn(args: Vector<Value>, _engine: &dyn EvalEngine) -> Result<Value, E
 
 /// (str ...) → string — concatenate args. Does not add quotes to strings.
 pub fn str_fn(args: Vector<Value>, _engine: &dyn EvalEngine) -> Result<Value, EvalError> {
-    let result: String = args.iter().map(|v| match v {
-        Value::String(s) => s.clone(),
-        other => format!("{other}"),
-    }).collect();
+    let result: String = args
+        .iter()
+        .map(|v| match v {
+            Value::String(s) => s.clone(),
+            other => format!("{other}"),
+        })
+        .collect();
     Ok(Value::String(result))
 }
 
@@ -152,7 +174,12 @@ pub fn keyword_fn(args: Vector<Value>, _engine: &dyn EvalEngine) -> Result<Value
         Value::String(s) => s.clone(),
         Value::Symbol(s) => s.clone(),
         Value::Keyword(k) => return Ok(Value::Keyword(k.clone())),
-        other => return Err(EvalError::type_error("string, symbol, or keyword", other.value_type())),
+        other => {
+            return Err(EvalError::type_error(
+                "string, symbol, or keyword",
+                other.value_type(),
+            ));
+        }
     };
     Ok(Value::Keyword(s))
 }
@@ -166,35 +193,125 @@ pub fn symbol_fn(args: Vector<Value>, _engine: &dyn EvalEngine) -> Result<Value,
         Value::String(s) => s.clone(),
         Value::Symbol(s) => return Ok(Value::Symbol(s.clone())),
         Value::Keyword(k) => k.clone(),
-        other => return Err(EvalError::type_error("string, symbol, or keyword", other.value_type())),
+        other => {
+            return Err(EvalError::type_error(
+                "string, symbol, or keyword",
+                other.value_type(),
+            ));
+        }
     };
     Ok(Value::Symbol(s))
 }
 
+/// `(name x)` — the bare text of a keyword or symbol.
+///
+/// `(name :memory/id)` is `"memory/id"`: the keyword without its colon.
+/// Record lookups need this, because a stored map may key the same field
+/// as a string while the query names it as a keyword.
+pub fn name_fn(args: Vector<Value>, _engine: &dyn EvalEngine) -> Result<Value, EvalError> {
+    if args.len() != 1 {
+        return Err(EvalError::wrong_arg_count(1, args.len()));
+    }
+    match &args[0] {
+        Value::Keyword(k) | Value::Symbol(k) => Ok(Value::String(k.clone())),
+        Value::String(s) => Ok(Value::String(s.clone())),
+        other => Err(EvalError::type_error(
+            "keyword, symbol, or string",
+            other.value_type(),
+        )),
+    }
+}
+
 pub fn register(env: &Arc<Env>) {
     // Type predicates
-    env.set("nil?".into(), Value::NativeFunction(NativeFn::new("nil?", is_nil)));
-    env.set("boolean?".into(), Value::NativeFunction(NativeFn::new("boolean?", is_boolean)));
-    env.set("number?".into(), Value::NativeFunction(NativeFn::new("number?", is_number)));
-    env.set("string?".into(), Value::NativeFunction(NativeFn::new("string?", is_string)));
-    env.set("symbol?".into(), Value::NativeFunction(NativeFn::new("symbol?", is_symbol)));
-    env.set("keyword?".into(), Value::NativeFunction(NativeFn::new("keyword?", is_keyword)));
-    env.set("list?".into(), Value::NativeFunction(NativeFn::new("list?", is_list)));
-    env.set("vector?".into(), Value::NativeFunction(NativeFn::new("vector?", is_vector)));
-    env.set("map?".into(), Value::NativeFunction(NativeFn::new("map?", is_map)));
-    env.set("fn?".into(), Value::NativeFunction(NativeFn::new("fn?", is_fn)));
-    env.set("char?".into(), Value::NativeFunction(NativeFn::new("char?", is_char)));
+    env.set(
+        "nil?".into(),
+        Value::NativeFunction(NativeFn::new("nil?", is_nil)),
+    );
+    env.set(
+        "boolean?".into(),
+        Value::NativeFunction(NativeFn::new("boolean?", is_boolean)),
+    );
+    env.set(
+        "number?".into(),
+        Value::NativeFunction(NativeFn::new("number?", is_number)),
+    );
+    env.set(
+        "integer?".into(),
+        Value::NativeFunction(NativeFn::new("integer?", is_integer)),
+    );
+    env.set(
+        "float?".into(),
+        Value::NativeFunction(NativeFn::new("float?", is_float)),
+    );
+    env.set(
+        "string?".into(),
+        Value::NativeFunction(NativeFn::new("string?", is_string)),
+    );
+    env.set(
+        "symbol?".into(),
+        Value::NativeFunction(NativeFn::new("symbol?", is_symbol)),
+    );
+    env.set(
+        "keyword?".into(),
+        Value::NativeFunction(NativeFn::new("keyword?", is_keyword)),
+    );
+    env.set(
+        "list?".into(),
+        Value::NativeFunction(NativeFn::new("list?", is_list)),
+    );
+    env.set(
+        "vector?".into(),
+        Value::NativeFunction(NativeFn::new("vector?", is_vector)),
+    );
+    env.set(
+        "map?".into(),
+        Value::NativeFunction(NativeFn::new("map?", is_map)),
+    );
+    env.set(
+        "fn?".into(),
+        Value::NativeFunction(NativeFn::new("fn?", is_fn)),
+    );
+    env.set(
+        "char?".into(),
+        Value::NativeFunction(NativeFn::new("char?", is_char)),
+    );
 
     // Characters
-    env.set("char->integer".into(), Value::NativeFunction(NativeFn::new("char->integer", char_to_integer)));
-    env.set("integer->char".into(), Value::NativeFunction(NativeFn::new("integer->char", integer_to_char)));
-    env.set("char=?".into(), Value::NativeFunction(NativeFn::new("char=?", char_eq)));
+    env.set(
+        "char->integer".into(),
+        Value::NativeFunction(NativeFn::new("char->integer", char_to_integer)),
+    );
+    env.set(
+        "integer->char".into(),
+        Value::NativeFunction(NativeFn::new("integer->char", integer_to_char)),
+    );
+    env.set(
+        "char=?".into(),
+        Value::NativeFunction(NativeFn::new("char=?", char_eq)),
+    );
 
     // Reflection
-    env.set("type".into(), Value::NativeFunction(NativeFn::new("type", type_fn)));
+    env.set(
+        "type".into(),
+        Value::NativeFunction(NativeFn::new("type", type_fn)),
+    );
 
     // Conversion
-    env.set("str".into(), Value::NativeFunction(NativeFn::new("str", str_fn)));
-    env.set("keyword".into(), Value::NativeFunction(NativeFn::new("keyword", keyword_fn)));
-    env.set("symbol".into(), Value::NativeFunction(NativeFn::new("symbol", symbol_fn)));
+    env.set(
+        "str".into(),
+        Value::NativeFunction(NativeFn::new("str", str_fn)),
+    );
+    env.set(
+        "keyword".into(),
+        Value::NativeFunction(NativeFn::new("keyword", keyword_fn)),
+    );
+    env.set(
+        "name".into(),
+        Value::NativeFunction(NativeFn::new("name", name_fn)),
+    );
+    env.set(
+        "symbol".into(),
+        Value::NativeFunction(NativeFn::new("symbol", symbol_fn)),
+    );
 }

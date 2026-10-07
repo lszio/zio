@@ -1,4 +1,4 @@
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use std::sync::Arc;
 
 use zio_core::builtins;
@@ -41,7 +41,10 @@ fn bench_arithmetic(c: &mut Criterion) {
     });
 
     define_helpers(&ctx);
-    eval_str(&ctx, "(defn countdown [n] (if (zero? n) n (countdown (dec n))))");
+    eval_str(
+        &ctx,
+        "(defn countdown [n] (if (zero? n) n (countdown (dec n))))",
+    );
 
     c.bench_function("loop_1k", |b| {
         b.iter(|| black_box(eval_str(&ctx, "(countdown 1000)")))
@@ -87,7 +90,12 @@ fn bench_list_ops(c: &mut Criterion) {
     });
 
     c.bench_function("cons_chain_100", |b| {
-        b.iter(|| black_box(eval_str(&ctx, "(cons 1 (cons 2 (cons 3 (cons 4 (cons 5 nil)))))")))
+        b.iter(|| {
+            black_box(eval_str(
+                &ctx,
+                "(cons 1 (cons 2 (cons 3 (cons 4 (cons 5 nil)))))",
+            ))
+        })
     });
 }
 
@@ -95,7 +103,10 @@ fn bench_list_ops(c: &mut Criterion) {
 
 fn bench_macro_expansion(c: &mut Criterion) {
     let ctx = make_ctx();
-    eval_str(&ctx, "(defmacro unless [test body] (list 'if test nil body))");
+    eval_str(
+        &ctx,
+        "(defmacro unless [test body] (list 'if test nil body))",
+    );
 
     c.bench_function("macro_expand", |b| {
         b.iter(|| black_box(eval_str(&ctx, "(unless false 42)")))
@@ -129,8 +140,14 @@ fn bench_gf_dispatch(c: &mut Criterion) {
     eval_str(&ctx, "(defclass car (vehicle) ())");
     eval_str(&ctx, "(defclass truck (vehicle) ())");
     eval_str(&ctx, "(defgeneric collide (a b))");
-    eval_str(&ctx, "(defmethod collide ((a vehicle) (b vehicle)) (str \"generic\"))");
-    eval_str(&ctx, "(defmethod collide ((a car) (b truck)) (str \"car-truck\"))");
+    eval_str(
+        &ctx,
+        "(defmethod collide ((a vehicle) (b vehicle)) (str \"generic\"))",
+    );
+    eval_str(
+        &ctx,
+        "(defmethod collide ((a car) (b truck)) (str \"car-truck\"))",
+    );
     eval_str(&ctx, "(def ci2 (make-instance car))");
     eval_str(&ctx, "(def ti (make-instance truck))");
 

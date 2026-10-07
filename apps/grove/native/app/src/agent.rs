@@ -29,12 +29,12 @@ use std::time::{Duration, Instant};
 
 use grove::contracts::{Actor, ArtifactRef, Error, ErrorKind, Result};
 use grove::execution::{
-    execute, Capability, ExecutionLimits, ExecutionRequest, ExecutionResult, ExecutionStatus,
-    FrozenSource, GrantProfile,
+    Capability, ExecutionLimits, ExecutionRequest, ExecutionResult, ExecutionStatus, FrozenSource,
+    GrantProfile, execute,
 };
 use grove::store::Store;
 use loom::harness::{self, ChatMessage, Tools};
-use zio_core::bootstrap::{eval_source, language_context, ModuleRoots};
+use zio_core::bootstrap::{ModuleRoots, eval_source, language_context};
 use zio_core::context::EvalContext;
 use zio_core::error::EvalError;
 use zio_core::im::{HashMap as ZioMap, Vector};
@@ -222,12 +222,10 @@ impl AgentHost {
         for input in &task.inputs {
             roots.push(input.clone());
         }
-        let module_roots = ModuleRoots::new(roots).map_err(|e| {
-            Error::new(ErrorKind::BackendFailed, format!("agent roots: {e}"))
-        })?;
-        let ctx = language_context(module_roots).map_err(|e| {
-            Error::new(ErrorKind::BackendFailed, format!("agent bootstrap: {e}"))
-        })?;
+        let module_roots = ModuleRoots::new(roots)
+            .map_err(|e| Error::new(ErrorKind::BackendFailed, format!("agent roots: {e}")))?;
+        let ctx = language_context(module_roots)
+            .map_err(|e| Error::new(ErrorKind::BackendFailed, format!("agent bootstrap: {e}")))?;
 
         let budget = Arc::new(
             harness::Budget::new()
@@ -260,10 +258,9 @@ impl AgentHost {
         let for_completion = Arc::clone(self);
         ctx.env.set(
             "harness-complete".to_string(),
-            Value::NativeFunction(NativeFn::new(
-                "harness-complete",
-                move |args, _engine| for_completion.complete(args),
-            )),
+            Value::NativeFunction(NativeFn::new("harness-complete", move |args, _engine| {
+                for_completion.complete(args)
+            })),
         );
         let for_execution = Arc::clone(self);
         ctx.env.set(
@@ -342,7 +339,7 @@ impl AgentHost {
                     "failed",
                     &format!("model call failed: {e}"),
                     "",
-                ))
+                ));
             }
         };
         match source_from_message(&message) {
@@ -455,6 +452,12 @@ impl AgentHost {
         // something the caller passed in: this context carries the
         // model's authority, and the code that gets to spend it is not
         // the caller's to choose.
+        // The logic `load`s its siblings by relative path, so resolution
+        // is anchored at the file's own directory rather than at
+        // wherever the test or process happened to be started.
+        if let Some(parent) = logic_path.parent() {
+            *ctx.source_dir.borrow_mut() = Some(parent.to_path_buf());
+        }
         eval_source(ctx, DEFAULT_AGENT_LOGIC, &logic).map_err(|e| {
             Error::new(
                 ErrorKind::BackendFailed,
@@ -538,7 +541,12 @@ impl AgentHost {
             run_id: format!("run-agent-{}", self.calls.lock()),
             task_id: self.task.id.clone(),
             turns,
-            status: if status.is_empty() { "unknown" } else { &status }.to_string(),
+            status: if status.is_empty() {
+                "unknown"
+            } else {
+                &status
+            }
+            .to_string(),
             source,
             execution,
             last_error,
@@ -667,7 +675,9 @@ fn call_value(
         match step {
             zio_core::special::TailResult::Value(value) => return Ok(value),
             zio_core::special::TailResult::Recur(_) => {
-                return Err(EvalError::custom("agent entry recurred without a loop frame"))
+                return Err(EvalError::custom(
+                    "agent entry recurred without a loop frame",
+                ));
             }
             zio_core::special::TailResult::TailCall(next, next_args) => {
                 step = zio_core::eval::apply(next, next_args, ctx)?;

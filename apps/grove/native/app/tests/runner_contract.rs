@@ -23,13 +23,9 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use grove::contracts::{
-    Actor, ActorRole, ArtifactRef, ErrorKind, Run, RunState, SCHEMA_VERSION,
-};
+use grove::contracts::{Actor, ActorRole, ArtifactRef, ErrorKind, Run, RunState, SCHEMA_VERSION};
 use grove::store::Store;
-use grove_app::runner::{
-    claim_next, transition, RunClaim, Runner, RunnerConfig, RunRequest,
-};
+use grove_app::runner::{RunClaim, RunRequest, Runner, RunnerConfig, claim_next, transition};
 
 fn store(label: &str) -> (Arc<Store>, PathBuf) {
     let dir = std::env::temp_dir().join(format!("grove-runner-{}-{label}", std::process::id()));
@@ -118,8 +114,13 @@ fn an_illegal_transition_is_refused_by_the_store_not_just_the_helper() {
     store.put_run(&operator(), &queued).expect("put");
     // The run has not run, so it cannot be accepted. Writing that state
     // through the store directly is the hole this closes.
-    let err = grove_app::runner::set_run_state_checked(&store, &operator(), &mut queued, RunState::Accepted)
-        .expect_err("queued -> accepted must be refused");
+    let err = grove_app::runner::set_run_state_checked(
+        &store,
+        &operator(),
+        &mut queued,
+        RunState::Accepted,
+    )
+    .expect_err("queued -> accepted must be refused");
     assert_eq!(err.kind, ErrorKind::InvalidInput);
     // The record is unchanged: a refused write is not a partial write.
     assert_eq!(store.get_run("run-1").unwrap().state, RunState::Queued);
@@ -227,7 +228,9 @@ fn a_claim_can_only_be_completed_once() {
     let claim = claim_next(&runner, &operator(), "attempt-a")
         .expect("claim")
         .expect("the queued run is claimable");
-    runner.complete(&operator(), &claim, "done").expect("first completion");
+    runner
+        .complete(&operator(), &claim, "done")
+        .expect("first completion");
     // A retried receipt for the same attempt is a replay, not progress.
     let err = runner
         .complete(&operator(), &claim, "done again")
@@ -371,18 +374,17 @@ fn a_resumed_run_is_actually_executed_rather_than_left_queued() {
         return;
     };
     let (store, dir) = store("resume-executes");
-    store.put_run(&operator(), &run("run-resumed", 100)).expect("put");
+    store
+        .put_run(&operator(), &run("run-resumed", 100))
+        .expect("put");
     let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .ancestors().nth(4)
+        .ancestors()
+        .nth(4)
         .unwrap()
         .to_path_buf();
     let data = root.join("examples/self-learning/data");
-    let runner = Runner::with_training(
-        Arc::clone(&store),
-        RunnerConfig::default(),
-        Some(env),
-    )
-    .expect("runner");
+    let runner = Runner::with_training(Arc::clone(&store), RunnerConfig::default(), Some(env))
+        .expect("runner");
 
     // The work descriptor a resume attaches. Without it the run would
     // sit in `queued` forever and the owner would skip it silently.
@@ -438,7 +440,10 @@ fn a_resumed_run_is_actually_executed_rather_than_left_queued() {
         "the resumed run must actually execute, error was {:?}",
         outcome.error
     );
-    assert_eq!(store.get_run("run-resumed").unwrap().state, RunState::Evaluating);
+    assert_eq!(
+        store.get_run("run-resumed").unwrap().state,
+        RunState::Evaluating
+    );
     // And the work descriptor is what made it runnable: an owner that
     // did not receive the request can still read what to build.
     let (kind, _) = store
@@ -457,7 +462,8 @@ fn a_resumed_run_is_actually_executed_rather_than_left_queued() {
 /// actually train.
 fn training_env() -> Option<grove_app::runner::TrainingEnvironment> {
     let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .ancestors().nth(4)
+        .ancestors()
+        .nth(4)
         .unwrap()
         .to_path_buf();
     grove_app::runner::TrainingEnvironment::probe(&root)
@@ -504,24 +510,25 @@ fn a_training_run_without_a_worker_is_refused_not_reported_done() {
 #[test]
 fn a_real_cpu_training_run_actually_trains_and_logs_its_progress() {
     let Some(env) = training_env() else {
-        eprintln!("SKIP: no .venv/bin/python + apps/grove/workers/torch/worker.py; CPU training unverified");
+        eprintln!(
+            "SKIP: no .venv/bin/python + apps/grove/workers/torch/worker.py; CPU training unverified"
+        );
         return;
     };
     let (store, dir) = store("training-real");
-    store.put_run(&operator(), &run("run-1", 10_000)).expect("put");
-    let runner = Runner::with_training(
-        Arc::clone(&store),
-        RunnerConfig::default(),
-        Some(env),
-    )
-    .expect("runner");
+    store
+        .put_run(&operator(), &run("run-1", 10_000))
+        .expect("put");
+    let runner = Runner::with_training(Arc::clone(&store), RunnerConfig::default(), Some(env))
+        .expect("runner");
 
     // Real data, real weights, and the real operator graph vocabulary —
     // the same inputs the demo trains on, so this is the CPU path and
     // not a stub. A made-up graph would be refused by the worker's own
     // validator, which would prove nothing about training.
     let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .ancestors().nth(4)
+        .ancestors()
+        .nth(4)
         .unwrap()
         .to_path_buf();
     let data = root.join("examples/self-learning/data");

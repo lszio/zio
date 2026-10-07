@@ -46,7 +46,13 @@ fn module(name: &str, in_space: &str, out_space: &str) -> ModuleSpec {
 
 /// A snapshot with modules, committed and named so composition can
 /// resolve it by name later.
-fn seed(store: &Store, actor: &Actor, name: &str, modules: Vec<ModuleSpec>, weights: &[u8]) -> ArtifactRef {
+fn seed(
+    store: &Store,
+    actor: &Actor,
+    name: &str,
+    modules: Vec<ModuleSpec>,
+    weights: &[u8],
+) -> ArtifactRef {
     let artifact = store.artifacts().put(weights).unwrap();
     let snapshot = ModelSnapshot {
         schema: SCHEMA_VERSION,
@@ -67,7 +73,9 @@ fn seed(store: &Store, actor: &Actor, name: &str, modules: Vec<ModuleSpec>, weig
         ensemble: None,
         graph: None,
     };
-    let digest = store.commit_manifest("ModelSnapshot", &actor.id, &snapshot).unwrap();
+    let digest = store
+        .commit_manifest("ModelSnapshot", &actor.id, &snapshot)
+        .unwrap();
     store.name_snapshot(name, &digest).unwrap();
     digest
 }
@@ -105,8 +113,20 @@ fn a_compatible_chain_composes_and_keeps_both_parents_intact() {
     let mut fusion = module("fusion", "pixel", "logits");
     fusion.depends_on = vec!["visual".to_string()];
 
-    let parent_a = seed(&store, &actor, "visual-snap", vec![visual.clone()], b"visual-weights");
-    let parent_b = seed(&store, &actor, "fusion-snap", vec![fusion.clone()], b"fusion-weights");
+    let parent_a = seed(
+        &store,
+        &actor,
+        "visual-snap",
+        vec![visual.clone()],
+        b"visual-weights",
+    );
+    let parent_b = seed(
+        &store,
+        &actor,
+        "fusion-snap",
+        vec![fusion.clone()],
+        b"fusion-weights",
+    );
 
     let result = composition::compose(
         &store,
@@ -142,10 +162,15 @@ fn a_compatible_chain_composes_and_keeps_both_parents_intact() {
     let child = store.snapshot_digest("composite-1").unwrap();
     let recorded: Vec<ArtifactRef> = parents.iter().map(|(d, _)| *d).collect();
     assert!(recorded.contains(&parent_a) && recorded.contains(&parent_b));
-    assert!(parents
-        .iter()
-        .all(|(_, d)| *d == grove::contracts::Derivation::ModuleComposition));
-    assert!(store.load_manifest(&child).is_ok(), "the composite is committed");
+    assert!(
+        parents
+            .iter()
+            .all(|(_, d)| *d == grove::contracts::Derivation::ModuleComposition)
+    );
+    assert!(
+        store.load_manifest(&child).is_ok(),
+        "the composite is committed"
+    );
 }
 
 #[test]
@@ -180,7 +205,13 @@ fn composing_never_weakens_the_permission_closure() {
     // reader. A module asking for less is a privilege-escalation attempt.
     let mut privileged = module("privileged", "pixel", "pixel");
     privileged.requires = ActorRole::Publisher;
-    let parent = seed(&store, &actor, "priv-snap", vec![privileged.clone()], b"priv");
+    let parent = seed(
+        &store,
+        &actor,
+        "priv-snap",
+        vec![privileged.clone()],
+        b"priv",
+    );
 
     let mut weakened = module("privileged", "pixel", "pixel");
     weakened.requires = ActorRole::Reader;
@@ -198,7 +229,9 @@ fn composing_never_weakens_the_permission_closure() {
     .unwrap_err();
     assert_eq!(error.kind, grove::contracts::ErrorKind::ProtocolViolation);
     assert!(
-        error.context.contains("must not weaken the permission closure"),
+        error
+            .context
+            .contains("must not weaken the permission closure"),
         "the error must name the closure rule: {}",
         error.context
     );
@@ -231,9 +264,15 @@ fn a_local_replacement_creates_a_new_identity_and_keeps_the_old_one() {
     // still valid and the replacement is a real, separate identity.
     let mut replacement = module("visual", "pixel", "pixel");
     replacement.layers = vec!["visual_h2".to_string()];
-    let result =
-        composition::replace_module(&store, &actor, "composite-a", "composite-b", replacement, b"new-visual")
-            .expect("a space-compatible replacement composes");
+    let result = composition::replace_module(
+        &store,
+        &actor,
+        "composite-a",
+        "composite-b",
+        replacement,
+        b"new-visual",
+    )
+    .expect("a space-compatible replacement composes");
 
     assert_ne!(
         store.snapshot_digest("composite-a").unwrap(),
@@ -241,15 +280,24 @@ fn a_local_replacement_creates_a_new_identity_and_keeps_the_old_one() {
         "the replacement is a new snapshot, not an edit of the old one"
     );
     assert_eq!(result.modules.len(), 2, "the neighbour is still there");
-    assert_eq!(result.modules[0].origin, composition::ParameterOrigin::Migrated);
+    assert_eq!(
+        result.modules[0].origin,
+        composition::ParameterOrigin::Migrated
+    );
 
     // An interface-breaking replacement IS refused: the new module emits
     // a different space, which its consumer cannot accept.
     let mut breaking = module("visual", "pixel", "probability");
     breaking.layers = vec!["visual_h3".to_string()];
-    let error =
-        composition::replace_module(&store, &actor, "composite-b", "composite-c", breaking, b"bad")
-            .unwrap_err();
+    let error = composition::replace_module(
+        &store,
+        &actor,
+        "composite-b",
+        "composite-c",
+        breaking,
+        b"bad",
+    )
+    .unwrap_err();
     assert_eq!(error.kind, grove::contracts::ErrorKind::ProtocolViolation);
     assert!(
         !store.snapshot_digest("composite-c").is_ok(),
@@ -331,7 +379,11 @@ fn a_graph_edge_that_contradicts_the_module_contract_is_refused() {
     // the graph claims to feed `fusion` from the `signed` space
     let error = composition::check_graph_spaces(
         &[visual, fusion],
-        &[("fusion".to_string(), "visual".to_string(), "signed".to_string())],
+        &[(
+            "fusion".to_string(),
+            "visual".to_string(),
+            "signed".to_string(),
+        )],
     )
     .unwrap_err();
     assert_eq!(error.kind, grove::contracts::ErrorKind::ProtocolViolation);
@@ -343,7 +395,11 @@ fn a_graph_edge_that_contradicts_the_module_contract_is_refused() {
             module("visual", "pixel", "pixel"),
             module("fusion", "pixel", "logits"),
         ],
-        &[("fusion".to_string(), "visual".to_string(), "pixel".to_string())],
+        &[(
+            "fusion".to_string(),
+            "visual".to_string(),
+            "pixel".to_string(),
+        )],
     )
     .expect("a matching edge passes");
 }
@@ -401,10 +457,21 @@ fn a_joint_fine_tune_that_moves_a_frozen_module_is_refused() {
     // The caller claims it wrote "the frozen state plus the updated
     // layers". It did not: the frozen module moved.
     let moved = br#"{"encoder": [9.0, 9.0], "head": [0.5]}"#;
-    let err = composition::commit_joint(&store, &actor, "composite-frozen", "composite-v2", moved, 0.9)
-        .expect_err("a frozen module that changed must be refused");
+    let err = composition::commit_joint(
+        &store,
+        &actor,
+        "composite-frozen",
+        "composite-v2",
+        moved,
+        0.9,
+    )
+    .expect_err("a frozen module that changed must be refused");
     assert_eq!(err.kind, grove::contracts::ErrorKind::ProtocolViolation);
-    assert!(err.context.contains("frozen"), "the error must name the frozen module: {}", err.context);
+    assert!(
+        err.context.contains("frozen"),
+        "the error must name the frozen module: {}",
+        err.context
+    );
     // Nothing was named or committed.
     assert!(store.snapshot_digest("composite-v2").is_err());
 }
@@ -434,7 +501,11 @@ fn a_joint_fine_tune_that_drops_a_frozen_module_is_refused() {
         0.9,
     )
     .expect_err("a composite cannot drop a frozen member");
-    assert!(err.context.contains("drop a frozen member"), "{}", err.context);
+    assert!(
+        err.context.contains("drop a frozen member"),
+        "{}",
+        err.context
+    );
 }
 
 #[test]

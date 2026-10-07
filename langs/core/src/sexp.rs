@@ -110,9 +110,15 @@ impl Sexp {
     pub fn span(&self) -> Option<Span> {
         match self {
             Sexp::Nil | Sexp::Boolean(_) => None,
-            Sexp::Integer(_, s) | Sexp::Float(_, s) | Sexp::String(_, s)
-            | Sexp::Symbol(_, s) | Sexp::Keyword(_, s) | Sexp::List(_, s)
-            | Sexp::Vector(_, s) | Sexp::Map(_, s) | Sexp::Char(_, s) => *s,
+            Sexp::Integer(_, s)
+            | Sexp::Float(_, s)
+            | Sexp::String(_, s)
+            | Sexp::Symbol(_, s)
+            | Sexp::Keyword(_, s)
+            | Sexp::List(_, s)
+            | Sexp::Vector(_, s)
+            | Sexp::Map(_, s)
+            | Sexp::Char(_, s) => *s,
         }
     }
 
@@ -149,6 +155,9 @@ impl SpannedSexp {
     }
 
     pub fn dummy(node: Sexp) -> Self {
-        SpannedSexp { node, span: Span::DUMMY }
+        SpannedSexp {
+            node,
+            span: Span::DUMMY,
+        }
     }
 }

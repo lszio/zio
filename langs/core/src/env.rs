@@ -48,6 +48,11 @@ impl Env {
         None
     }
 
+    /// Read only this scope, never an inherited capability or binding.
+    pub fn get_owned(&self, key: &str) -> Option<Value> {
+        self.data.borrow().get(key).cloned()
+    }
+
     /// Bind parameters to arguments in a new child environment.
     pub fn bind(
         outer: &Arc<Env>,
@@ -55,8 +60,7 @@ impl Env {
         args: &Vector<Value>,
     ) -> Result<Arc<Env>, EvalError> {
         if params.len() != args.len() {
-            return Err(EvalError::wrong_arg_count(params.len(), args.len(),
-            ));
+            return Err(EvalError::wrong_arg_count(params.len(), args.len()));
         }
         let env = Arc::new(Env::new(Some(outer.clone())));
         for (p, a) in params.iter().zip(args.iter()) {
@@ -75,8 +79,7 @@ impl Env {
     ) -> Result<Arc<Env>, EvalError> {
         let min_args = params.len();
         if args.len() < min_args {
-            return Err(EvalError::wrong_arg_count_min(min_args, args.len(),
-            ));
+            return Err(EvalError::wrong_arg_count_min(min_args, args.len()));
         }
         let env = Arc::new(Env::new(Some(outer.clone())));
         // Bind named params

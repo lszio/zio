@@ -78,14 +78,15 @@ impl GenericFunction {
             match specializer {
                 Specializer::T => continue,
                 Specializer::Exact(name) => {
-                    if !is_subclass_of(arg_class, &Arc::new(
-                        crate::zos::object::Class {
+                    if !is_subclass_of(
+                        arg_class,
+                        &Arc::new(crate::zos::object::Class {
                             name: name.clone(),
                             superclasses: Vec::new(),
                             slots: Vec::new(),
                             cpl: vec![name.clone()],
-                        }
-                    )) {
+                        }),
+                    ) {
                         return false;
                     }
                 }
@@ -97,12 +98,25 @@ impl GenericFunction {
     /// Compare two methods by CPL precedence for multi-dispatch ordering.
     /// For each argument position, compare the position of the specializer
     /// in the argument's CPL. Lower position = more specific.
-    fn cpl_compare(&self, a: &Arc<Method>, b: &Arc<Method>, arg_classes: &[ClassRef]) -> std::cmp::Ordering {
-        let max_args = a.specializers.len().max(b.specializers.len()).min(arg_classes.len());
+    fn cpl_compare(
+        &self,
+        a: &Arc<Method>,
+        b: &Arc<Method>,
+        arg_classes: &[ClassRef],
+    ) -> std::cmp::Ordering {
+        let max_args = a
+            .specializers
+            .len()
+            .max(b.specializers.len())
+            .min(arg_classes.len());
         for i in 0..max_args {
             let a_spec = a.specializers.get(i);
             let b_spec = b.specializers.get(i);
-            let arg_cpl = &arg_classes.get(i).map(|c| &c.cpl).cloned().unwrap_or_default();
+            let arg_cpl = &arg_classes
+                .get(i)
+                .map(|c| &c.cpl)
+                .cloned()
+                .unwrap_or_default();
 
             let a_pos = a_spec.and_then(|s| self.spec_pos_in_cpl(s, arg_cpl));
             let b_pos = b_spec.and_then(|s| self.spec_pos_in_cpl(s, arg_cpl));
@@ -127,7 +141,6 @@ impl GenericFunction {
     fn sort_by_cpl(&self, methods: &mut [Arc<Method>], arg_classes: &[ClassRef]) {
         methods.sort_by(|a, b| self.cpl_compare(a, b, arg_classes));
     }
-
 
     /// Build a cache key from argument class names (supports arbitrary argument counts).
     fn cache_key(&self, arg_classes: &[ClassRef]) -> Vec<u64> {
@@ -159,7 +172,12 @@ impl GenericFunction {
             }
         }
 
-        DispatchResult { around, before, primary, after }
+        DispatchResult {
+            around,
+            before,
+            primary,
+            after,
+        }
     }
 }
 
@@ -206,7 +224,8 @@ mod tests {
             cpl: vec!["String".into(), "TObject".into()],
         });
 
-        let mut gf = GenericFunction::new("render-3d".into(), vec!["x".into(), "y".into(), "z".into()]);
+        let mut gf =
+            GenericFunction::new("render-3d".into(), vec!["x".into(), "y".into(), "z".into()]);
 
         let m1 = Arc::new(Method {
             specializers: vec![
@@ -220,6 +239,7 @@ mod tests {
                 rest_param: None,
                 body: crate::sexp::Sexp::Nil,
                 env: Arc::new(crate::env::Env::new(None)),
+                compiled: None,
             }),
         });
 

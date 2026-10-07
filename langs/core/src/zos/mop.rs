@@ -27,24 +27,30 @@ impl MetaClassRegistry {
         reg.register(MetaClass {
             name: "StandardClass".into(),
             super_metaclasses: vec!["Class".into()],
-        }).unwrap();
+        })
+        .unwrap();
 
         reg.register(MetaClass {
             name: "BuiltinClass".into(),
             super_metaclasses: vec!["Class".into()],
-        }).unwrap();
+        })
+        .unwrap();
 
         reg.register(MetaClass {
             name: "StructureClass".into(),
             super_metaclasses: vec!["Class".into()],
-        }).unwrap();
+        })
+        .unwrap();
 
         reg
     }
 
     pub fn register(&mut self, meta: MetaClass) -> Result<(), EvalError> {
         if self.metaclasses.contains_key(&meta.name) {
-            return Err(EvalError::custom(format!("metaclass already registered: {}", meta.name)));
+            return Err(EvalError::custom(format!(
+                "metaclass already registered: {}",
+                meta.name
+            )));
         }
         self.metaclasses.insert(meta.name.clone(), Arc::new(meta));
         Ok(())
@@ -68,7 +74,11 @@ impl ClassReflectionInfo {
     pub fn from_class(class_ref: &ClassRef) -> Self {
         ClassReflectionInfo {
             name: class_ref.name.clone(),
-            direct_superclasses: class_ref.superclasses.iter().map(|c| c.name.clone()).collect(),
+            direct_superclasses: class_ref
+                .superclasses
+                .iter()
+                .map(|c| c.name.clone())
+                .collect(),
             cpl: class_ref.cpl.clone(),
             slot_names: class_ref.slots.iter().map(|s| s.name.clone()).collect(),
         }

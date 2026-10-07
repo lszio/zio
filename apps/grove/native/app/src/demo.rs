@@ -8,14 +8,14 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use grove::contracts::{
-    require_finite_metrics, Actor, ArtifactRef, Error, ErrorKind, EvaluationRecord, Result, Run,
-    RunState, SCHEMA_VERSION,
+    Actor, ArtifactRef, Error, ErrorKind, EvaluationRecord, Result, Run, RunState, SCHEMA_VERSION,
+    require_finite_metrics,
 };
 use grove::evaluation::{self, EvaluationProtocol};
 use grove::store::Store;
 use grove::worker::{Frame, Isolation, Worker, WorkerConfig};
 
-use crate::{operator, Paths};
+use crate::{Paths, operator};
 
 /// The frozen acceptance gates, mirroring examples/self-learning/task.json.
 const GATE_ACCURACY: f64 = 0.90;
@@ -91,8 +91,15 @@ pub fn run_dual(root: &Path, paths: &Paths, device: &str) -> Result<String> {
 
     // 3. the fixed baseline: structure frozen, parameters trained
     let run_base = seed_run(&store, "run-baseline", &snapshot_base, 1000)?;
-    let (base_loss, base_acc) =
-        train_leg(&mut worker, &scratch, "run-baseline", linear_graph(), 300, 7, None)?;
+    let (base_loss, base_acc) = train_leg(
+        &mut worker,
+        &scratch,
+        "run-baseline",
+        linear_graph(),
+        300,
+        7,
+        None,
+    )?;
     store.consume_steps(&run_base.id, 300)?;
     record(&store, &operator, &snapshot_base, base_acc, 1)?;
     report.push_str(&format!(
@@ -203,7 +210,9 @@ pub fn run_dual(root: &Path, paths: &Paths, device: &str) -> Result<String> {
             "candidate does not qualify and stays unpublished: {:?}",
             row.gate_failures
         ),
-        None => "candidate has no evaluation under this protocol; it cannot be approved".to_string(),
+        None => {
+            "candidate has no evaluation under this protocol; it cannot be approved".to_string()
+        }
     };
     report.push_str(&format!(
         "publication: none — {pending}\n  approve by hand: grove approve --root <root> \
@@ -232,7 +241,10 @@ pub fn commit_trained_snapshot(
     let bytes = std::fs::read(weights_path).map_err(|e| {
         Error::new(
             ErrorKind::BackendFailed,
-            format!("trained weights {} are unreadable: {e}", weights_path.display()),
+            format!(
+                "trained weights {} are unreadable: {e}",
+                weights_path.display()
+            ),
         )
     })?;
     // verify it is the worker's parameter format, not an arbitrary blob:
@@ -244,12 +256,15 @@ pub fn commit_trained_snapshot(
             format!("trained weights are not JSON: {e}"),
         )
     })?;
-    let params = parsed.get("params").and_then(|v| v.as_object()).ok_or_else(|| {
-        Error::new(
-            ErrorKind::BackendFailed,
-            "trained weights carry no `params` object: this is not a model",
-        )
-    })?;
+    let params = parsed
+        .get("params")
+        .and_then(|v| v.as_object())
+        .ok_or_else(|| {
+            Error::new(
+                ErrorKind::BackendFailed,
+                "trained weights carry no `params` object: this is not a model",
+            )
+        })?;
     if params.is_empty() {
         return Err(Error::new(
             ErrorKind::BackendFailed,
@@ -314,10 +329,7 @@ fn modules_of(
     trained: &serde_json::Map<String, serde_json::Value>,
 ) -> Vec<grove::contracts::ModuleSpec> {
     let ops = graph["ops"].as_array().cloned().unwrap_or_default();
-    let linears: Vec<&serde_json::Value> = ops
-        .iter()
-        .filter(|op| op["kind"] == "linear")
-        .collect();
+    let linears: Vec<&serde_json::Value> = ops.iter().filter(|op| op["kind"] == "linear").collect();
     let mut out = Vec::new();
     for (index, op) in linears.iter().enumerate() {
         let name = op["output"].as_str().unwrap_or("layer").to_string();
@@ -327,7 +339,11 @@ fn modules_of(
         }
         let is_fusion = index == 0;
         out.push(grove::contracts::ModuleSpec {
-            input_space: if is_fusion { "fused".to_string() } else { "hidden".to_string() },
+            input_space: if is_fusion {
+                "fused".to_string()
+            } else {
+                "hidden".to_string()
+            },
             output_space: if is_fusion {
                 "hidden".to_string()
             } else {
@@ -337,7 +353,12 @@ fn modules_of(
             depends_on: if is_fusion {
                 Vec::new()
             } else {
-                vec![linears[0]["output"].as_str().unwrap_or_default().to_string()]
+                vec![
+                    linears[0]["output"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_string(),
+                ]
             },
             shared_group: None,
             // the head is the class boundary: it is what a composition
@@ -474,10 +495,15 @@ fn train_leg(
         let remaining = deadline.saturating_duration_since(std::time::Instant::now());
         if remaining.is_zero() {
             worker.kill();
-            return Err(Error::new(ErrorKind::Timeout, "worker did not finish in time"));
+            return Err(Error::new(
+                ErrorKind::Timeout,
+                "worker did not finish in time",
+            ));
         }
         match worker.next_frame(remaining)? {
-            Frame::Done { loss, val_accuracy, .. } => {
+            Frame::Done {
+                loss, val_accuracy, ..
+            } => {
                 let loss = loss.ok_or_else(|| {
                     Error::new(ErrorKind::BackendFailed, "done frame without a loss")
                 })?;

@@ -121,12 +121,20 @@ impl HttpAiHost {
             let body = limited_read(response.into_reader(), self.max_response_bytes, path)?;
             return Err(HostError::new(
                 HostErrorKind::Http,
-                format!("{path} answered {}: {}", status, String::from_utf8_lossy(&body)),
+                format!(
+                    "{path} answered {}: {}",
+                    status,
+                    String::from_utf8_lossy(&body)
+                ),
             ));
         }
         let bytes = limited_read(response.into_reader(), self.max_response_bytes, path)?;
-        serde_json::from_slice(&bytes)
-            .map_err(|e| HostError::new(HostErrorKind::Protocol, format!("{path}: invalid JSON: {e}")))
+        serde_json::from_slice(&bytes).map_err(|e| {
+            HostError::new(
+                HostErrorKind::Protocol,
+                format!("{path}: invalid JSON: {e}"),
+            )
+        })
     }
 }
 
@@ -137,9 +145,12 @@ pub(crate) fn limited_read(
 ) -> Result<Vec<u8>, HostError> {
     let mut limited = reader.take(cap as u64 + 1);
     let mut bytes = Vec::new();
-    limited
-        .read_to_end(&mut bytes)
-        .map_err(|e| HostError::new(HostErrorKind::Transport, format!("{path}: read failed: {e}")))?;
+    limited.read_to_end(&mut bytes).map_err(|e| {
+        HostError::new(
+            HostErrorKind::Transport,
+            format!("{path}: read failed: {e}"),
+        )
+    })?;
     if bytes.len() > cap {
         return Err(HostError::new(
             HostErrorKind::Protocol,
@@ -166,7 +177,10 @@ pub(crate) fn map_ureq_error(path: &str, error: ureq::Error) -> HostError {
             // ureq 2.x normalizes socket timeouts to ErrorKind::Io with a
             // "timed out" message (WouldBlock is normalized upstream).
             let kind = if transport.kind() == ureq::ErrorKind::Io
-                && transport.to_string().to_ascii_lowercase().contains("timed out")
+                && transport
+                    .to_string()
+                    .to_ascii_lowercase()
+                    .contains("timed out")
             {
                 HostErrorKind::Timeout
             } else {
@@ -211,7 +225,10 @@ impl LlmHost for HttpAiHost {
 /// missing name or unparsable arguments is a protocol error rather than
 /// a call with a guessed field. A missing *id* is indexable, though: the
 /// position is part of what the provider sent.
-fn parse_tool_call(index: usize, call: &serde_json::Value) -> Result<crate::harness::ToolCall, HostError> {
+fn parse_tool_call(
+    index: usize,
+    call: &serde_json::Value,
+) -> Result<crate::harness::ToolCall, HostError> {
     let name = call["function"]["name"]
         .as_str()
         .ok_or_else(|| {
@@ -234,7 +251,11 @@ fn parse_tool_call(index: usize, call: &serde_json::Value) -> Result<crate::harn
         .as_str()
         .map(str::to_string)
         .unwrap_or_else(|| format!("call-{index}"));
-    Ok(crate::harness::ToolCall { id, name, arguments })
+    Ok(crate::harness::ToolCall {
+        id,
+        name,
+        arguments,
+    })
 }
 
 impl ModelHost for HttpAiHost {
@@ -246,18 +267,13 @@ impl ModelHost for HttpAiHost {
     /// not, because a provider that answered the last message while
     /// ignoring the turns before it is answering a different question
     /// than the one that was asked.
-    fn respond(
-        &self,
-        request: &ChatRequest,
-        _budget: &Budget,
-    ) -> Result<ChatResponse, HostError> {
+    fn respond(&self, request: &ChatRequest, _budget: &Budget) -> Result<ChatResponse, HostError> {
         // The API is given the conversation as it stands. A caller-supplied
         // `system` message is the harness's own instruction and is sent
         // as such; a caller that tried to supply one is refused before
         // any request is built.
-        crate::harness::validate_request(request).map_err(|e| {
-            HostError::new(e.kind, format!("chat/completions: {}", e.message))
-        })?;
+        crate::harness::validate_request(request)
+            .map_err(|e| HostError::new(e.kind, format!("chat/completions: {}", e.message)))?;
         let messages: Vec<serde_json::Value> = request
             .messages
             .iter()
@@ -350,11 +366,12 @@ impl EmbedHost for HttpAiHost {
     fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f64>>, HostError> {
         let body = serde_json::json!({ "model": self.embed_model, "input": texts });
         let response = self.post_json("embeddings", body)?;
-        let data = response["data"]
-            .as_array()
-            .ok_or_else(|| {
-                HostError::new(HostErrorKind::Protocol, "embeddings: no data array in response")
-            })?;
+        let data = response["data"].as_array().ok_or_else(|| {
+            HostError::new(
+                HostErrorKind::Protocol,
+                "embeddings: no data array in response",
+            )
+        })?;
         if data.len() != texts.len() {
             return Err(HostError::new(
                 HostErrorKind::Protocol,

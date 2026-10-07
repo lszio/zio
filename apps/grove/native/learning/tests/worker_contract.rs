@@ -12,13 +12,14 @@ use std::time::Duration;
 use grove::contracts::{ErrorKind, SCHEMA_VERSION};
 use grove::store::Store;
 use grove::worker::{
-    commit_worker_output, digest_file, Frame, Isolation, Worker, WorkerConfig, PROTOCOL,
-    PROTOCOL_VERSION,
+    Frame, Isolation, PROTOCOL, PROTOCOL_VERSION, Worker, WorkerConfig, commit_worker_output,
+    digest_file,
 };
 
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .ancestors().nth(4)
+        .ancestors()
+        .nth(4)
         .unwrap()
         .to_path_buf()
 }
@@ -128,7 +129,10 @@ fn isolation_is_probed_not_assumed() {
 #[test]
 fn a_missing_unshare_binary_reports_no_namespaces() {
     let iso = Isolation::probe("/nonexistent/unshare").unwrap();
-    assert!(!iso.namespaces, "a missing unshare cannot provide isolation");
+    assert!(
+        !iso.namespaces,
+        "a missing unshare cannot provide isolation"
+    );
     assert_eq!(iso.enforce().unwrap_err().kind, ErrorKind::CapabilityDenied);
 }
 
@@ -159,7 +163,10 @@ fn a_worker_is_actually_network_isolated() {
             .unwrap_or_else(|_| "?".to_string())
     };
 
-    let plain = std::process::Command::new(&python).arg(&probe).output().unwrap();
+    let plain = std::process::Command::new(&python)
+        .arg(&probe)
+        .output()
+        .unwrap();
     let inside = std::process::Command::new("unshare")
         .args(["-Urn", "--pid", "--mount", "--fork", "--"])
         .arg(&python)
@@ -167,33 +174,40 @@ fn a_worker_is_actually_network_isolated() {
         .output()
         .unwrap();
 
-    assert_eq!(read(plain), "reachable", "without isolation the network must be reachable");
-    assert_eq!(read(inside), "blocked", "inside the namespace the network must be blocked");
+    assert_eq!(
+        read(plain),
+        "reachable",
+        "without isolation the network must be reachable"
+    );
+    assert_eq!(
+        read(inside),
+        "blocked",
+        "inside the namespace the network must be blocked"
+    );
 
     // And the host can spawn a real worker under that same isolation.
     let config = worker_config();
     let mut worker = Worker::spawn(&config, &iso).expect("spawn inside the namespace");
-    let err = worker
-        .request(
-            Frame::Train {
-                v: PROTOCOL_VERSION,
-                request_id: "r".into(),
-                run_id: "r".into(),
-                attempt_id: "a".into(),
-                graph: linear_graph(),
-                weights: "/dev/null".into(),
-                data: "/dev/null".into(),
-                val_data: None,
-                out: "/dev/null".into(),
-                steps: 1,
-                seed: 0,
-                resume: None,
-                save_at: None,
-                state_out: None,
-                stop_after_save: None,
-            },
-            Duration::from_secs(5),
-        );
+    let err = worker.request(
+        Frame::Train {
+            v: PROTOCOL_VERSION,
+            request_id: "r".into(),
+            run_id: "r".into(),
+            attempt_id: "a".into(),
+            graph: linear_graph(),
+            weights: "/dev/null".into(),
+            data: "/dev/null".into(),
+            val_data: None,
+            out: "/dev/null".into(),
+            steps: 1,
+            seed: 0,
+            resume: None,
+            save_at: None,
+            state_out: None,
+            stop_after_save: None,
+        },
+        Duration::from_secs(5),
+    );
     // A missing input artifact is a clean failure — never a network call.
     assert!(matches!(err, Ok(Frame::Failed { .. })) || err.is_err());
     worker.kill();
@@ -321,46 +335,69 @@ fn training_through_the_host_produces_loadable_weights() {
 
     let scratch = std::env::temp_dir().join(format!("grove-w04-{}", std::process::id()));
     std::fs::create_dir_all(&scratch).unwrap();
-    let config = WorkerConfig { scratch: scratch.clone(), ..worker_config() };
+    let config = WorkerConfig {
+        scratch: scratch.clone(),
+        ..worker_config()
+    };
     let mut worker = Worker::spawn(&config, &iso).unwrap();
 
     let seed_weights = scratch.join("seed.json");
     std::fs::write(&seed_weights, seeded_init()).unwrap();
     let trained = scratch.join("trained.json");
 
-    let frame = worker.request(
-        Frame::Train {
-            v: PROTOCOL_VERSION,
-            request_id: "req-1".into(),
-            run_id: "run-1".into(),
-            attempt_id: "att-1".into(),
-            graph: nonlinear_graph(),
-            weights: seed_weights.to_string_lossy().into_owned(),
-            data: task_dir().join("data/train.bin").to_string_lossy().into_owned(),
-            val_data: Some(task_dir().join("data/val.bin").to_string_lossy().into_owned()),
-            out: trained.to_string_lossy().into_owned(),
-            steps: 150,
-            seed: 1,
-            resume: None,
-            save_at: None,
-            state_out: None,
-            stop_after_save: None,
-        },
-        Duration::from_secs(200),
-    )
-    .unwrap();
+    let frame = worker
+        .request(
+            Frame::Train {
+                v: PROTOCOL_VERSION,
+                request_id: "req-1".into(),
+                run_id: "run-1".into(),
+                attempt_id: "att-1".into(),
+                graph: nonlinear_graph(),
+                weights: seed_weights.to_string_lossy().into_owned(),
+                data: task_dir()
+                    .join("data/train.bin")
+                    .to_string_lossy()
+                    .into_owned(),
+                val_data: Some(
+                    task_dir()
+                        .join("data/val.bin")
+                        .to_string_lossy()
+                        .into_owned(),
+                ),
+                out: trained.to_string_lossy().into_owned(),
+                steps: 150,
+                seed: 1,
+                resume: None,
+                save_at: None,
+                state_out: None,
+                stop_after_save: None,
+            },
+            Duration::from_secs(200),
+        )
+        .unwrap();
 
     match frame {
-        Frame::Done { loss, first_loss, val_accuracy, .. } => {
+        Frame::Done {
+            loss,
+            first_loss,
+            val_accuracy,
+            ..
+        } => {
             let loss = loss.expect("a finished run reports a loss");
             let first = first_loss.expect("a finished run reports its first loss");
             assert!(loss < first, "training did not reduce the loss");
             let accuracy = val_accuracy.unwrap_or(0.0);
-            assert!(accuracy >= 0.9, "the nonlinear structure underfit: {accuracy}");
+            assert!(
+                accuracy >= 0.9,
+                "the nonlinear structure underfit: {accuracy}"
+            );
         }
         other => panic!("expected a done frame, got {other:?}"),
     }
-    assert!(!worker.progress.is_empty(), "progress frames must be observable");
+    assert!(
+        !worker.progress.is_empty(),
+        "progress frames must be observable"
+    );
 
     // The saved weights become an immutable artifact in a real store.
     let store = Store::open(scratch.join("store")).unwrap();
@@ -371,19 +408,23 @@ fn training_through_the_host_produces_loadable_weights() {
     // A *different* worker process loads them and predicts.
     let mut predictor = Worker::spawn(&config, &iso).unwrap();
     let predictions = scratch.join("pred.json");
-    let out = predictor.request(
-        Frame::Predict {
-            v: PROTOCOL_VERSION,
-            run_id: "run-predict".into(),
-            attempt_id: "att-2".into(),
-            graph: nonlinear_graph(),
-            weights: trained.to_string_lossy().into_owned(),
-            data: task_dir().join("data/val.bin").to_string_lossy().into_owned(),
-            out: predictions.to_string_lossy().into_owned(),
-        },
-        Duration::from_secs(60),
-    )
-    .unwrap();
+    let out = predictor
+        .request(
+            Frame::Predict {
+                v: PROTOCOL_VERSION,
+                run_id: "run-predict".into(),
+                attempt_id: "att-2".into(),
+                graph: nonlinear_graph(),
+                weights: trained.to_string_lossy().into_owned(),
+                data: task_dir()
+                    .join("data/val.bin")
+                    .to_string_lossy()
+                    .into_owned(),
+                out: predictions.to_string_lossy().into_owned(),
+            },
+            Duration::from_secs(60),
+        )
+        .unwrap();
     assert!(matches!(out, Frame::Done { .. }), "{out:?}");
 
     let rows: serde_json::Value =
@@ -404,41 +445,54 @@ fn an_invalid_graph_is_rejected_without_training() {
     let Some(iso) = isolation() else { return };
     let scratch = std::env::temp_dir().join(format!("grove-w04-bad-{}", std::process::id()));
     std::fs::create_dir_all(&scratch).unwrap();
-    let config = WorkerConfig { scratch: scratch.clone(), ..worker_config() };
+    let config = WorkerConfig {
+        scratch: scratch.clone(),
+        ..worker_config()
+    };
     let mut worker = Worker::spawn(&config, &iso).unwrap();
 
     let mut graph = linear_graph();
-    graph["ops"].as_array_mut().unwrap().push(serde_json::json!({
-        "kind": "exec", "inputs": ["h0"], "output": "bad", "attrs": {}
-    }));
+    graph["ops"]
+        .as_array_mut()
+        .unwrap()
+        .push(serde_json::json!({
+            "kind": "exec", "inputs": ["h0"], "output": "bad", "attrs": {}
+        }));
     let seed = scratch.join("seed.json");
     std::fs::write(&seed, seeded_init()).unwrap();
 
-    let frame = worker.request(
-        Frame::Train {
-            v: PROTOCOL_VERSION,
-            request_id: "req-2".into(),
-            run_id: "run-2".into(),
-            attempt_id: "att-3".into(),
-            graph,
-            weights: seed.to_string_lossy().into_owned(),
-            data: task_dir().join("data/train.bin").to_string_lossy().into_owned(),
-            val_data: None,
-            out: scratch.join("out.json").to_string_lossy().into_owned(),
-            steps: 1,
-            seed: 1,
-            resume: None,
-            save_at: None,
-            state_out: None,
-            stop_after_save: None,
-        },
-        Duration::from_secs(60),
-    )
-    .unwrap();
+    let frame = worker
+        .request(
+            Frame::Train {
+                v: PROTOCOL_VERSION,
+                request_id: "req-2".into(),
+                run_id: "run-2".into(),
+                attempt_id: "att-3".into(),
+                graph,
+                weights: seed.to_string_lossy().into_owned(),
+                data: task_dir()
+                    .join("data/train.bin")
+                    .to_string_lossy()
+                    .into_owned(),
+                val_data: None,
+                out: scratch.join("out.json").to_string_lossy().into_owned(),
+                steps: 1,
+                seed: 1,
+                resume: None,
+                save_at: None,
+                state_out: None,
+                stop_after_save: None,
+            },
+            Duration::from_secs(60),
+        )
+        .unwrap();
 
     match frame {
         Frame::Failed { error, .. } => {
-            assert!(error.contains("not permitted"), "unclear rejection: {error}");
+            assert!(
+                error.contains("not permitted"),
+                "unclear rejection: {error}"
+            );
         }
         other => panic!("a non-permitted operator must fail the run, got {other:?}"),
     }
@@ -454,7 +508,10 @@ fn a_timeout_kills_the_worker_rather_than_hanging() {
     let Some(iso) = isolation() else { return };
     let scratch = std::env::temp_dir().join(format!("grove-w04-slow-{}", std::process::id()));
     std::fs::create_dir_all(&scratch).unwrap();
-    let config = WorkerConfig { scratch: scratch.clone(), ..worker_config() };
+    let config = WorkerConfig {
+        scratch: scratch.clone(),
+        ..worker_config()
+    };
     let mut worker = Worker::spawn(&config, &iso).unwrap();
 
     let seed = scratch.join("seed.json");
@@ -462,27 +519,31 @@ fn a_timeout_kills_the_worker_rather_than_hanging() {
 
     // A step budget far beyond the timeout: the host must give up and
     // kill the process, not wait for the worker.
-    let err = worker.request(
-        Frame::Train {
-            v: PROTOCOL_VERSION,
-            request_id: "req-3".into(),
-            run_id: "run-3".into(),
-            attempt_id: "att-4".into(),
-            graph: nonlinear_graph(),
-            weights: seed.to_string_lossy().into_owned(),
-            data: task_dir().join("data/train.bin").to_string_lossy().into_owned(),
-            val_data: None,
-            out: scratch.join("slow.json").to_string_lossy().into_owned(),
-            steps: 5_000_000,
-            seed: 1,
-            resume: None,
-            save_at: None,
-            state_out: None,
-            stop_after_save: None,
-        },
-        Duration::from_millis(1500),
-    )
-    .unwrap_err();
+    let err = worker
+        .request(
+            Frame::Train {
+                v: PROTOCOL_VERSION,
+                request_id: "req-3".into(),
+                run_id: "run-3".into(),
+                attempt_id: "att-4".into(),
+                graph: nonlinear_graph(),
+                weights: seed.to_string_lossy().into_owned(),
+                data: task_dir()
+                    .join("data/train.bin")
+                    .to_string_lossy()
+                    .into_owned(),
+                val_data: None,
+                out: scratch.join("slow.json").to_string_lossy().into_owned(),
+                steps: 5_000_000,
+                seed: 1,
+                resume: None,
+                save_at: None,
+                state_out: None,
+                stop_after_save: None,
+            },
+            Duration::from_millis(1500),
+        )
+        .unwrap_err();
     assert_eq!(err.kind, ErrorKind::Timeout, "got {err}");
 
     // The process is gone: a subsequent frame read fails rather than

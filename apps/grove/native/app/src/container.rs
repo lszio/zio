@@ -134,13 +134,12 @@ pub fn decode(bytes: &[u8]) -> Result<(serde_json::Value, Vec<Row>)> {
             "GVD1 header runs past the end of the container",
         ));
     }
-    let header: serde_json::Value =
-        serde_json::from_slice(&bytes[8..head]).map_err(|e| {
-            Error::new(
-                ErrorKind::IncompatibleState,
-                format!("GVD1 header is not JSON: {e}"),
-            )
-        })?;
+    let header: serde_json::Value = serde_json::from_slice(&bytes[8..head]).map_err(|e| {
+        Error::new(
+            ErrorKind::IncompatibleState,
+            format!("GVD1 header is not JSON: {e}"),
+        )
+    })?;
     let stride = header["record_bytes"].as_u64().unwrap_or(ROW_BYTES as u64) as usize;
     if stride < ROW_BYTES {
         return Err(Error::new(
@@ -163,7 +162,11 @@ pub fn decode(bytes: &[u8]) -> Result<(serde_json::Value, Vec<Row>)> {
             ]),
             image_present: bytes[pos + 4] != 0,
             numeric_present: bytes[pos + 5] != 0,
-            label: if label == LABEL_NONE { None } else { Some(label) },
+            label: if label == LABEL_NONE {
+                None
+            } else {
+                Some(label)
+            },
             flags: bytes[pos + 7],
             readings: [
                 f32::from_le_bytes([

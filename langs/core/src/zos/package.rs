@@ -31,7 +31,11 @@ impl Package {
     }
 
     /// Find a symbol in this package or its uses chain.
-    pub fn find(&self, name: &str, packages: &HashMap<String, Package>) -> Option<crate::value::Value> {
+    pub fn find(
+        &self,
+        name: &str,
+        packages: &HashMap<String, Package>,
+    ) -> Option<crate::value::Value> {
         // Check own symbols
         if let Some(val) = self.symbols.get(name) {
             return Some(val.clone());

@@ -29,7 +29,10 @@ pub enum Origin {
     /// Synthesized by a named expander with no call site.
     Generated { by: String },
     /// Expanded from a macro call; the call site is kept for diagnostics.
-    MacroCall { macro_name: String, call_site: Option<Span> },
+    MacroCall {
+        macro_name: String,
+        call_site: Option<Span>,
+    },
 }
 
 impl Origin {
@@ -81,15 +84,23 @@ impl Origin {
             Value::Keyword(k) => k.as_str(),
             _ => return None,
         };
-        let detail = match map.get(&Value::Keyword("by".into())) {
-            Some(Value::String(s)) => s.clone(),
-            None | Some(Value::Nil) => String::new(),
+        if map.len() != 3 {
+            return None;
+        }
+        let detail = match map.get(&Value::Keyword("by".into()))? {
+            Value::String(s) => s.clone(),
             _ => return None,
         };
-        let call_site = match map.get(&Value::Keyword("call-site".into())) {
-            Some(Value::Map(_)) => span_from_value(map.get(&Value::Keyword("call-site".into()))?),
-            _ => None,
+        let call_site = match map.get(&Value::Keyword("call-site".into()))? {
+            Value::Nil => None,
+            value => Some(span_from_value(value)?),
         };
+        if matches!(kind, "source" | "quoted") && (!detail.is_empty() || call_site.is_some()) {
+            return None;
+        }
+        if kind == "generated" && call_site.is_some() {
+            return None;
+        }
         Some(match kind {
             "source" => Origin::Source,
             "quoted" => Origin::Quoted,
@@ -105,11 +116,26 @@ impl Origin {
 
 fn span_to_value(span: Span) -> Value {
     let mut map = HashMap::new();
-    map.insert(Value::Keyword("source".into()), Value::Integer(span.source_id.0 as i64));
-    map.insert(Value::Keyword("start".into()), Value::Integer(span.start.0 as i64));
-    map.insert(Value::Keyword("end".into()), Value::Integer(span.end.0 as i64));
-    map.insert(Value::Keyword("line".into()), Value::Integer(span.line as i64));
-    map.insert(Value::Keyword("col".into()), Value::Integer(span.col as i64));
+    map.insert(
+        Value::Keyword("source".into()),
+        Value::Integer(span.source_id.0 as i64),
+    );
+    map.insert(
+        Value::Keyword("start".into()),
+        Value::Integer(span.start.0 as i64),
+    );
+    map.insert(
+        Value::Keyword("end".into()),
+        Value::Integer(span.end.0 as i64),
+    );
+    map.insert(
+        Value::Keyword("line".into()),
+        Value::Integer(span.line as i64),
+    );
+    map.insert(
+        Value::Keyword("col".into()),
+        Value::Integer(span.col as i64),
+    );
     Value::Map(map)
 }
 
@@ -118,18 +144,28 @@ fn span_from_value(value: &Value) -> Option<Span> {
         Value::Map(m) => m,
         _ => return None,
     };
-    let field = |name: &str| -> Option<i64> {
+    if map.len() != 5 {
+        return None;
+    }
+    let field = |name: &str| -> Option<usize> {
         match map.get(&Value::Keyword(name.into()))? {
-            Value::Integer(i) => Some(*i),
+            Value::Integer(i) => usize::try_from(*i).ok(),
             _ => None,
         }
     };
+    let start = field("start")?;
+    let end = field("end")?;
+    let line = field("line")?;
+    let col = field("col")?;
+    if start > end || line == 0 || col == 0 {
+        return None;
+    }
     Some(Span::new(
-        crate::span::SourceId(field("source")? as usize),
-        crate::span::BytePos(field("start")? as usize),
-        crate::span::BytePos(field("end")? as usize),
-        field("line")? as usize,
-        field("col")? as usize,
+        crate::span::SourceId(field("source")?),
+        crate::span::BytePos(start),
+        crate::span::BytePos(end),
+        line,
+        col,
     ))
 }
 
@@ -206,14 +242,19 @@ impl SyntaxNode {
             Sexp::Keyword(k, _) => (NodeKind::Keyword, Some(k.clone()), Vector::new()),
             Sexp::Char(c, _) => (NodeKind::Char, Some(c.to_string()), Vector::new()),
             Sexp::List(l, _) | Sexp::Vector(l, _) => (
-                if matches!(sexp, Sexp::List(_, _)) { NodeKind::List } else { NodeKind::Vector },
+                if matches!(sexp, Sexp::List(_, _)) {
+                    NodeKind::List
+                } else {
+                    NodeKind::Vector
+                },
                 None,
                 l.iter().map(SyntaxNode::from_sexp).collect(),
             ),
             Sexp::Map(m, _) => {
                 // A map is an unordered collection; keep it as a list of
                 // key/value pairs so the bridge round-trips deterministically.
-                let mut pairs: Vec<(Sexp, Sexp)> = m.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+                let mut pairs: Vec<(Sexp, Sexp)> =
+                    m.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
                 pairs.sort_by_key(|(k, _)| k.to_string());
                 let mut children = Vector::new();
                 for (k, v) in pairs {
@@ -238,41 +279,58 @@ impl SyntaxNode {
     }
 
     /// Rebuild the parsed form, spans included.
-    pub fn to_sexp(&self) -> Sexp {
+    pub fn to_sexp(&self) -> Result<Sexp, crate::error::EvalError> {
+        self.validate()?;
         let span = self.span;
-        match &self.kind {
+        let text = || self.value.as_deref().expect("validated syntax payload");
+        Ok(match &self.kind {
             NodeKind::Nil => Sexp::Nil,
-            NodeKind::Boolean => Sexp::Boolean(self.value.as_deref() == Some("true")),
-            NodeKind::Integer => Sexp::Integer(self.parse_int(), span),
-            NodeKind::Float => Sexp::Float(self.parse_float(), span),
-            NodeKind::String => Sexp::String(self.value.clone().unwrap_or_default(), span),
-            NodeKind::Symbol => Sexp::Symbol(self.value.clone().unwrap_or_default(), span),
-            NodeKind::Keyword => Sexp::Keyword(self.value.clone().unwrap_or_default(), span),
-            NodeKind::Char => Sexp::Char(
-                self.value.as_deref().and_then(|s| s.chars().next()).unwrap_or(' '),
+            NodeKind::Boolean => Sexp::Boolean(text() == "true"),
+            NodeKind::Integer => Sexp::Integer(text().parse().expect("validated integer"), span),
+            NodeKind::Float => Sexp::Float(text().parse().expect("validated float"), span),
+            NodeKind::String => Sexp::String(text().into(), span),
+            NodeKind::Symbol => Sexp::Symbol(text().into(), span),
+            NodeKind::Keyword => Sexp::Keyword(text().into(), span),
+            NodeKind::Char => Sexp::Char(text().chars().next().expect("validated character"), span),
+            NodeKind::List => Sexp::List(
+                self.children
+                    .iter()
+                    .map(SyntaxNode::to_sexp)
+                    .collect::<Result<_, _>>()?,
                 span,
             ),
-            NodeKind::List => Sexp::List(self.children.iter().map(SyntaxNode::to_sexp).collect(), span),
-            NodeKind::Vector => {
-                Sexp::Vector(self.children.iter().map(SyntaxNode::to_sexp).collect(), span)
-            }
+            NodeKind::Vector => Sexp::Vector(
+                self.children
+                    .iter()
+                    .map(SyntaxNode::to_sexp)
+                    .collect::<Result<_, _>>()?,
+                span,
+            ),
             NodeKind::Map => {
-                let items: Vec<Sexp> = self.children.iter().map(SyntaxNode::to_sexp).collect();
                 let mut map = HashMap::new();
-                for pair in items.chunks(2) {
-                    if let [k, v] = pair {
-                        map.insert(k.clone(), v.clone());
+                let mut children = self.children.iter();
+                while let Some(key) = children.next() {
+                    let key = key.to_sexp()?;
+                    let value = children.next().expect("validated even map").to_sexp()?;
+                    if map.insert(key, value).is_some() {
+                        return Err(crate::error::EvalError::invalid_form(
+                            "duplicate syntax map key",
+                        )
+                        .with_opt_span(span));
                     }
                 }
                 Sexp::Map(map, span)
             }
-        }
+        })
     }
 
     /// The tagged `Value` form. Ordinary Zio map, readable from Zio.
     pub fn to_value(&self) -> Value {
         let mut map = HashMap::new();
-        map.insert(Value::Keyword("kind".into()), Value::Keyword(self.kind.keyword().into()));
+        map.insert(
+            Value::Keyword("kind".into()),
+            Value::Keyword(self.kind.keyword().into()),
+        );
         map.insert(
             Value::Keyword("value".into()),
             match &self.value {
@@ -288,7 +346,10 @@ impl SyntaxNode {
             Value::Keyword("span".into()),
             self.span.map_or(Value::Nil, span_to_value),
         );
-        map.insert(Value::Keyword("origin".into()), self.origin.clone().to_value());
+        map.insert(
+            Value::Keyword("origin".into()),
+            self.origin.clone().to_value(),
+        );
         Value::Map(map)
     }
 
@@ -299,13 +360,16 @@ impl SyntaxNode {
             Value::Map(m) => m,
             _ => return None,
         };
+        if map.len() != 5 {
+            return None;
+        }
         let kind = match map.get(&Value::Keyword("kind".into()))? {
             Value::Keyword(k) => NodeKind::from_keyword(k)?,
             _ => return None,
         };
-        let text = match map.get(&Value::Keyword("value".into())) {
-            None | Some(Value::Nil) => None,
-            Some(Value::String(s)) => Some(s.clone()),
+        let text = match map.get(&Value::Keyword("value".into()))? {
+            Value::Nil => None,
+            Value::String(s) => Some(s.clone()),
             _ => return None,
         };
         let children = match map.get(&Value::Keyword("children".into()))? {
@@ -318,19 +382,111 @@ impl SyntaxNode {
             }
             _ => return None,
         };
-        let span = match map.get(&Value::Keyword("span".into())) {
-            None | Some(Value::Nil) => None,
-            Some(other) => Some(span_from_value(other)?),
+        let span = match map.get(&Value::Keyword("span".into()))? {
+            Value::Nil => None,
+            other => Some(span_from_value(other)?),
         };
         let origin = Origin::from_value(map.get(&Value::Keyword("origin".into()))?)?;
-        Some(SyntaxNode { kind, value: text, children, span, origin })
+        let node = SyntaxNode {
+            kind,
+            value: text,
+            children,
+            span,
+            origin,
+        };
+        node.validate().ok()?;
+        node.to_sexp().ok()?;
+        Some(node)
     }
 
-    fn parse_int(&self) -> i64 {
-        self.value.as_deref().and_then(|s| s.parse().ok()).unwrap_or(0)
+    pub fn validate(&self) -> Result<(), crate::error::EvalError> {
+        let invalid = || {
+            crate::error::EvalError::invalid_form("malformed syntax node").with_opt_span(self.span)
+        };
+        if let Some(span) = self.span {
+            if span.start > span.end || span.line == 0 || span.col == 0 {
+                return Err(invalid());
+            }
+        }
+        let container = matches!(self.kind, NodeKind::List | NodeKind::Vector | NodeKind::Map);
+        if container || self.kind == NodeKind::Nil {
+            if self.value.is_some() {
+                return Err(invalid());
+            }
+        } else {
+            let text = self.value.as_deref().ok_or_else(invalid)?;
+            let valid = match self.kind {
+                NodeKind::Boolean => matches!(text, "true" | "false"),
+                NodeKind::Integer => text.parse::<i64>().is_ok(),
+                NodeKind::Float => text.parse::<f64>().is_ok_and(f64::is_finite),
+                NodeKind::Char => text.chars().count() == 1,
+                NodeKind::Symbol | NodeKind::Keyword => !text.is_empty(),
+                NodeKind::String => true,
+                _ => false,
+            };
+            if !valid {
+                return Err(invalid());
+            }
+        }
+        if !container && !self.children.is_empty() {
+            return Err(invalid());
+        }
+        if self.kind == NodeKind::Map && !self.children.len().is_multiple_of(2) {
+            return Err(invalid());
+        }
+        for child in &self.children {
+            child.validate()?;
+        }
+        Ok(())
     }
+}
 
-    fn parse_float(&self) -> f64 {
-        self.value.as_deref().and_then(|s| s.parse().ok()).unwrap_or(0.0)
-    }
+/// Parse and inspect a document using its own source registry. Never evaluates.
+pub fn inspect_source(
+    source_map: &crate::span::SourceMap,
+    name: &str,
+    source: &str,
+) -> Result<Vec<SyntaxNode>, crate::error::ReaderError> {
+    let id = source_map.register(name.into(), source.into());
+    crate::reader::reader::read_program_with_source(source, id)
+        .map(|forms| forms.iter().map(SyntaxNode::from_sexp).collect())
+}
+
+pub fn register(env: &std::sync::Arc<crate::env::Env>) {
+    use crate::value::NativeFn;
+    env.set(
+        "read-syntax".into(),
+        Value::NativeFunction(NativeFn::new("read-syntax", |args, engine| {
+            if args.len() != 2 {
+                return Err(crate::error::EvalError::wrong_arg_count(2, args.len()));
+            }
+            let Value::String(source) = &args[0] else {
+                return Err(crate::error::EvalError::type_error(
+                    "string",
+                    args[0].value_type(),
+                ));
+            };
+            let Value::String(name) = &args[1] else {
+                return Err(crate::error::EvalError::type_error(
+                    "string",
+                    args[1].value_type(),
+                ));
+            };
+            inspect_source(engine.source_map(), name, source)
+                .map(|nodes| Value::Vector(nodes.iter().map(SyntaxNode::to_value).collect()))
+                .map_err(|e| e.into_eval(name))
+        })),
+    );
+    env.set(
+        "syntax->data".into(),
+        Value::NativeFunction(NativeFn::new("syntax->data", |args, _| {
+            if args.len() != 1 {
+                return Err(crate::error::EvalError::wrong_arg_count(1, args.len()));
+            }
+            let node = SyntaxNode::from_value(&args[0]).ok_or_else(|| {
+                crate::error::EvalError::invalid_form("expected valid syntax node")
+            })?;
+            Ok(Value::from(node.to_sexp()?))
+        })),
+    );
 }

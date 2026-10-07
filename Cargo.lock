@@ -1366,6 +1366,7 @@ version = "1.53.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e95f91fcc7a621e8b030f6aa23c71fe9838ae2fb4d8118b75602a328f5144044"
 dependencies = [
+ "bytes",
  "libc",
  "mio",
  "pin-project-lite",
@@ -1782,6 +1783,7 @@ version = "0.2.0"
 dependencies = [
  "im",
  "zio-core",
+ "zio-host",
 ]
 
 [[package]]
@@ -1793,9 +1795,34 @@ dependencies = [
  "itertools 0.12.1",
  "js-sys",
  "parking_lot",
+ "serde",
+ "serde_json",
  "thiserror",
  "wasm-bindgen",
  "web-sys",
+]
+
+[[package]]
+name = "zio-host"
+version = "0.2.0"
+dependencies = [
+ "libc",
+ "parking_lot",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tokio",
+ "ureq",
+ "zio-core",
+]
+
+[[package]]
+name = "zio-lsp"
+version = "0.2.0"
+dependencies = [
+ "serde_json",
+ "zio-core",
 ]
 
 [[package]]

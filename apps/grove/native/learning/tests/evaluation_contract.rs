@@ -85,14 +85,20 @@ fn reevaluating_a_historical_model_appends_never_rewrites() {
 
     let records = store.evaluations_for(&old).unwrap();
     assert_eq!(records.len(), 2, "records are append-only");
-    assert_eq!(records[0].metrics[0].1, 0.72, "the original record is unchanged");
+    assert_eq!(
+        records[0].metrics[0].1, 0.72,
+        "the original record is unchanged"
+    );
     assert_eq!(records[1].metrics[0].1, 0.74);
 
     // the comparison consumes both repeats and does not mutate them
     let rows = evaluation::compare(&store, &p, &[old]).unwrap();
     assert_eq!(rows[0].repeats, 2);
     assert!((rows[0].mean[0].1 - 0.73).abs() < 1e-9);
-    assert_eq!(records[0].metrics[0].1, 0.72, "comparison must not rewrite records");
+    assert_eq!(
+        records[0].metrics[0].1, 0.72,
+        "comparison must not rewrite records"
+    );
 }
 
 #[test]
@@ -129,15 +135,17 @@ fn a_timed_out_repeat_stays_in_the_denominator() {
     let t = snapshots[0].1;
     let p = protocol("accept-v1");
 
-    evaluation::record_evaluation(&store, &operator(), &p, &t, 0, &measured(0.95), 1)
-        .unwrap();
+    evaluation::record_evaluation(&store, &operator(), &p, &t, 0, &measured(0.95), 1).unwrap();
     // the second repeat times out: quality 0.0, still counted
     evaluation::record_evaluation(&store, &operator(), &p, &t, 1, &RepeatOutcome::TimedOut, 2)
         .unwrap();
 
     let rows = evaluation::compare(&store, &p, &[t]).unwrap();
     assert_eq!(rows[0].repeats, 2, "a timeout never leaves the denominator");
-    assert!((rows[0].mean[0].1 - 0.475).abs() < 1e-9, "timeout scores as failure");
+    assert!(
+        (rows[0].mean[0].1 - 0.475).abs() < 1e-9,
+        "timeout scores as failure"
+    );
     assert!(!rows[0].meets_gates);
 }
 
@@ -187,8 +195,16 @@ fn a_high_mean_cannot_outvote_a_failed_gate() {
 
     // "solid": three repeats over the gate
     for i in 0..3 {
-        evaluation::record_evaluation(&store, &operator(), &p, &solid, i, &measured(0.91), 4 + i as i64)
-            .unwrap();
+        evaluation::record_evaluation(
+            &store,
+            &operator(),
+            &p,
+            &solid,
+            i,
+            &measured(0.91),
+            4 + i as i64,
+        )
+        .unwrap();
     }
 
     let rows = evaluation::compare(&store, &p, &[lucky, solid]).unwrap();
@@ -201,7 +217,9 @@ fn a_high_mean_cannot_outvote_a_failed_gate() {
     assert_eq!(err.kind, ErrorKind::IncompatibleState);
     // the eligible one publishes
     assert_eq!(
-        evaluation::publish_snapshot(&store, &publisher(), &p, &solid, None).unwrap().0,
+        evaluation::publish_snapshot(&store, &publisher(), &p, &solid, None)
+            .unwrap()
+            .0,
         1
     );
     assert_eq!(store.active_publication().unwrap().unwrap().1, solid);
@@ -218,16 +236,19 @@ fn a_stale_expected_version_does_not_replace_the_active_model() {
     }
 
     assert_eq!(
-        evaluation::publish_snapshot(&store, &publisher(), &p, &first, None).unwrap().0,
+        evaluation::publish_snapshot(&store, &publisher(), &p, &first, None)
+            .unwrap()
+            .0,
         1
     );
     assert_eq!(
-        evaluation::publish_snapshot(&store, &publisher(), &p, &second, Some(1)).unwrap().0,
+        evaluation::publish_snapshot(&store, &publisher(), &p, &second, Some(1))
+            .unwrap()
+            .0,
         2
     );
     // a writer that saw version 1 loses
-    let err =
-        evaluation::publish_snapshot(&store, &publisher(), &p, &first, Some(1)).unwrap_err();
+    let err = evaluation::publish_snapshot(&store, &publisher(), &p, &first, Some(1)).unwrap_err();
     assert_eq!(err.kind, ErrorKind::Conflict);
     assert_eq!(store.active_publication().unwrap().unwrap().1, second);
 }
@@ -246,8 +267,16 @@ fn publishing_without_evaluation_is_refused() {
 fn an_operator_cannot_publish() {
     let (store, snapshots) = store_with_snapshots("role", &["m"]);
     let p = protocol("accept-v1");
-    evaluation::record_evaluation(&store, &operator(), &p, &snapshots[0].1, 0, &measured(0.95), 1)
-        .unwrap();
+    evaluation::record_evaluation(
+        &store,
+        &operator(),
+        &p,
+        &snapshots[0].1,
+        0,
+        &measured(0.95),
+        1,
+    )
+    .unwrap();
     let err = evaluation::publish_snapshot(
         &store,
         &Actor::new("trainer", ActorRole::Operator),
@@ -276,7 +305,10 @@ fn the_acceptance_budget_is_shared_across_branches() {
 
     // an unprovisioned protocol has no budget at all
     assert_eq!(
-        store.consume_acceptance_budget("never-provisioned", 1).unwrap_err().kind,
+        store
+            .consume_acceptance_budget("never-provisioned", 1)
+            .unwrap_err()
+            .kind,
         ErrorKind::ArtifactUnavailable
     );
 }

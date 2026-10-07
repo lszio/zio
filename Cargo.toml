@@ -1,8 +1,23 @@
 [workspace]
 resolver = "2"
-members = ["langs/core", "langs/cli", "contribs/native/loom", "apps/grove/native/learning", "apps/grove/native/app"]
+members = ["langs/core", "langs/cli", "contribs/native/host", "contribs/native/loom", "contribs/language-server", "apps/grove/native/learning", "apps/grove/native/app"]
 
 [workspace.package]
 version = "0.2.0"
 edition = "2024"
 license = "MIT"
+repository = "https://github.com/lszio/zio"
+homepage = "https://github.com/lszio/zio"
+authors = ["lszio"]
+description = "Zio — a general-purpose language with ZOS, a self-hosting compiler, and libraries and applications built on it"
+keywords = ["language", "compiler", "lisp", "self-hosting", "interpreter"]
+categories = ["compilers", "development-tools"]
+
+# The published binaries. `zio` is the language entry point, `zio-lsp`
+# the language server, and `grove` the installed product launcher written
+# by tools/install.sh — it is a shell script, so it is not a crate target.
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true

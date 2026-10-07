@@ -46,4 +46,3 @@
     (apply dissoc (cons s items))
     s))
 
-(println "zio.persistent loaded (all functions runnable)")

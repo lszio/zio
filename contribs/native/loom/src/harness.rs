@@ -21,8 +21,8 @@
 //! [`ModelHost`]. There is no second, text-only transport: the Zio
 //! `llm-complete` binding is a view over a session with one user message.
 
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde::{Deserialize, Serialize};
 
@@ -237,7 +237,10 @@ pub fn check_response(response: &ChatResponse, expected_request_id: &str) -> Res
     if response.message.role != "assistant" {
         return Err(HostError::new(
             HostErrorKind::Protocol,
-            format!("a provider must answer as the assistant, not {:?}", response.message.role),
+            format!(
+                "a provider must answer as the assistant, not {:?}",
+                response.message.role
+            ),
         ));
     }
     Ok(())
@@ -352,7 +355,10 @@ impl Budget {
     /// guard settles the real cost afterwards.
     pub fn reserve(&self, expected_micros: u64) -> Result<Reservation<'_>, HostError> {
         if self.is_cancelled() {
-            return Err(HostError::new(HostErrorKind::Cancelled, "session cancelled"));
+            return Err(HostError::new(
+                HostErrorKind::Cancelled,
+                "session cancelled",
+            ));
         }
         let calls = self.calls_made.load(Ordering::Relaxed);
         if let Some(max) = self.max_calls {
@@ -417,7 +423,10 @@ impl Reservation<'_> {
         self.settled = true;
         Err(HostError::new(
             HostErrorKind::UnknownCost,
-            format!("the provider reported no cost; {} micros stay held", self.held),
+            format!(
+                "the provider reported no cost; {} micros stay held",
+                self.held
+            ),
         ))
     }
 }
@@ -455,7 +464,9 @@ pub struct Tools {
 
 impl Tools {
     pub fn none() -> Self {
-        Tools { schemas: Value::Null }
+        Tools {
+            schemas: Value::Null,
+        }
     }
 
     pub fn from_schemas(schemas: Value) -> Self {
@@ -532,7 +543,10 @@ impl Session {
         options: Options,
     ) -> Result<ChatMessage, HostError> {
         if self.budget.is_cancelled() {
-            return Err(HostError::new(HostErrorKind::Cancelled, "session cancelled"));
+            return Err(HostError::new(
+                HostErrorKind::Cancelled,
+                "session cancelled",
+            ));
         }
         self.add_user(content);
         self.run(tools, options)
@@ -546,7 +560,10 @@ impl Session {
         tools: &Tools,
     ) -> Result<ChatMessage, HostError> {
         if self.budget.is_cancelled() {
-            return Err(HostError::new(HostErrorKind::Cancelled, "session cancelled"));
+            return Err(HostError::new(
+                HostErrorKind::Cancelled,
+                "session cancelled",
+            ));
         }
         self.transcript.lock().push(ChatMessage {
             role: "tool".into(),
@@ -654,7 +671,5 @@ fn validate_caller_messages(messages: &[ChatMessage]) -> Result<(), HostError> {
         max_output_tokens: 1,
         options: Options::default(),
     };
-    validate_request(&request).map_err(|e| {
-        HostError::new(e.kind, e.message)
-    })
+    validate_request(&request).map_err(|e| HostError::new(e.kind, e.message))
 }

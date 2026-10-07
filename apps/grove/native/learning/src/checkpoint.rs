@@ -23,7 +23,7 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 
 use crate::contracts::{
-    Actor, ActorRole, Branch, Checkpoint, Derivation, Error, ErrorKind, ResumeLevel, Result, Run,
+    Actor, ActorRole, Branch, Checkpoint, Derivation, Error, ErrorKind, Result, ResumeLevel, Run,
     RunState, SCHEMA_VERSION,
 };
 use crate::store::Store;
@@ -348,7 +348,10 @@ pub fn pause(
     if run.state.is_terminal() {
         return Err(Error::new(
             ErrorKind::IncompatibleState,
-            format!("run {run_id} is terminal ({:?}); nothing to pause", run.state),
+            format!(
+                "run {run_id} is terminal ({:?}); nothing to pause",
+                run.state
+            ),
         ));
     }
     let checkpoint = commit(

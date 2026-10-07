@@ -1,15 +1,15 @@
-use std::sync::Arc;
 use im::Vector;
+use std::sync::Arc;
 
 use crate::context::EvalEngine;
 use crate::env::Env;
 use crate::error::EvalError;
 use crate::sexp::Sexp;
-use crate::special::{eval_last_body, TailResult};
-use crate::value::Value;
-use crate::zos::object::{Class, ClassRef, ObjectFlags, SlotDefinition};
-use crate::zos::gf::{GenericFunction, GFObject, Method, MethodQualifier, Specializer};
+use crate::special::{TailResult, eval_last_body};
 use crate::value::Function;
+use crate::value::Value;
+use crate::zos::gf::{GFObject, GenericFunction, Method, MethodQualifier, Specializer};
+use crate::zos::object::{Class, ClassRef, ObjectFlags, SlotDefinition};
 
 /// (defclass name superclass slots)
 /// superclass: a symbol or nil (for root classes)
@@ -25,7 +25,12 @@ pub fn do_defclass(
 
     let class_name = match &args[0] {
         Sexp::Symbol(s, _) => s.clone(),
-        other => return Err(EvalError::type_error("symbol", format!("class name: {}", other.kind()))),
+        other => {
+            return Err(EvalError::type_error(
+                "symbol",
+                format!("class name: {}", other.kind()),
+            ));
+        }
     };
 
     // Parse superclass(es)
@@ -35,7 +40,9 @@ pub fn do_defclass(
 
     if args.len() > 1 {
         match &args[1] {
-            Sexp::Nil => { slots_idx = 2; }
+            Sexp::Nil => {
+                slots_idx = 2;
+            }
             Sexp::List(l, _) => {
                 for item in l {
                     if let Sexp::Symbol(s, _) = item {
@@ -55,7 +62,9 @@ pub fn do_defclass(
                     slots_idx = 1;
                 }
             }
-            _ => { slots_idx = 1; }
+            _ => {
+                slots_idx = 1;
+            }
         }
     }
 
@@ -98,16 +107,24 @@ pub fn do_defclass(
     let slots_sexp = &args[slots_idx];
     let slot_list = match slots_sexp {
         Sexp::List(l, _) | Sexp::Vector(l, _) => l,
-        other => return Err(EvalError::type_error("list or vector", format!("slots: {}", other.kind()))),
+        other => {
+            return Err(EvalError::type_error(
+                "list or vector",
+                format!("slots: {}", other.kind()),
+            ));
+        }
     };
 
     let mut slots = Vec::new();
     for slot_sexp in slot_list {
         let slot_items = match slot_sexp {
             Sexp::List(l, _) => l,
-            other => return Err(EvalError::invalid_form(
-                format!("each slot definition must be a list, got {}", other.kind()),
-            )),
+            other => {
+                return Err(EvalError::invalid_form(format!(
+                    "each slot definition must be a list, got {}",
+                    other.kind()
+                )));
+            }
         };
         if slot_items.is_empty() {
             return Err(EvalError::invalid_form("slot definition cannot be empty"));
@@ -115,7 +132,12 @@ pub fn do_defclass(
 
         let slot_name = match &slot_items[0] {
             Sexp::Symbol(s, _) => s.clone(),
-            other => return Err(EvalError::type_error("symbol", format!("slot name: {}", other.kind()))),
+            other => {
+                return Err(EvalError::type_error(
+                    "symbol",
+                    format!("slot name: {}", other.kind()),
+                ));
+            }
         };
 
         let mut initargs = Vec::new();
@@ -166,12 +188,14 @@ pub fn do_defclass(
     // Store class in env
     let mut instance = crate::value::ZosInstance::new(class.clone());
     instance.header.flags = ObjectFlags::MUTABLE;
-    instance.slots.insert("__class_name__".into(), Value::Symbol(class_name.clone()));
+    instance
+        .slots
+        .insert("__class_name__".into(), Value::Symbol(class_name.clone()));
 
     env.set(class_name, Value::Object(Box::new(instance)));
 
     Ok(TailResult::Value(Value::Object(Box::new(
-        crate::value::ZosInstance::new(class)
+        crate::value::ZosInstance::new(class),
     ))))
 }
 /// (defgeneric name (params...))
@@ -187,18 +211,29 @@ pub fn do_defgeneric(
 
     let name = match &args[0] {
         Sexp::Symbol(s, _) => s.clone(),
-        other => return Err(EvalError::type_error("symbol", format!("gf name: {}", other.kind()))),
+        other => {
+            return Err(EvalError::type_error(
+                "symbol",
+                format!("gf name: {}", other.kind()),
+            ));
+        }
     };
 
     // Parse lambda list: (shape) or (a b c)
     let lambda_list = match &args[1] {
-        Sexp::List(l, _) | Sexp::Vector(l, _) => {
-            l.iter().map(|item| match item {
+        Sexp::List(l, _) | Sexp::Vector(l, _) => l
+            .iter()
+            .map(|item| match item {
                 Sexp::Symbol(s, _) => s.clone(),
                 _ => "<param>".into(),
-            }).collect()
+            })
+            .collect(),
+        other => {
+            return Err(EvalError::type_error(
+                "list",
+                format!("lambda list: {}", other.kind()),
+            ));
         }
-        other => return Err(EvalError::type_error("list", format!("lambda list: {}", other.kind()))),
     };
 
     let gf = GenericFunction::new(name.clone(), lambda_list);
@@ -220,7 +255,12 @@ pub fn do_defmethod(
 
     let gf_name = match &args[0] {
         Sexp::Symbol(s, _) => s.clone(),
-        other => return Err(EvalError::type_error("symbol", format!("gf name: {}", other.kind()))),
+        other => {
+            return Err(EvalError::type_error(
+                "symbol",
+                format!("gf name: {}", other.kind()),
+            ));
+        }
     };
 
     // Check for qualifier after gf name
@@ -246,7 +286,12 @@ pub fn do_defmethod(
     arg_idx += 1;
     let specializer_list = match specializers_sexp {
         Sexp::List(l, _) | Sexp::Vector(l, _) => l,
-        other => return Err(EvalError::type_error("list", format!("specializers: {}", other.kind()))),
+        other => {
+            return Err(EvalError::type_error(
+                "list",
+                format!("specializers: {}", other.kind()),
+            ));
+        }
     };
 
     let mut specializers = Vec::new();
@@ -267,9 +312,11 @@ pub fn do_defmethod(
                     }
                 }
             }
-            _ => return Err(EvalError::invalid_form(
-                format!("invalid specializer: {item}"),
-            )),
+            _ => {
+                return Err(EvalError::invalid_form(format!(
+                    "invalid specializer: {item}"
+                )));
+            }
         }
     }
 
@@ -287,6 +334,7 @@ pub fn do_defmethod(
         rest_param: None,
         body,
         env: env.clone(),
+        compiled: None,
     });
 
     let method = Arc::new(Method {
@@ -296,9 +344,9 @@ pub fn do_defmethod(
     });
 
     // Look up the GF and add the method
-    let gf_val = env.get(&gf_name).ok_or_else(|| {
-        EvalError::custom(format!("generic function not found: {gf_name}"))
-    })?;
+    let gf_val = env
+        .get(&gf_name)
+        .ok_or_else(|| EvalError::custom(format!("generic function not found: {gf_name}")))?;
 
     match &gf_val {
         Value::Object(o) => {
@@ -309,7 +357,10 @@ pub fn do_defmethod(
                 Err(EvalError::type_error("GenericFunction", "non-GF object"))
             }
         }
-        _ => Err(EvalError::type_error("GenericFunction", gf_val.value_type())),
+        _ => Err(EvalError::type_error(
+            "GenericFunction",
+            gf_val.value_type(),
+        )),
     }
 }
 /// (call-next-method) → value
@@ -326,7 +377,9 @@ pub fn do_call_next_method(
             Ok(TailResult::Value(result))
         }
         Some(_) => Err(EvalError::custom("*next-method* is not a function")),
-        None => Err(EvalError::custom("no next method available (call-next-method outside method)")),
+        None => Err(EvalError::custom(
+            "no next method available (call-next-method outside method)",
+        )),
     }
 }
 /// (defpackage name (:use :pkg1 :pkg2) (:export :sym1 :sym2))
@@ -352,9 +405,12 @@ pub fn do_defpackage(
     while i < args.len() {
         let clause = match &args[i] {
             Sexp::List(l, _) | Sexp::Vector(l, _) => l,
-            other => return Err(EvalError::invalid_form(
-                format!("defpackage clause must be a list, got {}", other.kind()),
-            )),
+            other => {
+                return Err(EvalError::invalid_form(format!(
+                    "defpackage clause must be a list, got {}",
+                    other.kind()
+                )));
+            }
         };
         if clause.is_empty() {
             i += 1;
@@ -362,7 +418,10 @@ pub fn do_defpackage(
         }
         let clause_name = match &clause[0] {
             Sexp::Keyword(k, _) | Sexp::Symbol(k, _) => k.clone(),
-            _ => { i += 1; continue; }
+            _ => {
+                i += 1;
+                continue;
+            }
         };
 
         if clause_name == "use" || clause_name == ":use" {
@@ -392,7 +451,9 @@ pub fn do_defpackage(
 
     // Store package in env as a special value
     // For simplicity, store as a map under *packages*
-    let packages_val = env.get("*packages*").unwrap_or(Value::Map(im::HashMap::new()));
+    let packages_val = env
+        .get("*packages*")
+        .unwrap_or(Value::Map(im::HashMap::new()));
     let mut packages_map = match &packages_val {
         Value::Map(m) => m.clone(),
         _ => im::HashMap::new(),
@@ -407,10 +468,14 @@ pub fn do_defpackage(
     env.set("*packages*".into(), Value::Map(packages_map));
 
     // Also store :use info for resolution
-    env.set(format!("*package-uses-{pkg_name}*").into(),
-        Value::List(uses.iter().map(|u| Value::Keyword(u.clone())).collect()));
-    env.set(format!("*package-exports-{pkg_name}*").into(),
-        Value::List(exports.iter().map(|e| Value::Keyword(e.clone())).collect()));
+    env.set(
+        format!("*package-uses-{pkg_name}*").into(),
+        Value::List(uses.iter().map(|u| Value::Keyword(u.clone())).collect()),
+    );
+    env.set(
+        format!("*package-exports-{pkg_name}*").into(),
+        Value::List(exports.iter().map(|e| Value::Keyword(e.clone())).collect()),
+    );
 
     Ok(TailResult::Value(Value::Keyword(pkg_name)))
 }
@@ -485,11 +550,17 @@ pub fn do_try(
 /// Extract a simplified error type name from an EvalError.
 fn extract_error_type(e: &EvalError) -> String {
     let s = e.to_string();
-    if s.starts_with("symbol not found") { "symbol-not-found".into() }
-    else if s.starts_with("type error") { "type-error".into() }
-    else if s.starts_with("wrong argument count") { "wrong-arg-count".into() }
-    else if s.starts_with("division by zero") { "division-by-zero".into() }
-    else { "error".into() }
+    if s.starts_with("symbol not found") {
+        "symbol-not-found".into()
+    } else if s.starts_with("type error") {
+        "type-error".into()
+    } else if s.starts_with("wrong argument count") {
+        "wrong-arg-count".into()
+    } else if s.starts_with("division by zero") {
+        "division-by-zero".into()
+    } else {
+        "error".into()
+    }
 }
 
 /// (error message) — signal an error condition

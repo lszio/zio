@@ -16,10 +16,14 @@ use grove::contracts::{
     RunState, SCHEMA_VERSION,
 };
 use grove::store::Store;
-use grove::worker::{Frame, Isolation, Worker, WorkerConfig, PROTOCOL_VERSION};
+use grove::worker::{Frame, Isolation, PROTOCOL_VERSION, Worker, WorkerConfig};
 
 fn repo_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).ancestors().nth(4).unwrap().to_path_buf()
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .ancestors()
+        .nth(4)
+        .unwrap()
+        .to_path_buf()
 }
 
 fn task_dir() -> PathBuf {
@@ -117,7 +121,9 @@ fn seed_run(store: &Store, run_id: &str, budget: u32) -> Run {
         ensemble: None,
         graph: None,
     };
-    let snapshot_digest = store.commit_manifest("ModelSnapshot", "trainer", &snapshot).unwrap();
+    let snapshot_digest = store
+        .commit_manifest("ModelSnapshot", "trainer", &snapshot)
+        .unwrap();
     let run = Run {
         schema: SCHEMA_VERSION,
         id: run_id.to_string(),
@@ -151,8 +157,16 @@ fn train_request(
         attempt_id: format!("att-{run_id}"),
         graph,
         weights: seed_weights.to_string_lossy().into_owned(),
-        data: task_dir().join("data/train.bin").to_string_lossy().into_owned(),
-        val_data: Some(task_dir().join("data/val.bin").to_string_lossy().into_owned()),
+        data: task_dir()
+            .join("data/train.bin")
+            .to_string_lossy()
+            .into_owned(),
+        val_data: Some(
+            task_dir()
+                .join("data/val.bin")
+                .to_string_lossy()
+                .into_owned(),
+        ),
         out: out.to_string_lossy().into_owned(),
         steps,
         seed,
@@ -177,7 +191,13 @@ fn run_to_completion(worker: &mut Worker, frame: Frame, dir: &Path) -> DoneRepor
         let remaining = deadline.saturating_duration_since(std::time::Instant::now());
         assert!(!remaining.is_zero(), "worker never finished");
         match worker.next_frame(remaining).expect("frames flow") {
-            Frame::Done { weights, loss, first_loss, val_accuracy, .. } => {
+            Frame::Done {
+                weights,
+                loss,
+                first_loss,
+                val_accuracy,
+                ..
+            } => {
                 let path = PathBuf::from(weights.expect("done names its weights file"));
                 let payload: serde_json::Value =
                     serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
@@ -283,7 +303,13 @@ fn a_good_state_commits_and_is_loadable() {
 
 // ── resume semantics ───────────────────────────────────────────────
 
-fn committed_checkpoint(store: &Store, root: &Path, run_id: &str, step: u32, spent: u32) -> Checkpoint {
+fn committed_checkpoint(
+    store: &Store,
+    root: &Path,
+    run_id: &str,
+    step: u32,
+    spent: u32,
+) -> Checkpoint {
     seed_run(store, run_id, 1000);
     // the run's own ledger reflects the spent steps before the boundary
     store.consume_steps(run_id, spent).unwrap();
@@ -319,11 +345,17 @@ fn learning_continuation_inherits_the_budget_ledger() {
         1000,
     )
     .unwrap();
-    assert_eq!(plan.run.steps_consumed, 300, "resume must not reset the ledger");
+    assert_eq!(
+        plan.run.steps_consumed, 300,
+        "resume must not reset the ledger"
+    );
     assert_eq!(plan.run.resumed_from.as_deref(), Some("run-parent"));
     // the parent run is untouched
     assert_eq!(store.get_run("run-parent").unwrap().steps_consumed, 300);
-    assert_eq!(store.get_run("run-parent").unwrap().state, RunState::Running);
+    assert_eq!(
+        store.get_run("run-parent").unwrap().state,
+        RunState::Running
+    );
 
     // overspending the lineage is refused
     let err = checkpoint::resume_plan(
@@ -401,8 +433,8 @@ fn a_failed_save_never_claims_paused() {
     seed_run(&store, "run-1", 1000);
 
     // the state file is missing: the save fails
-    let err = checkpoint::pause(&store, &operator(), "run-1", &root.join("missing.json"), 1)
-        .unwrap_err();
+    let err =
+        checkpoint::pause(&store, &operator(), "run-1", &root.join("missing.json"), 1).unwrap_err();
     assert_eq!(err.kind, ErrorKind::ArtifactUnavailable);
     // and the run is exactly where it was — not paused
     assert_eq!(store.get_run("run-1").unwrap().state, RunState::Running);
@@ -412,7 +444,10 @@ fn a_failed_save_never_claims_paused() {
     write_state(&state, "run-1", 40);
     let ckpt = checkpoint::pause(&store, &operator(), "run-1", &state, 2).unwrap();
     assert_eq!(store.get_run("run-1").unwrap().state, RunState::Paused);
-    assert_eq!(store.get_checkpoint(&ckpt.id).unwrap().budget_spent_steps, 0);
+    assert_eq!(
+        store.get_checkpoint(&ckpt.id).unwrap().budget_spent_steps,
+        0
+    );
 }
 
 #[test]
@@ -451,8 +486,14 @@ fn forking_two_branches_leaves_them_independent() {
     store
         .advance_head(&operator(), "branch-a", "ckpt-later", a.head_version)
         .unwrap();
-    assert_eq!(store.get_branch("branch-a").unwrap().head.as_deref(), Some("ckpt-later"));
-    assert_eq!(store.get_branch("branch-b").unwrap().head.as_deref(), Some(ckpt.id.as_str()));
+    assert_eq!(
+        store.get_branch("branch-a").unwrap().head.as_deref(),
+        Some("ckpt-later")
+    );
+    assert_eq!(
+        store.get_branch("branch-b").unwrap().head.as_deref(),
+        Some(ckpt.id.as_str())
+    );
 
     // the parent run and checkpoint are untouched by either branch
     assert_eq!(store.get_run("run-parent").unwrap().steps_consumed, 300);
@@ -500,7 +541,10 @@ fn resume_reaches_the_same_state_as_an_uninterrupted_run() {
         attempt_id: "att-b".into(),
         graph: graph.clone(),
         weights: seed_weights.to_string_lossy().into_owned(),
-        data: task_dir().join("data/train.bin").to_string_lossy().into_owned(),
+        data: task_dir()
+            .join("data/train.bin")
+            .to_string_lossy()
+            .into_owned(),
         val_data: None,
         out: out_b1.to_string_lossy().into_owned(),
         steps: 300,
@@ -517,7 +561,11 @@ fn resume_reaches_the_same_state_as_an_uninterrupted_run() {
         let remaining = deadline.saturating_duration_since(std::time::Instant::now());
         assert!(!remaining.is_zero(), "first leg never finished");
         match worker_b1.next_frame(remaining).unwrap() {
-            Frame::Progress { saved: Some(path), step, .. } => {
+            Frame::Progress {
+                saved: Some(path),
+                step,
+                ..
+            } => {
                 saved_path = Some(PathBuf::from(path));
                 assert_eq!(step, 300);
                 break;
@@ -544,7 +592,10 @@ fn resume_reaches_the_same_state_as_an_uninterrupted_run() {
         attempt_id: "att-b2".into(),
         graph: graph.clone(),
         weights: seed_weights.to_string_lossy().into_owned(),
-        data: task_dir().join("data/train.bin").to_string_lossy().into_owned(),
+        data: task_dir()
+            .join("data/train.bin")
+            .to_string_lossy()
+            .into_owned(),
         val_data: None,
         out: out_b2.to_string_lossy().into_owned(),
         steps: 300,

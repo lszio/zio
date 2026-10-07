@@ -7,12 +7,16 @@ use crate::env::Env;
 use crate::error::EvalError;
 use crate::macros;
 use crate::sexp::Sexp;
-use crate::special::{eval_special_form, TailResult};
+use crate::special::{TailResult, eval_special_form};
 use crate::value::Value;
 
 // ── EvalRuntime implementation for EvalContext ───────────────────
 
 impl EvalRuntime for EvalContext {
+    fn source_dir(&self) -> Option<std::path::PathBuf> {
+        self.source_dir.borrow().clone()
+    }
+
     fn eval_expr(&self, expr: &Sexp, env: &Arc<Env>, tail: bool) -> Result<TailResult, EvalError> {
         eval_inner(expr, env, tail, self)
     }
@@ -56,7 +60,9 @@ impl ModuleRegistry for EvalContext {
         parent_env: &Arc<Env>,
     ) -> Option<Result<crate::module::Module, EvalError>> {
         let guard = self.loader.borrow();
-        guard.as_ref().map(|loader| loader(name, source, parent_env))
+        guard
+            .as_ref()
+            .map(|loader| loader(name, source, parent_env))
     }
 
     fn begin_loading(&self, path: &std::path::Path) -> Result<(), EvalError> {
@@ -116,7 +122,12 @@ pub fn eval_bare(expr: &Sexp, env: &Arc<Env>) -> Result<Value, EvalError> {
 /// Errors are reported here rather than at each raising form: a raise is
 /// a fact about the expression that raised it, and one place means no
 /// form can forget to report.
-fn eval_inner(expr: &Sexp, env: &Arc<Env>, tail: bool, engine: &dyn EvalEngine) -> Result<TailResult, EvalError> {
+fn eval_inner(
+    expr: &Sexp,
+    env: &Arc<Env>,
+    tail: bool,
+    engine: &dyn EvalEngine,
+) -> Result<TailResult, EvalError> {
     let observation = engine.observation();
     // Every evaluated node passes here, so this is the one place a
     // runaway program can be stopped. A host that did not ask for a
@@ -131,11 +142,7 @@ fn eval_inner(expr: &Sexp, env: &Arc<Env>, tail: bool, engine: &dyn EvalEngine) 
             Ok(result) => return Ok(result),
             Err(error) => {
                 let message = error.to_string();
-                observation.report(
-                    crate::observer::EventKind::Error,
-                    || message,
-                    expr.span(),
-                );
+                observation.report(crate::observer::EventKind::Error, || message, expr.span());
                 return Err(error);
             }
         }
@@ -143,7 +150,12 @@ fn eval_inner(expr: &Sexp, env: &Arc<Env>, tail: bool, engine: &dyn EvalEngine) 
     eval_inner_observed(expr, env, tail, engine)
 }
 
-fn eval_inner_observed(expr: &Sexp, env: &Arc<Env>, tail: bool, engine: &dyn EvalEngine) -> Result<TailResult, EvalError> {
+fn eval_inner_observed(
+    expr: &Sexp,
+    env: &Arc<Env>,
+    tail: bool,
+    engine: &dyn EvalEngine,
+) -> Result<TailResult, EvalError> {
     match expr {
         // Self-evaluating types
         Sexp::Nil => Ok(TailResult::Value(Value::Nil)),
@@ -176,9 +188,7 @@ fn eval_inner_observed(expr: &Sexp, env: &Arc<Env>, tail: bool, engine: &dyn Eva
 
             // Check if it's a symbol naming a special form
             if let Sexp::Symbol(name, _) = first {
-                if let Some(result) =
-                    eval_special_form(name, &args, env, tail, engine)?
-                {
+                if let Some(result) = eval_special_form(name, &args, env, tail, engine)? {
                     return Ok(result);
                 }
             }
@@ -274,9 +284,16 @@ fn eval_inner_observed(expr: &Sexp, env: &Arc<Env>, tail: bool, engine: &dyn Eva
 }
 /// Apply a function value to arguments.
 /// Handles GF dispatch for ZOS generic functions.
-pub fn apply(func: Value, args: Vector<Value>, engine: &dyn EvalEngine) -> Result<TailResult, EvalError> {
+pub fn apply(
+    func: Value,
+    args: Vector<Value>,
+    engine: &dyn EvalEngine,
+) -> Result<TailResult, EvalError> {
     match func {
         Value::Function(f) => {
+            if f.compiled.is_some() {
+                return crate::bytecode::invoke_function(&f, args, engine).map(TailResult::Value);
+            }
             let env = if f.rest_param.is_some() {
                 Env::bind_variadic(&f.env, &f.params, &f.rest_param, &args)?
             } else {
@@ -318,9 +335,9 @@ fn other_display(v: &Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use im::vector;
     use crate::builtins;
     use crate::env::Env;
+    use im::vector;
 
     use crate::error::ReaderError;
 
@@ -345,68 +362,117 @@ mod tests {
                     s.push(chars.next().unwrap());
                     while let Some(&c) = chars.peek() {
                         match c {
-                            '\\' => { s.push(chars.next().unwrap()); if let Some(nc) = chars.next() { s.push(nc); } }
-                            '"' => { s.push(chars.next().unwrap()); break; }
-                            _ => { s.push(chars.next().unwrap()); }
+                            '\\' => {
+                                s.push(chars.next().unwrap());
+                                if let Some(nc) = chars.next() {
+                                    s.push(nc);
+                                }
+                            }
+                            '"' => {
+                                s.push(chars.next().unwrap());
+                                break;
+                            }
+                            _ => {
+                                s.push(chars.next().unwrap());
+                            }
                         }
                     }
                     tokens.push(s);
                 }
-                _ if c.is_whitespace() => { chars.next(); }
-                ';' => { while let Some(c) = chars.next() { if c == '\n' { break; } } }
+                _ if c.is_whitespace() => {
+                    chars.next();
+                }
+                ';' => {
+                    while let Some(c) = chars.next() {
+                        if c == '\n' {
+                            break;
+                        }
+                    }
+                }
                 _ => {
                     let mut atom = String::new();
                     while let Some(&c) = chars.peek() {
-                        if c.is_whitespace() || "()[]{}'\"".contains(c) || c == ';' { break; }
+                        if c.is_whitespace() || "()[]{}'\"".contains(c) || c == ';' {
+                            break;
+                        }
                         atom.push(chars.next().unwrap());
                     }
-                    if !atom.is_empty() { tokens.push(atom); }
+                    if !atom.is_empty() {
+                        tokens.push(atom);
+                    }
                 }
             }
         }
         tokens
     }
 
-    fn test_read_tokens(tokens: &mut std::iter::Peekable<std::vec::IntoIter<String>>) -> Result<(Sexp, bool), ReaderError> {
+    fn test_read_tokens(
+        tokens: &mut std::iter::Peekable<std::vec::IntoIter<String>>,
+    ) -> Result<(Sexp, bool), ReaderError> {
         let mut stack: Vec<(String, im::Vector<Sexp>)> = Vec::new();
         while let Some(token) = tokens.next() {
             match token.as_str() {
                 "'" => {
                     let (inner, _) = test_read_tokens(tokens)?;
-                    let quoted = Sexp::List(im::vector![Sexp::Symbol("quote".into(), None), inner], None);
-                    if let Some(parent) = stack.last_mut() { parent.1.push_back(quoted); }
-                    else { return Ok((quoted, tokens.peek().is_some())); }
+                    let quoted =
+                        Sexp::List(im::vector![Sexp::Symbol("quote".into(), None), inner], None);
+                    if let Some(parent) = stack.last_mut() {
+                        parent.1.push_back(quoted);
+                    } else {
+                        return Ok((quoted, tokens.peek().is_some()));
+                    }
                 }
-                "(" | "[" | "{" => { stack.push((token, im::Vector::new())); }
+                "(" | "[" | "{" => {
+                    stack.push((token, im::Vector::new()));
+                }
                 ")" | "]" | "}" => {
-                    let (open, items) = stack.pop().ok_or_else(|| ReaderError::UnexpectedToken(token.clone()))?;
-                    if (open == "(" && token != ")") || (open == "[" && token != "]") || (open == "{" && token != "}") {
+                    let (open, items) = stack
+                        .pop()
+                        .ok_or_else(|| ReaderError::UnexpectedToken(token.clone()))?;
+                    if (open == "(" && token != ")")
+                        || (open == "[" && token != "]")
+                        || (open == "{" && token != "}")
+                    {
                         return Err(ReaderError::UnexpectedToken(token));
                     }
                     let val = match open.as_str() {
                         "(" => Sexp::List(items, None),
                         "[" => Sexp::Vector(items, None),
                         "{" => {
-                            if items.len() % 2 != 0 { return Err(ReaderError::OddMapElements); }
+                            if items.len() % 2 != 0 {
+                                return Err(ReaderError::OddMapElements);
+                            }
                             let mut map = im::HashMap::new();
                             let mut iter = items.into_iter();
-                            while let Some(key) = iter.next() { let val = iter.next().unwrap(); map.insert(key, val); }
+                            while let Some(key) = iter.next() {
+                                let val = iter.next().unwrap();
+                                map.insert(key, val);
+                            }
                             Sexp::Map(map, None)
                         }
                         _ => unreachable!(),
                     };
-                    if let Some(parent) = stack.last_mut() { parent.1.push_back(val); }
-                    else { return Ok((val, tokens.peek().is_some())); }
+                    if let Some(parent) = stack.last_mut() {
+                        parent.1.push_back(val);
+                    } else {
+                        return Ok((val, tokens.peek().is_some()));
+                    }
                 }
                 _ => {
                     let val = test_parse_atom(&token);
-                    if let Some(parent) = stack.last_mut() { parent.1.push_back(val); }
-                    else { return Ok((val, tokens.peek().is_some())); }
+                    if let Some(parent) = stack.last_mut() {
+                        parent.1.push_back(val);
+                    } else {
+                        return Ok((val, tokens.peek().is_some()));
+                    }
                 }
             }
         }
-        if !stack.is_empty() { Err(ReaderError::UnexpectedEOF) }
-        else { Ok((Sexp::Nil, false)) }
+        if !stack.is_empty() {
+            Err(ReaderError::UnexpectedEOF)
+        } else {
+            Ok((Sexp::Nil, false))
+        }
     }
 
     fn test_parse_atom(token: &str) -> Sexp {
@@ -417,21 +483,35 @@ mod tests {
             while let Some(c) = chars.next() {
                 if c == '\\' {
                     if let Some(nc) = chars.next() {
-                        match nc { 'n' => unescaped.push('\n'), 'r' => unescaped.push('\r'), 't' => unescaped.push('\t'), '\\' => unescaped.push('\\'), '"' => unescaped.push('"'), _ => unescaped.push(nc), }
+                        match nc {
+                            'n' => unescaped.push('\n'),
+                            'r' => unescaped.push('\r'),
+                            't' => unescaped.push('\t'),
+                            '\\' => unescaped.push('\\'),
+                            '"' => unescaped.push('"'),
+                            _ => unescaped.push(nc),
+                        }
                     }
-                } else { unescaped.push(c); }
+                } else {
+                    unescaped.push(c);
+                }
             }
             Sexp::String(unescaped, None)
-        } else if token.starts_with(':') { Sexp::Keyword(token[1..].to_string(), None) }
-        else {
+        } else if token.starts_with(':') {
+            Sexp::Keyword(token.strip_prefix(':').unwrap_or(token).to_string(), None)
+        } else {
             match token {
                 "nil" => Sexp::Nil,
                 "true" => Sexp::Boolean(true),
                 "false" => Sexp::Boolean(false),
                 _ => {
-                    if let Ok(i) = token.parse::<i64>() { Sexp::Integer(i, None) }
-                    else if let Ok(f) = token.parse::<f64>() { Sexp::Float(f, None) }
-                    else { Sexp::Symbol(token.to_string(), None) }
+                    if let Ok(i) = token.parse::<i64>() {
+                        Sexp::Integer(i, None)
+                    } else if let Ok(f) = token.parse::<f64>() {
+                        Sexp::Float(f, None)
+                    } else {
+                        Sexp::Symbol(token.to_string(), None)
+                    }
                 }
             }
         }
@@ -470,7 +550,11 @@ mod tests {
         assert_eq!(run("(quote 42)").unwrap(), Value::Integer(42));
         assert_eq!(
             run("(quote (1 2 3))").unwrap(),
-            Value::List(vector![Value::Integer(1), Value::Integer(2), Value::Integer(3)])
+            Value::List(vector![
+                Value::Integer(1),
+                Value::Integer(2),
+                Value::Integer(3)
+            ])
         );
     }
 
@@ -542,7 +626,10 @@ mod tests {
 
     #[test]
     fn test_let() {
-        assert_eq!(run("(let [x 10 y 20] (+ x y))").unwrap(), Value::Integer(30));
+        assert_eq!(
+            run("(let [x 10 y 20] (+ x y))").unwrap(),
+            Value::Integer(30)
+        );
     }
 
     #[test]
@@ -561,9 +648,7 @@ mod tests {
     #[test]
     fn test_macro() {
         let ctx = make_ctx();
-        let s = test_read(
-            "(defmacro unless [test body] (list 'if test nil body))",
-        ).unwrap();
+        let s = test_read("(defmacro unless [test body] (list 'if test nil body))").unwrap();
         eval_in_context(&s, &ctx).unwrap();
         let s = test_read("(unless false 42)").unwrap();
         assert_eq!(eval_in_context(&s, &ctx).unwrap(), Value::Integer(42));
@@ -630,7 +715,11 @@ mod tests {
     fn test_map_filter_reduce() {
         assert_eq!(
             run("(map (fn [x] (* x 2)) [1 2 3])").unwrap(),
-            Value::List(vector![Value::Integer(2), Value::Integer(4), Value::Integer(6)])
+            Value::List(vector![
+                Value::Integer(2),
+                Value::Integer(4),
+                Value::Integer(6)
+            ])
         );
         assert_eq!(
             run("(filter (fn [x] (< x 3)) [1 2 3 4])").unwrap(),
@@ -643,7 +732,11 @@ mod tests {
     fn test_cons_car_cdr() {
         assert_eq!(
             run("(cons 1 (list 2 3))").unwrap(),
-            Value::List(vector![Value::Integer(1), Value::Integer(2), Value::Integer(3)])
+            Value::List(vector![
+                Value::Integer(1),
+                Value::Integer(2),
+                Value::Integer(3)
+            ])
         );
         assert_eq!(run("(car (list 1 2 3))").unwrap(), Value::Integer(1));
         assert_eq!(
@@ -661,7 +754,14 @@ mod tests {
     fn test_new_builtins() {
         // apply
         assert_eq!(run("(apply + (list 1 2 3))").unwrap(), Value::Integer(6));
-        assert_eq!(run("(apply list (list 1 2 3))").unwrap(), Value::List(vector![Value::Integer(1), Value::Integer(2), Value::Integer(3)]));
+        assert_eq!(
+            run("(apply list (list 1 2 3))").unwrap(),
+            Value::List(vector![
+                Value::Integer(1),
+                Value::Integer(2),
+                Value::Integer(3)
+            ])
+        );
 
         // get
         assert_eq!(run("(get (list 10 20 30) 1)").unwrap(), Value::Integer(20));
@@ -672,11 +772,26 @@ mod tests {
         assert_eq!(run("(count \"hello\")").unwrap(), Value::Integer(5));
 
         // type
-        assert_eq!(run("(type 42)").unwrap(), Value::Keyword("integer".to_string()));
-        assert_eq!(run("(type \"hello\")").unwrap(), Value::Keyword("string".to_string()));
-        assert_eq!(run("(type true)").unwrap(), Value::Keyword("boolean".to_string()));
-        assert_eq!(run("(type nil)").unwrap(), Value::Keyword("nil".to_string()));
-        assert_eq!(run("(type (fn [x] x))").unwrap(), Value::Keyword("fn".to_string()));
+        assert_eq!(
+            run("(type 42)").unwrap(),
+            Value::Keyword("integer".to_string())
+        );
+        assert_eq!(
+            run("(type \"hello\")").unwrap(),
+            Value::Keyword("string".to_string())
+        );
+        assert_eq!(
+            run("(type true)").unwrap(),
+            Value::Keyword("boolean".to_string())
+        );
+        assert_eq!(
+            run("(type nil)").unwrap(),
+            Value::Keyword("nil".to_string())
+        );
+        assert_eq!(
+            run("(type (fn [x] x))").unwrap(),
+            Value::Keyword("fn".to_string())
+        );
 
         // mod
         assert_eq!(run("(mod 10 3)").unwrap(), Value::Integer(1));
@@ -684,7 +799,10 @@ mod tests {
         assert_eq!(run("(mod 4 2)").unwrap(), Value::Integer(0));
 
         // String operations
-        assert_eq!(run("(str-trim \"  hello  \")").unwrap(), Value::String("hello".to_string()));
+        assert_eq!(
+            run("(str-trim \"  hello  \")").unwrap(),
+            Value::String("hello".to_string())
+        );
         assert_eq!(
             run("(str-join \", \" \"a\" \"b\" \"c\")").unwrap(),
             Value::String("a, b, c".to_string())
@@ -723,25 +841,41 @@ mod tests {
         );
 
         // range
-        assert_eq!(run("(range 5)").unwrap(), Value::Vector(vector![
-            Value::Integer(0), Value::Integer(1), Value::Integer(2),
-            Value::Integer(3), Value::Integer(4),
-        ]));
-        assert_eq!(run("(range 2 5)").unwrap(), Value::Vector(vector![
-            Value::Integer(2), Value::Integer(3), Value::Integer(4),
-        ]));
+        assert_eq!(
+            run("(range 5)").unwrap(),
+            Value::Vector(vector![
+                Value::Integer(0),
+                Value::Integer(1),
+                Value::Integer(2),
+                Value::Integer(3),
+                Value::Integer(4),
+            ])
+        );
+        assert_eq!(
+            run("(range 2 5)").unwrap(),
+            Value::Vector(vector![
+                Value::Integer(2),
+                Value::Integer(3),
+                Value::Integer(4),
+            ])
+        );
 
         // sort
-        assert_eq!(run("(sort < [3 1 2])").unwrap(), Value::Vector(vector![
-            Value::Integer(1), Value::Integer(2), Value::Integer(3),
-        ]));
-}
+        assert_eq!(
+            run("(sort < [3 1 2])").unwrap(),
+            Value::Vector(vector![
+                Value::Integer(1),
+                Value::Integer(2),
+                Value::Integer(3),
+            ])
+        );
+    }
 
     #[test]
     fn test_error_span_display() {
         // Verify that EvalError Display includes span info when available.
         // This tests the with_opt_span mechanism.
-        use crate::span::{BytePos, Span, SourceId};
+        use crate::span::{BytePos, SourceId, Span};
         let span = Span {
             source_id: SourceId::NONE,
             start: BytePos(5),
@@ -752,7 +886,10 @@ mod tests {
         let err = EvalError::symbol_not_found("foo").with_opt_span(Some(span));
         let msg = err.to_string();
         assert!(msg.contains("symbol not found: foo"), "msg: {msg}");
-        assert!(msg.contains("at line 1, col 6"), "msg should contain position, got: {msg}");
+        assert!(
+            msg.contains("at line 1, col 6"),
+            "msg should contain position, got: {msg}"
+        );
     }
     #[test]
     fn test_tco_mutual_recursion() {
@@ -764,15 +901,9 @@ mod tests {
         eval_in_context(&s, &ctx).unwrap();
         let s = test_read("(defn dec [n] (- n 1))").unwrap();
         eval_in_context(&s, &ctx).unwrap();
-        let s = test_read(
-            "(defn even? [n] (if (zero? n) true (odd? (dec n))))",
-        )
-        .unwrap();
+        let s = test_read("(defn even? [n] (if (zero? n) true (odd? (dec n))))").unwrap();
         eval_in_context(&s, &ctx).unwrap();
-        let s = test_read(
-            "(defn odd? [n] (if (zero? n) false (even? (dec n))))",
-        )
-        .unwrap();
+        let s = test_read("(defn odd? [n] (if (zero? n) false (even? (dec n))))").unwrap();
         eval_in_context(&s, &ctx).unwrap();
         let s = test_read("(even? 100000)").unwrap();
         let result = eval_in_context(&s, &ctx).unwrap();
@@ -847,9 +978,12 @@ mod tests {
         let ctx = make_ctx();
 
         // (unless test body) → (if test nil body)
-        let s = test_read("(defmacro unless
+        let s = test_read(
+            "(defmacro unless
           (syntax-rules ()
-            ((_ test body) (if test nil body))))").unwrap();
+            ((_ test body) (if test nil body))))",
+        )
+        .unwrap();
         eval_in_context(&s, &ctx).unwrap();
 
         let s = test_read("(unless false 42)").unwrap();
@@ -862,9 +996,12 @@ mod tests {
 
         // Macro with literal symbol matching
         // (define name value) → (def name value)
-        let s = test_read("(defmacro define
+        let s = test_read(
+            "(defmacro define
           (syntax-rules ()
-            ((_ name value) (def name value))))").unwrap();
+            ((_ name value) (def name value))))",
+        )
+        .unwrap();
         eval_in_context(&s, &ctx).unwrap();
 
         let s = test_read("(define x 42)").unwrap();
@@ -881,8 +1018,11 @@ mod tests {
         let ctx = make_ctx();
 
         // Define a class
-        let s = test_read("(defclass point nil ((x :initarg :x :accessor point-x)
-                                                (y :initarg :y :accessor point-y)))").unwrap();
+        let s = test_read(
+            "(defclass point nil ((x :initarg :x :accessor point-x)
+                                                (y :initarg :y :accessor point-y)))",
+        )
+        .unwrap();
         eval_in_context(&s, &ctx).unwrap();
 
         // Create an instance
@@ -920,11 +1060,17 @@ mod tests {
         // Test dispatch
         let s = test_read("(draw (make-instance shape))").unwrap();
         let result = eval_in_context(&s, &ctx).unwrap();
-        assert!(result.to_string().contains("shape"), "shape method should be called, got: {result}");
+        assert!(
+            result.to_string().contains("shape"),
+            "shape method should be called, got: {result}"
+        );
 
         let s = test_read("(draw (make-instance circle))").unwrap();
         let result = eval_in_context(&s, &ctx).unwrap();
-        assert!(result.to_string().contains("circle"), "circle method should be called, got: {result}");
+        assert!(
+            result.to_string().contains("circle"),
+            "circle method should be called, got: {result}"
+        );
     }
 
     #[test]
@@ -948,9 +1094,18 @@ mod tests {
         let s = test_read("(process (make-instance thing))").unwrap();
         let result = eval_in_context(&s, &ctx).unwrap();
         let result_str = result.to_string();
-        assert!(result_str.contains("before"), "should contain 'before', got: {result_str}");
-        assert!(result_str.contains("primary"), "should contain 'primary', got: {result_str}");
-        assert!(result_str.contains("after"), "should contain 'after', got: {result_str}");
+        assert!(
+            result_str.contains("before"),
+            "should contain 'before', got: {result_str}"
+        );
+        assert!(
+            result_str.contains("primary"),
+            "should contain 'primary', got: {result_str}"
+        );
+        assert!(
+            result_str.contains("after"),
+            "should contain 'after', got: {result_str}"
+        );
     }
 
     #[test]
@@ -1016,7 +1171,11 @@ mod tests {
         // D's method should be preferred over A's
         let s = test_read("(identify (make-instance d))").unwrap();
         let result = eval_in_context(&s, &ctx).unwrap();
-        assert_eq!(result.to_string(), "\"D\"", "D's method should be preferred");
+        assert_eq!(
+            result.to_string(),
+            "\"D\"",
+            "D's method should be preferred"
+        );
     }
 
     #[test]
@@ -1069,7 +1228,8 @@ mod tests {
         // Multi-dispatch GF
         let s = test_read("(defgeneric collide (a b))").unwrap();
         eval_in_context(&s, &ctx).unwrap();
-        let s = test_read("(defmethod collide ((a vehicle) (b vehicle)) (str \"generic\"))").unwrap();
+        let s =
+            test_read("(defmethod collide ((a vehicle) (b vehicle)) (str \"generic\"))").unwrap();
         eval_in_context(&s, &ctx).unwrap();
         let s = test_read("(defmethod collide ((a car) (b truck)) (str \"car-truck\"))").unwrap();
         eval_in_context(&s, &ctx).unwrap();
@@ -1077,7 +1237,11 @@ mod tests {
         // Test dispatch
         let s = test_read("(collide (make-instance car) (make-instance truck))").unwrap();
         let result = eval_in_context(&s, &ctx).unwrap();
-        assert_eq!(result.to_string(), "\"car-truck\"", "car-truck method should be preferred");
+        assert_eq!(
+            result.to_string(),
+            "\"car-truck\"",
+            "car-truck method should be preferred"
+        );
 
         // GF methods reflection
         let s = test_read("(generic-function-methods collide)").unwrap();
@@ -1086,13 +1250,13 @@ mod tests {
     }
     #[test]
     fn test_io_host_capture() {
-        use std::sync::Arc;
         use crate::io::BufferIoHost;
+        use std::sync::Arc;
 
         let env = Arc::new(Env::new(None));
         builtins::setup_env(&env);
         let io = Arc::new(BufferIoHost::with_input(vec!["test-input-line\n".into()]));
-        let ctx = EvalContext::with_io(env, io.clone());
+        let ctx = EvalContext::with_io(env.clone(), io.clone());
 
         let expr = test_read("(println \"hello\" \"world\")").unwrap();
         eval_in_context(&expr, &ctx).unwrap();
@@ -1100,16 +1264,30 @@ mod tests {
         let expr = test_read("(print \"foo\")").unwrap();
         eval_in_context(&expr, &ctx).unwrap();
 
-        assert_eq!(io.get_output(), "\"hello\" \"world\"\n\"foo\"");
+        // `print`/`println` write a string as itself; `prn` is the one
+        // that quotes. The distinction matters because a program that
+        // prints a computed line should not get escaped quotes in it.
+        assert_eq!(io.get_output(), "hello world\nfoo");
 
-        let expr = test_read("(read-line)").unwrap();
-        let val = eval_in_context(&expr, &ctx).unwrap();
+        let prn = Arc::new(BufferIoHost::with_input(vec![]));
+        let ctx = EvalContext::with_io(env.clone(), prn.clone());
+        eval_in_context(&test_read("(prn \"hello\")").unwrap(), &ctx).unwrap();
+        assert_eq!(prn.get_output(), "\"hello\"\n");
+
+        // `read-line` gets its own host: the one above has no input, and
+        // a context does not share an IoHost unless it is handed one.
+        let input = Arc::new(BufferIoHost::with_input(vec!["test-input-line\n".into()]));
+        let ctx = EvalContext::with_io(env, input);
+        let val = eval_in_context(&test_read("(read-line)").unwrap(), &ctx).unwrap();
         assert_eq!(val, Value::String("test-input-line".into()));
     }
     #[test]
     fn test_syntax_rules_eval() {
         let ctx = make_ctx();
-        let s = test_read("(defmacro my-unless (syntax-rules () ((my-unless test body) (if test nil body))))").unwrap();
+        let s = test_read(
+            "(defmacro my-unless (syntax-rules () ((my-unless test body) (if test nil body))))",
+        )
+        .unwrap();
         eval_in_context(&s, &ctx).unwrap();
 
         let s = test_read("(my-unless false 42)").unwrap();
@@ -1147,12 +1325,18 @@ mod tests {
         let ctx = make_ctx();
         let mut path = std::env::temp_dir();
         path.push("zio_load_multi_form_test.zio");
-        std::fs::write(&path, "(def loaded-a 1)\n(def loaded-b 2)\n(def loaded-c (+ loaded-a loaded-b))\n")
-            .expect("write load test file");
+        std::fs::write(
+            &path,
+            "(def loaded-a 1)\n(def loaded-b 2)\n(def loaded-c (+ loaded-a loaded-b))\n",
+        )
+        .expect("write load test file");
         let s = test_read(&format!("(load {:?})", path.to_string_lossy())).unwrap();
         eval_in_context(&s, &ctx).unwrap();
-        assert_eq!(ctx.env.get("loaded-c"), Some(Value::Integer(3)),
-            "load must evaluate every top-level form in the file");
+        assert_eq!(
+            ctx.env.get("loaded-c"),
+            Some(Value::Integer(3)),
+            "load must evaluate every top-level form in the file"
+        );
         let _ = std::fs::remove_file(&path);
     }
 
@@ -1168,10 +1352,7 @@ mod tests {
             run("(get (keys {:a 1}) 0)").unwrap(),
             Value::Keyword("a".into())
         );
-        assert_eq!(
-            run("(get (vals {:a 1}) 0)").unwrap(),
-            Value::Integer(1)
-        );
+        assert_eq!(run("(get (vals {:a 1}) 0)").unwrap(), Value::Integer(1));
 
         // dissoc — single and multiple keys
         assert_eq!(
@@ -1199,7 +1380,10 @@ mod tests {
             Value::List(vector![Value::Integer(0), Value::Integer(1)])
         );
         // clamped out-of-range bounds
-        assert_eq!(run("(slice [1 2 3] 5 9)").unwrap(), Value::Vector(vector![]));
+        assert_eq!(
+            run("(slice [1 2 3] 5 9)").unwrap(),
+            Value::Vector(vector![])
+        );
     }
 
     /// Like `run`, but with the stdlib loaded — needed for tests that
@@ -1247,8 +1431,7 @@ mod tests {
         let ctx = make_ctx();
         let mut path = std::env::temp_dir();
         path.push("zio_load_span_test.zio");
-        std::fs::write(&path, "(def ok 1)\n(missing-symbol-here)\n")
-            .expect("write span test file");
+        std::fs::write(&path, "(def ok 1)\n(missing-symbol-here)\n").expect("write span test file");
         let s = test_read(&format!("(load {:?})", path.to_string_lossy())).unwrap();
         let err = eval_in_context(&s, &ctx).expect_err("load should propagate the error");
         assert!(
@@ -1325,7 +1508,10 @@ mod tests {
 
         // non-exported names stay confined
         let s = test_read("(hidden 1)").unwrap();
-        assert!(eval_in_context(&s, &ctx).is_err(), "hidden should not be imported");
+        assert!(
+            eval_in_context(&s, &ctx).is_err(),
+            "hidden should not be imported"
+        );
     }
 
     #[test]
@@ -1369,7 +1555,10 @@ mod tests {
         // alias map exposes exports by keyword
         let s = test_read("(get mu :double)").unwrap();
         let v = eval_in_context(&s, &ctx).unwrap();
-        assert!(matches!(v, Value::Function(_)), "alias map should hold the function, got {v}");
+        assert!(
+            matches!(v, Value::Function(_)),
+            "alias map should hold the function, got {v}"
+        );
     }
 
     #[test]

@@ -1,25 +1,40 @@
 ;; ── zio.entity — Entity model (identity + metadata) ─────────────
 ;;
-;; Status: Experimental. defentity / make-entity / entity-id runnable.
-;; Entity ids are buffers rendered as strings — real unique identity
-;; awaits an identity primitive in core.
+;; defentity / make-entity / entity-id work in native and browser sessions.
+;; Default ids are unique only within this loaded library context. A host
+;; may explicitly supply a cryptographic identity generator.
 
 (defmacro defentity [name fields]
   (let [entity-class-name (symbol (str "entity-" name))]
     (list 'defclass entity-class-name nil
           (map (fn [f] (list f :initarg (keyword f))) fields))))
 
-;; Process-unique id counter: (bytes 8) rendered as a constant string used
-;; to collide every id of a type; global-unique identity still awaits a
-;; core primitive (e.g. uuid).
+;; No implicit host dependency: browser pure use retains local identity.
 (def entity--counter 0)
+(def entity--identity-source nil)
+
+(defn entity-set-identity-source! [source]
+  (if (fn? source)
+    (set! entity--identity-source source)
+    (error "invalid-input: entity identity source must be callable")))
+
+(defn entity-use-host-identity! []
+  (entity-set-identity-source!
+    (fn [] (host/sha256 (host/random-bytes 32)))))
 
 (defn make-entity [type-sym & kvs]
   ;; defentity names the class "entity-<type>"; use the same name here.
   (let* [cls (symbol (str "entity-" (str type-sym)))
          inst (apply make-instance (cons cls kvs))
-         id (do (set! entity--counter (+ entity--counter 1))
-                (str "entity-" (str type-sym) "-" entity--counter))]
+         id (if (nil? entity--identity-source)
+              (do (set! entity--counter (+ entity--counter 1))
+                  (str "entity-" type-sym "-" entity--counter))
+              (let* [generated (entity--identity-source)]
+                (if (string? generated)
+                  (if (> (count generated) 0)
+                    generated
+                    (error "invalid-input: empty entity identity"))
+                  (error "invalid-input: entity identity must be a string"))))]
     {:entity/type type-sym
      :entity/id id
      :entity/instance inst}))

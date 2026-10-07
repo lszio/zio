@@ -173,4 +173,3 @@
        "|" (get revision :abstains nil)
        "|" (str (get revision :signals nil))))
 
-(println "zio.learn.feedback loaded (field-scoped precedence, conflict isolation, frozen views; pure policy, no host access)")

@@ -209,4 +209,3 @@
   ;; because expansion can reintroduce what the surface form hid.
   (macroexpand invocation))
 
-(println "zio.memory loaded (structural / behavioural / semantic indexes; licence + probe-set refusals)")

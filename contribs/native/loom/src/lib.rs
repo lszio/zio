@@ -33,8 +33,8 @@ pub mod mock;
 /// message types live in [`harness`] and are surfaced here because a
 /// consumer implementing a provider should not have to know that.
 pub use harness::{
-    Budget, ChatMessage, ChatRequest, ChatResponse, ModelHost, Options, Session, Tools,
-    ToolCall, Usage,
+    Budget, ChatMessage, ChatRequest, ChatResponse, ModelHost, Options, Session, ToolCall, Tools,
+    Usage,
 };
 
 pub mod teacher;
@@ -127,7 +127,10 @@ pub struct HostError {
 
 impl HostError {
     pub fn new(kind: HostErrorKind, message: impl Into<String>) -> Self {
-        HostError { kind, message: message.into() }
+        HostError {
+            kind,
+            message: message.into(),
+        }
     }
 }
 
@@ -174,9 +177,7 @@ pub fn install(
         "llm-complete".into(),
         Value::NativeFunction(NativeFn::new(
             "llm-complete",
-            move |args: Vector<Value>, _engine: &dyn EvalEngine| {
-                llm_complete_fn(&llm, &args)
-            },
+            move |args: Vector<Value>, _engine: &dyn EvalEngine| llm_complete_fn(&llm, &args),
         )),
     );
     ctx.env.set(
@@ -246,20 +247,23 @@ impl harness::ModelHost for SessionLlmHost {
         request: &harness::ChatRequest,
         budget: &harness::Budget,
     ) -> Result<harness::ChatResponse, HostError> {
-        let last = request.messages.last().cloned().unwrap_or(harness::ChatMessage {
-            role: "user".into(),
-            content: serde_json::Value::String(String::new()),
-            tool_calls: Vec::new(),
-            tool_call_id: None,
-        });
+        let last = request
+            .messages
+            .last()
+            .cloned()
+            .unwrap_or(harness::ChatMessage {
+                role: "user".into(),
+                content: serde_json::Value::String(String::new()),
+                tool_calls: Vec::new(),
+                tool_call_id: None,
+            });
         let prompt = last.content.as_str().unwrap_or_default().to_string();
         let text = self
             .inner
             .complete(&prompt, &LlmOptions::default())
-            .map_err(|e| {
+            .inspect_err(|_| {
                 // A failure spends nothing, so the reservation goes back.
                 let _ = budget;
-                e
             })?;
         Ok(harness::ChatResponse {
             request_id: request.request_id.clone(),
@@ -306,10 +310,7 @@ fn parse_llm_options(args: &Vector<Value>) -> Result<LlmOptions, EvalError> {
     Ok(opts)
 }
 
-fn embed_fn(
-    host: &Option<Arc<dyn EmbedHost>>,
-    args: &Vector<Value>,
-) -> Result<Value, EvalError> {
+fn embed_fn(host: &Option<Arc<dyn EmbedHost>>, args: &Vector<Value>) -> Result<Value, EvalError> {
     let Some(host) = host else {
         return Err(EvalError::custom(
             "capability-denied: embed host not installed (embed)",

@@ -59,11 +59,7 @@ impl LlmHost for ScriptedLlmHost {
 }
 
 impl ModelHost for ScriptedLlmHost {
-    fn respond(
-        &self,
-        request: &ChatRequest,
-        _budget: &Budget,
-    ) -> Result<ChatResponse, HostError> {
+    fn respond(&self, request: &ChatRequest, _budget: &Budget) -> Result<ChatResponse, HostError> {
         respond_as_chat(self, request)
     }
 }
@@ -156,13 +152,19 @@ impl MockLlmHost {
                 }
             }
         }
-        Ok(MockLlmHost { entries, source: None })
+        Ok(MockLlmHost {
+            entries,
+            source: None,
+        })
     }
 
     pub fn from_recording_file(path: impl AsRef<Path>) -> Result<Self, HostError> {
         let path = path.as_ref();
         let text = std::fs::read_to_string(path).map_err(|e| {
-            HostError::new(HostErrorKind::Io, format!("cannot read {}: {e}", path.display()))
+            HostError::new(
+                HostErrorKind::Io,
+                format!("cannot read {}: {e}", path.display()),
+            )
         })?;
         let mut mock = Self::from_recording_text(&text)?;
         mock.source = Some(path.display().to_string());
@@ -206,27 +208,25 @@ impl ModelHost for MockLlmHost {
     /// replaying the same answer for both would hide exactly the
     /// dependence the recording is supposed to pin down. The key covers
     /// every message, the tool schemas, and the output cap.
-    fn respond(
-        &self,
-        request: &ChatRequest,
-        _budget: &Budget,
-    ) -> Result<ChatResponse, HostError> {
+    fn respond(&self, request: &ChatRequest, _budget: &Budget) -> Result<ChatResponse, HostError> {
         let prompt = transcript_prompt(request);
         let key = fnv1a64(prompt.as_bytes());
         match self.entries.get(&key) {
-            Some((recorded_prompt, response)) if *recorded_prompt == prompt => {
-                Ok(ChatResponse {
-                    request_id: request.request_id.clone(),
-                    message: ChatMessage {
-                        role: "assistant".into(),
-                        content: serde_json::Value::String(response.clone()),
-                        tool_calls: Vec::new(),
-                        tool_call_id: None,
-                    },
-                    usage: Usage { input_tokens: 0, output_tokens: 0, cost_micros: None },
-                    finish_reason: "stop".into(),
-                })
-            }
+            Some((recorded_prompt, response)) if *recorded_prompt == prompt => Ok(ChatResponse {
+                request_id: request.request_id.clone(),
+                message: ChatMessage {
+                    role: "assistant".into(),
+                    content: serde_json::Value::String(response.clone()),
+                    tool_calls: Vec::new(),
+                    tool_call_id: None,
+                },
+                usage: Usage {
+                    input_tokens: 0,
+                    output_tokens: 0,
+                    cost_micros: None,
+                },
+                finish_reason: "stop".into(),
+            }),
             _ => Err(HostError::new(
                 HostErrorKind::ReplayMiss,
                 format!(
@@ -319,13 +319,19 @@ impl MockEmbedHost {
                 }
             }
         }
-        Ok(MockEmbedHost { entries, source: None })
+        Ok(MockEmbedHost {
+            entries,
+            source: None,
+        })
     }
 
     pub fn from_recording_file(path: impl AsRef<Path>) -> Result<Self, HostError> {
         let path = path.as_ref();
         let text = std::fs::read_to_string(path).map_err(|e| {
-            HostError::new(HostErrorKind::Io, format!("cannot read {}: {e}", path.display()))
+            HostError::new(
+                HostErrorKind::Io,
+                format!("cannot read {}: {e}", path.display()),
+            )
         })?;
         let mut mock = Self::from_recording_text(&text)?;
         mock.source = Some(path.display().to_string());
@@ -399,7 +405,11 @@ pub(crate) fn respond_as_chat(
             tool_calls: Vec::new(),
             tool_call_id: None,
         },
-        usage: Usage { input_tokens: 0, output_tokens: 0, cost_micros: None },
+        usage: Usage {
+            input_tokens: 0,
+            output_tokens: 0,
+            cost_micros: None,
+        },
         finish_reason: "stop".into(),
     })
 }
@@ -415,7 +425,10 @@ pub struct RecordingLlmHost {
 
 impl RecordingLlmHost {
     pub fn new(backend: Arc<dyn LlmHost>) -> Self {
-        RecordingLlmHost { backend, calls: Mutex::new(Vec::new()) }
+        RecordingLlmHost {
+            backend,
+            calls: Mutex::new(Vec::new()),
+        }
     }
 
     pub fn calls(&self) -> usize {
@@ -433,17 +446,15 @@ impl RecordingLlmHost {
 impl LlmHost for RecordingLlmHost {
     fn complete(&self, prompt: &str, opts: &LlmOptions) -> Result<String, HostError> {
         let response = self.backend.complete(prompt, opts)?;
-        self.calls.lock().push((prompt.to_string(), response.clone()));
+        self.calls
+            .lock()
+            .push((prompt.to_string(), response.clone()));
         Ok(response)
     }
 }
 
 impl ModelHost for RecordingLlmHost {
-    fn respond(
-        &self,
-        request: &ChatRequest,
-        _budget: &Budget,
-    ) -> Result<ChatResponse, HostError> {
+    fn respond(&self, request: &ChatRequest, _budget: &Budget) -> Result<ChatResponse, HostError> {
         // The recording is keyed the way replay looks it up: on the
         // conversation, not on the last message. A recording saved under
         // the bare prompt would miss the moment a conversation grows a
@@ -468,7 +479,11 @@ impl ModelHost for RecordingLlmHost {
                 tool_calls: Vec::new(),
                 tool_call_id: None,
             },
-            usage: Usage { input_tokens: 0, output_tokens: 0, cost_micros: None },
+            usage: Usage {
+                input_tokens: 0,
+                output_tokens: 0,
+                cost_micros: None,
+            },
             finish_reason: "stop".into(),
         })
     }
@@ -482,7 +497,10 @@ pub struct RecordingEmbedHost {
 
 impl RecordingEmbedHost {
     pub fn new(backend: Arc<dyn EmbedHost>) -> Self {
-        RecordingEmbedHost { backend, batches: Mutex::new(Vec::new()) }
+        RecordingEmbedHost {
+            backend,
+            batches: Mutex::new(Vec::new()),
+        }
     }
 
     pub fn batches(&self) -> usize {
@@ -546,10 +564,21 @@ pub fn embed_recording_text(batches: &[(Vec<String>, Vec<Vec<f64>>)]) -> String 
     let mut out =
         String::from(";; loom embedding recording v1 — [[\"t1\" ...] (v1 ...) ...] per batch\n");
     for (texts, vectors) in batches {
-        let texts: Vec<String> = texts.iter().map(|t| format!("\"{}\"", zio_escape(t))).collect();
+        let texts: Vec<String> = texts
+            .iter()
+            .map(|t| format!("\"{}\"", zio_escape(t)))
+            .collect();
         let rows: Vec<String> = vectors
             .iter()
-            .map(|row| format!("({})", row.iter().map(|f| format!("{f:?}")).collect::<Vec<_>>().join(" ")))
+            .map(|row| {
+                format!(
+                    "({})",
+                    row.iter()
+                        .map(|f| format!("{f:?}"))
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                )
+            })
             .collect();
         out.push_str(&format!("[[{}] {}]\n", texts.join(" "), rows.join(" ")));
     }
@@ -599,7 +628,10 @@ fn parse_datum(lexer: &mut Lexer<'_>) -> Result<Datum, HostError> {
         Some(Token::LParen) => parse_seq(lexer, Token::RParen).map(|v| Datum::List(v)),
         Some(Token::LBracket) => parse_seq(lexer, Token::RBracket).map(|v| Datum::Vect(v)),
         Some(other) => Err(unexpected(&other)),
-        None => Err(HostError::new(HostErrorKind::Protocol, "recording ended mid-entry")),
+        None => Err(HostError::new(
+            HostErrorKind::Protocol,
+            "recording ended mid-entry",
+        )),
     }
 }
 
@@ -607,7 +639,12 @@ fn parse_seq(lexer: &mut Lexer<'_>, close: Token) -> Result<Vec<Datum>, HostErro
     let mut items = Vec::new();
     loop {
         match lexer.peek_token()? {
-            None => return Err(HostError::new(HostErrorKind::Protocol, "unclosed sequence in recording")),
+            None => {
+                return Err(HostError::new(
+                    HostErrorKind::Protocol,
+                    "unclosed sequence in recording",
+                ));
+            }
             Some(tok) if tok == close => {
                 lexer.next_token()?;
                 return Ok(items);
@@ -627,16 +664,20 @@ fn unexpected(token: &Token) -> HostError {
 fn as_str(datum: &Datum, what: &str) -> Result<String, HostError> {
     match datum {
         Datum::Str(s) => Ok(s.clone()),
-        _ => Err(HostError::new(HostErrorKind::Protocol, format!("{what} must be a string"))),
+        _ => Err(HostError::new(
+            HostErrorKind::Protocol,
+            format!("{what} must be a string"),
+        )),
     }
 }
 
 fn as_str_vec(datum: &Datum, what: &str) -> Result<Vec<String>, HostError> {
     match datum {
-        Datum::Vect(items) | Datum::List(items) => {
-            items.iter().map(|d| as_str(d, what)).collect()
-        }
-        _ => Err(HostError::new(HostErrorKind::Protocol, format!("{what} must be a vector"))),
+        Datum::Vect(items) | Datum::List(items) => items.iter().map(|d| as_str(d, what)).collect(),
+        _ => Err(HostError::new(
+            HostErrorKind::Protocol,
+            format!("{what} must be a vector"),
+        )),
     }
 }
 
@@ -652,7 +693,10 @@ fn as_f64_vec(datum: &Datum, what: &str) -> Result<Vec<f64>, HostError> {
                 )),
             })
             .collect(),
-        _ => Err(HostError::new(HostErrorKind::Protocol, format!("{what} must be a sequence"))),
+        _ => Err(HostError::new(
+            HostErrorKind::Protocol,
+            format!("{what} must be a sequence"),
+        )),
     }
 }
 
@@ -692,7 +736,10 @@ struct Lexer<'a> {
 
 impl<'a> Lexer<'a> {
     fn new(src: &'a str) -> Self {
-        Lexer { src: src.as_bytes(), pos: 0 }
+        Lexer {
+            src: src.as_bytes(),
+            pos: 0,
+        }
     }
 
     fn skip_trivia(&mut self) {
@@ -737,19 +784,24 @@ impl<'a> Lexer<'a> {
                 let start = self.pos - 1;
                 while self.pos < self.src.len() {
                     let c = self.src[self.pos];
-                    if c.is_ascii_digit() || c == b'.' || c == b'e' || c == b'E'
-                        || ((c == b'-' || c == b'+') && (self.src[self.pos - 1] == b'e' || self.src[self.pos - 1] == b'E'))
+                    if c.is_ascii_digit()
+                        || c == b'.'
+                        || c == b'e'
+                        || c == b'E'
+                        || ((c == b'-' || c == b'+')
+                            && (self.src[self.pos - 1] == b'e' || self.src[self.pos - 1] == b'E'))
                     {
                         self.pos += 1;
                     } else {
                         break;
                     }
                 }
-                let text = std::str::from_utf8(&self.src[start..self.pos])
-                    .map_err(|_| HostError::new(HostErrorKind::Protocol, "invalid UTF-8 in recording"))?;
-                let value: f64 = text
-                    .parse()
-                    .map_err(|_| HostError::new(HostErrorKind::Protocol, format!("bad number {text:?}")))?;
+                let text = std::str::from_utf8(&self.src[start..self.pos]).map_err(|_| {
+                    HostError::new(HostErrorKind::Protocol, "invalid UTF-8 in recording")
+                })?;
+                let value: f64 = text.parse().map_err(|_| {
+                    HostError::new(HostErrorKind::Protocol, format!("bad number {text:?}"))
+                })?;
                 Token::Num(value)
             }
             other => {
@@ -773,8 +825,9 @@ impl<'a> Lexer<'a> {
             })?;
             match b {
                 b'"' => {
-                    let text = std::str::from_utf8(&self.src[start..self.pos])
-                        .map_err(|_| HostError::new(HostErrorKind::Protocol, "invalid UTF-8 in recording string"))?;
+                    let text = std::str::from_utf8(&self.src[start..self.pos]).map_err(|_| {
+                        HostError::new(HostErrorKind::Protocol, "invalid UTF-8 in recording string")
+                    })?;
                     self.pos += 1;
                     return Ok(Token::Str(unescape(text)?));
                 }

@@ -11,8 +11,7 @@ use std::time::Duration;
 
 use loom::teacher::http_teacher::HttpTeacherHost;
 use loom::teacher::{
-    ContentPart, Modality, OutputKind, TeacherCapability, TeacherHost, TeacherRequest,
-    UsageLicence,
+    ContentPart, Modality, OutputKind, TeacherCapability, TeacherHost, TeacherRequest, UsageLicence,
 };
 
 struct Service {
@@ -66,7 +65,11 @@ fn start(weights: &Path, python: &Path) -> Option<Service> {
 }
 
 fn repo_root() -> std::path::PathBuf {
-    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).ancestors().nth(4).unwrap().to_path_buf()
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .ancestors()
+        .nth(4)
+        .unwrap()
+        .to_path_buf()
 }
 
 #[test]
@@ -106,8 +109,13 @@ fn the_local_teacher_answers_a_real_query() {
         request_id: "e2e-1".to_string(),
         capability,
         parts: vec![
-            ContentPart::Reference { artifact: "sha256:img".into(), media_type: "image/png".into() },
-            ContentPart::Numbers { values: vec![-1.5, -0.4] },
+            ContentPart::Reference {
+                artifact: "sha256:img".into(),
+                media_type: "image/png".into(),
+            },
+            ContentPart::Numbers {
+                values: vec![-1.5, -0.4],
+            },
         ],
         licence: UsageLicence::TrainStudent,
         wants: vec![OutputKind::HardLabel],
@@ -115,9 +123,17 @@ fn the_local_teacher_answers_a_real_query() {
     };
 
     let response = host.query(&request).expect("local teacher must answer");
-    assert!(response.failure().is_ok(), "teacher reported a failure: {response:?}");
-    let label = response.hard_label.expect("a real trained teacher must give a label");
-    assert!(label == "clear" || label == "fault", "unexpected label {label}");
+    assert!(
+        response.failure().is_ok(),
+        "teacher reported a failure: {response:?}"
+    );
+    let label = response
+        .hard_label
+        .expect("a real trained teacher must give a label");
+    assert!(
+        label == "clear" || label == "fault",
+        "unexpected label {label}"
+    );
     assert!(
         response.model_version.is_some(),
         "a real teacher must report the model version it answered with"

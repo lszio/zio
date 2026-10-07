@@ -208,14 +208,10 @@ pub fn combine(spec: &EnsembleSpec, outputs: &[ExpertOutput]) -> Result<Ensemble
             // manufacture the agreement the rule exists to require.
             if !unavailable.is_empty() {
                 None
-            } else if let Some(first) = contributors[0].class {
-                if contributors.iter().all(|o| o.class == Some(first)) {
-                    Some(first)
-                } else {
-                    None
-                }
             } else {
-                None
+                contributors[0]
+                    .class
+                    .filter(|&first| contributors.iter().all(|o| o.class == Some(first)))
             }
         }
         EnsembleRule::Vote => {

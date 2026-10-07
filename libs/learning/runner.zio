@@ -1,0 +1,87 @@
+;; ── zio.learning.runner — stable model/runner API ───────────────
+;;
+;; The orchestration owner (apps/grove/orchestration) consumes this
+;; API. The runtime primitives (`learn--build`, `learn--train-step`,
+;; `learn--evaluate`, `learn--export`, `learn--import`) are
+;; implementation detail; this module is the published surface that
+;; the parent verifies once. New recipe families add new entries here
+;; — they don't grow the runtime.
+;;
+;; Surface (stable):
+;;   (learn--runner-build tensor config)        -> model
+;;   (learn--runner-train-step model request)   -> {:model :step :loss :metrics :consumed}
+;;   (learn--runner-evaluate model rows)        -> {:predictions :logits :accuracy}
+;;   (learn--runner-export model)               -> snapshot-map
+;;   (learn--runner-import tensor snapshot)     -> model
+;;   (learn--runner-rollout model env)          -> trajectory
+;;   (learn--runner-features row space)         -> feature-vector
+;;   (learn--runner-read-gvd1 path)             -> rows
+;;   (learn--runner-space-spec space)           -> {:width :encoder-id :space-version}
+;;   (learn--runner-space-list)                 -> vector of supported space ids
+;;   (learn--runner-recipe-list)                -> vector of supported recipe ids
+;;   (learn--runner-licence-check row)          -> row (refuses retracted/forbidden)
+;;
+;; Recipes (from recipes.zio) supported end-to-end with real gradients:
+;;   "supervised@1"        — cross-entropy on the student's argmax label
+;;   "hard-distill@1"      — cross-entropy on teacher argmax
+;;   "soft-distill@1"      — KL with temperature on teacher's softmax
+;;   "preference@1"        — pairwise logistic on (preferred, unpreferred)
+;;   "demonstration@1"     — masked CE on legal demonstrator actions
+;;   "self-supervised@1"   — masked reconstruction on the pixel stream
+;;   "environment-feedback@1" — REINFORCE on delayed returns per trajectory
+;;   "policy-gradient@1"   — REINFORCE with baseline on restricted lineworld
+;;
+;; Every recipe's loss is built on the supported tensor op set
+;; (cross-entropy, log-softmax, mul, sub, sum, mean, gather,
+;; logsigmoid, relu, linear, clamp, pow, div) and a backward step that
+;; drives Adam. The decoder weights of self-supervised are intentionally
+;; non-trainable (the representation moves; the projection is fixed).
+
+(load "libs/learning/runtime.zio")
+(load "libs/learning/learn/recipes.zio")
+
+(defn learn--runner-build [tensor config]
+  (learn--build tensor config))
+
+(defn learn--runner-train-step [model request]
+  (learn--train-step model request))
+
+(defn learn--runner-evaluate [model rows]
+  (learn--evaluate model rows))
+
+(defn learn--runner-export [model]
+  (learn--export model))
+
+(defn learn--runner-import [tensor snapshot]
+  (learn--import tensor snapshot))
+
+(defn learn--runner-rollout [model env]
+  (learn--rollout model env false))
+
+(defn learn--runner-features [row space]
+  (learn--features row space))
+
+(defn learn--runner-read-gvd1 [path]
+  (learn--read-gvd1 path))
+
+(defn learn--runner-space-spec [space]
+  (learn--space-spec space))
+
+(defn learn--runner-space-list []
+  (keys learn--space-specs))
+
+(defn learn--runner-recipe-list []
+  (map (fn [r] (get r :id nil)) recipes--all))
+
+(defn learn--runner-licence-check [row]
+  (learn--source-allowed row))
+
+(defn learn--runner-spaces-equal? [a b]
+  (learn--spaces-equal? a b))
+
+(export learn--runner-build learn--runner-train-step learn--runner-evaluate
+         learn--runner-export learn--runner-import learn--runner-rollout
+         learn--runner-features learn--runner-read-gvd1
+         learn--runner-space-spec learn--runner-space-list
+         learn--runner-recipe-list learn--runner-licence-check
+         learn--runner-spaces-equal?)

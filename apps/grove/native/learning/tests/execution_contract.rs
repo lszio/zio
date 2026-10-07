@@ -13,7 +13,7 @@ use std::time::Duration;
 
 use grove::contracts::{Actor, ActorRole};
 use grove::execution::{
-    execute, Capability, ExecutionRequest, ExecutionLimits, FrozenSource, GrantProfile,
+    Capability, ExecutionLimits, ExecutionRequest, FrozenSource, GrantProfile, execute,
 };
 use grove::store::Store;
 
@@ -30,7 +30,11 @@ fn store(label: &str) -> (Store, PathBuf) {
 /// limited to the frozen dependency set.
 fn candidate_grant(frozen: &[FrozenSource]) -> GrantProfile {
     GrantProfile {
-        capabilities: vec![Capability::Arithmetic, Capability::Collections, Capability::Output],
+        capabilities: vec![
+            Capability::Arithmetic,
+            Capability::Collections,
+            Capability::Output,
+        ],
         frozen: frozen.to_vec(),
         allowed_dependencies: frozen.iter().map(|f| f.module.clone()).collect(),
         allow_dynamic_eval: false,
@@ -60,10 +64,11 @@ fn dynamic_eval_is_refused_not_merely_unreached() {
     let grant = candidate_grant(&[]);
     // The call is real; only the permission is missing. If a gate were
     // missing this would evaluate and print.
-    let outcome = execute(&store, &Actor::new("runner", ActorRole::Operator), request(
-        r#"(eval (read-string "(println \"escaped\")"))"#,
-        &grant,
-    ))
+    let outcome = execute(
+        &store,
+        &Actor::new("runner", ActorRole::Operator),
+        request(r#"(eval (read-string "(println \"escaped\")"))"#, &grant),
+    )
     .expect("run");
     assert_eq!(
         outcome.status,
@@ -249,12 +254,7 @@ fn a_frozen_dependency_may_be_required() {
         &grant,
     );
     req.inputs = vec![lib_dir.clone()];
-    let outcome = execute(
-        &store,
-        &Actor::new("runner", ActorRole::Operator),
-        req,
-    )
-    .expect("run");
+    let outcome = execute(&store, &Actor::new("runner", ActorRole::Operator), req).expect("run");
     assert_eq!(
         outcome.status,
         grove::execution::ExecutionStatus::Completed,
@@ -282,11 +282,12 @@ fn the_trace_survives_into_the_event_log() {
     // What ran is recorded, bound to the run the host named. Read from
     // the start of the log: `read_events(store, run, 0)` is *exclusive*
     // of sequence 0, so it would quietly skip the first event.
-    let events =
-        grove::events::read_events_from_start(&store, "run-1").expect("read events");
+    let events = grove::events::read_events_from_start(&store, "run-1").expect("read events");
     assert!(!events.is_empty(), "an executed program leaves a trace");
     assert!(
-        events.iter().any(|e| e.run_id == "run-1" && e.attempt_id == "attempt-1"),
+        events
+            .iter()
+            .any(|e| e.run_id == "run-1" && e.attempt_id == "attempt-1"),
         "every event must carry the host's run identity"
     );
     assert!(

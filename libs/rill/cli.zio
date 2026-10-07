@@ -1,0 +1,180 @@
+;; Small data-driven command parser. Spec keys: :name, :summary,
+;; :options, :commands (string-key map), :command-order, :positionals.
+;; Option {:name "quota" :key :quota :short "q" :type :integer
+;;         :required true :default 100 :min 0 :choices [...] :help "..."}.
+;; Global options compose with selected command options; command options
+;; override declarations with the same name. Repeated flags are rejected.
+;; Supports --name value, --name=value, -short, --, -h/--help; no implicit
+;; abbreviations, permissive unknown flags or parser dependency.
+
+(defn rill--has [m key]
+  (> (count (filter (fn [k] (= k key)) (keys m))) 0))
+
+(defn rill--options [root selected]
+  (reduce (fn [out opt]
+            (vector-conj (apply vector (filter (fn [old] (not (= (get old :name nil) (get opt :name nil)))) out)) opt))
+          (get root :options []) (if (nil? selected) [] (get selected :options []))))
+
+(defn rill--option [options flag]
+  (let* [matches (filter (fn [opt]
+                           (if (= flag (str "--" (get opt :name nil))) true
+                             (if (nil? (get opt :short nil)) false
+                               (= flag (str "-" (get opt :short nil)))))) options)]
+    (if (= (count matches) 1) (get matches 0)
+      (if (= (count matches) 0) (error (str "invalid-input: unknown option " flag))
+        (error (str "invalid-input: ambiguous option " flag))))))
+
+(defn rill--value [option raw]
+  (let* [kind (get option :type :string)
+         value (cond
+                 ((= kind :flag) true)
+                 ((= kind :string) raw)
+                 ((= kind :integer)
+                  (let* [n (try (json-parse raw)
+                             (catch any (error (str "invalid-input: --" (get option :name) " requires an integer"))))]
+                    (if (= (type n) :integer) n
+                      (error (str "invalid-input: --" (get option :name) " requires an integer")))))
+                 (else (error "invalid-input: unsupported option type")))]
+    (if (= kind :integer)
+      (do (if (nil? (get option :min nil)) true
+            (if (< value (get option :min nil)) (error (str "invalid-input: --" (get option :name) " is below minimum")) true))
+          (if (nil? (get option :max nil)) true
+            (if (> value (get option :max nil)) (error (str "invalid-input: --" (get option :name) " is above maximum")) true))) true)
+    (if (nil? (get option :choices nil)) true
+      (if (= (count (filter (fn [choice] (= value choice)) (get option :choices nil))) 0)
+        (error (str "invalid-input: unsupported --" (get option :name) " value " value)) true))
+    value))
+
+(defn rill-parse [spec argv]
+  (loop [i 0 command nil selected nil values {} args [] help false positional false]
+    (if (= i (count argv))
+      (let* [options (rill--options spec selected)
+             with-defaults (reduce (fn [acc opt]
+                                     (let* [key (get opt :key (keyword (get opt :name nil)))]
+                                       (if (rill--has acc key) acc
+                                         (if (rill--has opt :default) (put acc key (get opt :default)) acc))))
+                                   values options)]
+        (if help true
+          (do (if (nil? command)
+                (if (> (count (keys (get spec :commands {}))) 0) (error "invalid-input: a command is required") true) true)
+              (map (fn [opt]
+                     (if (get opt :required false)
+                       (if (rill--has with-defaults (get opt :key (keyword (get opt :name nil)))) true
+                         (error (str "invalid-input: --" (get opt :name nil) " is required"))) true)) options)
+              (if (> (count args) 0)
+                (if (get (if (nil? selected) spec selected) :positionals false) true
+                  (error "invalid-input: unexpected positional arguments")) true)))
+        {:command command :options with-defaults :args args :help help
+         :spec spec :command-spec selected})
+      (let* [token (get argv i)]
+        (if (string? token) true (error "invalid-input: argv entries must be strings"))
+        (cond
+          (positional (recur (+ i 1) command selected values (vector-conj args token) help true))
+          ((= token "--") (recur (+ i 1) command selected values args help true))
+          ((if (= token "--help") true (= token "-h"))
+           (recur (+ i 1) command selected values args true false))
+          ((str-starts-with? token "-")
+           (let* [parts (str-split "=" token)
+                  flag (get parts 0)
+                  opt (rill--option (rill--options spec selected) flag)
+                  key (get opt :key (keyword (get opt :name nil)))
+                  is-flag (= (get opt :type :string) :flag)
+                  inline (> (count parts) 1)
+                  raw (if inline (rill--join "=" (slice parts 1 (count parts))) (get argv (+ i 1)))]
+             (if (rill--has values key) (error (str "invalid-input: repeated option " flag)) true)
+             (if is-flag
+               (if inline (error (str "invalid-input: flag " flag " does not take a value")) true)
+               (if (nil? raw) (error (str "invalid-input: missing value for " flag))
+                 (if (str-starts-with? raw "--") (error (str "invalid-input: missing value for " flag)) true)))
+             (recur (+ i (if is-flag 1 (if inline 1 2))) command selected
+                    (put values key (rill--value opt raw)) args help false)))
+          ((nil? command)
+           (let* [commands (get spec :commands {})]
+             (if (> (count (keys commands)) 0)
+               (if (rill--has commands token)
+                 (recur (+ i 1) token (get commands token) values args help false)
+                 (error (str "invalid-input: unknown command " token)))
+               (recur (+ i 1) command selected values (vector-conj args token) help false))))
+          (else (recur (+ i 1) command selected values (vector-conj args token) help false)))))))
+
+(defn rill--join [separator parts]
+  (apply str-join (cons separator (apply list parts))))
+
+(defn rill-help [spec command]
+  (let* [selected (if (nil? command) nil (get (get spec :commands {}) command))]
+    (if (nil? command) true (if (nil? selected) (error "invalid-input: unknown help command") true))
+    (str "Usage: " (get spec :name "program")
+         (if (nil? command) (if (> (count (keys (get spec :commands {}))) 0) " <command>" "") (str " " command))
+         " [options]\n" (get (if (nil? selected) spec selected) :summary "") "\n"
+         (if (nil? command)
+           (rill--join "" (map (fn [name] (str "  " name "  " (get (get (get spec :commands {}) name) :summary "") "\n"))
+                              (get spec :command-order (keys (get spec :commands {}))))) "")
+         "  -h, --help  Show help\n"
+         (rill--join "" (map (fn [opt]
+                              (str "  --" (get opt :name nil)
+                                   (if (= (get opt :type :string) :flag) "" " VALUE")
+                                   (if (get opt :required false) " (required)" "")
+                                   "  " (get opt :help "") "\n"))
+                            (rill--options spec selected))))))
+
+(defn rill-dispatch [parsed handlers]
+  (if (get parsed :help)
+    (rill-help (get parsed :spec) (get parsed :command))
+    (let* [handler (get handlers (get parsed :command))]
+      (if (nil? handler) (error "invalid-input: command has no dispatch handler")
+        (handler parsed)))))
+
+(defn rill-run [spec handlers]
+  (rill-dispatch (rill-parse spec (host/argv)) handlers))
+
+;; Real Grove command requirements, independent of its implementation.
+;; Publication has no --force/auto-approve switch. Unknown flags fail closed.
+(def rill-grove-options
+  [{:name "root" :key :root :required true :help "Store path"}
+   {:name "bind" :key :bind :help "HTTP bind address"}
+   {:name "case" :key :case :choices ["dual" "population" "modular"]}
+   {:name "device" :key :device :default "cpu"}
+   {:name "run" :key :run}
+   {:name "state" :key :state}
+   {:name "checkpoint" :key :checkpoint}
+   {:name "branch" :key :branch}
+   {:name "quota" :key :quota :type :integer :min 0}
+   {:name "protocol" :key :protocol}
+   {:name "snapshots" :key :snapshots}
+   {:name "snapshot" :key :snapshot}
+   {:name "workers" :key :workers :type :integer :min 1}
+   {:name "expected-version" :key :expected-version :type :integer :min 0 :max 4294967295}
+   {:name "task" :key :task}
+   {:name "logic" :key :logic}
+   {:name "provider-config" :key :provider-config}
+   {:name "max-turns" :key :max-turns :type :integer :min 1 :max 4294967295}
+   {:name "candidate" :key :candidate}
+   {:name "reason" :key :reason}])
+
+(defn rill--required [names]
+  (apply vector (map (fn [name]
+                       (put (get (filter (fn [opt] (= (get opt :name nil) name)) rill-grove-options) 0)
+                            :required true)) names)))
+
+(def rill-grove-spec
+  {:name "grove" :summary "Durable learning, inspection and explicit publisher decisions"
+   :options rill-grove-options
+   :command-order ["demo" "inspect" "checkpoint" "fork" "resume" "compare" "select" "approve" "decline" "run" "serve"]
+   :commands
+   {"demo" {:summary "Run dual, population or modular learning" :options (rill--required ["case"])}
+    "inspect" {:summary "Inspect immutable history"}
+    "checkpoint" {:summary "Pause from a worker state" :options (rill--required ["run" "state"])}
+    "fork" {:summary "Fork a checkpoint" :options (rill--required ["checkpoint" "branch"])}
+    "resume" {:summary "Resume into a new run" :options (rill--required ["checkpoint" "run"])}
+    "compare" {:summary "Evaluate snapshots under a frozen protocol" :options (rill--required ["protocol" "snapshots"])}
+    "select" {:summary "Advisory non-dominated selection" :options (rill--required ["protocol" "snapshots"])}
+    "approve" {:summary "Explicit publisher approval" :options (rill--required ["protocol" "snapshot"])}
+    "decline" {:summary "Explicit publisher decline" :options (rill--required ["snapshot"])}
+    "run" {:summary "Run a task through a model provider" :options (rill--required ["task" "provider-config"])}
+    "serve" {:summary "Serve the product HTTP surface"}}})
+
+;; A module owns its exports: a bare `defn` is private to it. Without
+;; this a consumer's `(require :libs.rill.cli :refer [rill-parse ...])`
+;; finds nothing, and the failure says "does not export" rather than
+;; naming the missing declaration.
+(export rill-parse rill-help rill-dispatch rill-run rill-grove-spec)

@@ -30,7 +30,9 @@ impl Store {
             )
             .map_err(crate::store::db_err)?;
         let rows = stmt
-            .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)))
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+            })
             .map_err(crate::store::db_err)?;
         let mut out = Vec::new();
         for row in rows {
@@ -86,9 +88,7 @@ impl Store {
     pub fn approval_log(&self) -> Result<Vec<serde_json::Value>> {
         let mut stmt = self
             .conn
-            .prepare(
-                "SELECT body FROM approvals ORDER BY created_at_ms DESC, id",
-            )
+            .prepare("SELECT body FROM approvals ORDER BY created_at_ms DESC, id")
             .map_err(crate::store::db_err)?;
         let rows = stmt
             .query_map([], |row| row.get::<_, String>(0))

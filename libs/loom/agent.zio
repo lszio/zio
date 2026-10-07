@@ -62,3 +62,5 @@
            :execution outcome}
           (recur (+ turn 1) (feedback-of outcome)))))))
 
+
+(export agent-run source-of feedback-of)

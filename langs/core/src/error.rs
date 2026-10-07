@@ -11,6 +11,49 @@ pub enum ReaderError {
     OddMapElements,
     #[error("Missing expression after quote")]
     MissingQuoteExpr,
+    #[error("Malformed string: {0}")]
+    MalformedString(String),
+    #[error("{error} at line {}, col {}", .span.line, .span.col)]
+    Located { error: Box<ReaderError>, span: Span },
+}
+
+impl ReaderError {
+    pub fn at(self, span: Span) -> Self {
+        if self.span().is_some() {
+            self
+        } else {
+            Self::Located {
+                error: Box::new(self),
+                span,
+            }
+        }
+    }
+
+    pub fn span(&self) -> Option<Span> {
+        match self {
+            Self::Located { span, .. } => Some(*span),
+            _ => None,
+        }
+    }
+
+    /// The underlying failure, with any location wrapper removed.
+    ///
+    /// A reader error carries where it happened; the category of what
+    /// happened is still the part a caller can act on. Returning the
+    /// wrapper as the answer would force every caller to unwrap it, and
+    /// matching on the located form instead would mean the category
+    /// cannot be compared at all.
+    pub fn root_cause(&self) -> ReaderError {
+        match self {
+            Self::Located { error, .. } => error.root_cause(),
+            other => other.clone(),
+        }
+    }
+
+    pub fn into_eval(self, name: &str) -> EvalError {
+        let span = self.span();
+        EvalError::custom(format!("parse error in {name}: {self}")).with_opt_span(span)
+    }
 }
 
 /// Source location context attached to evaluation errors.
@@ -110,27 +153,72 @@ impl std::fmt::Display for EvalError {
         use EvalError::*;
         match self {
             SymbolNotFound(s, ctx) => write!(f, "symbol not found: {s}{}", ctx.location()),
-            NotAFunction { value, span: ctx } => write!(f, "not a function: {value}{}", ctx.location()),
-            WrongArgCount { expected, got, span: ctx } => {
-                write!(f, "wrong argument count: expected {expected}, got {got}{}", ctx.location())
+            NotAFunction { value, span: ctx } => {
+                write!(f, "not a function: {value}{}", ctx.location())
             }
-            WrongArgCountMin { min, got, span: ctx } => {
-                write!(f, "wrong argument count: expected at least {min}, got {got}{}", ctx.location())
+            WrongArgCount {
+                expected,
+                got,
+                span: ctx,
+            } => {
+                write!(
+                    f,
+                    "wrong argument count: expected {expected}, got {got}{}",
+                    ctx.location()
+                )
             }
-            WrongArgCountRange { min, max, got, span: ctx } => {
-                write!(f, "wrong argument count: expected between {min} and {max}, got {got}{}", ctx.location())
+            WrongArgCountMin {
+                min,
+                got,
+                span: ctx,
+            } => {
+                write!(
+                    f,
+                    "wrong argument count: expected at least {min}, got {got}{}",
+                    ctx.location()
+                )
             }
-            IndexOutOfBounds { index, length, span: ctx } => {
-                write!(f, "index out of bounds: index {index} but length is {length}{}", ctx.location())
+            WrongArgCountRange {
+                min,
+                max,
+                got,
+                span: ctx,
+            } => {
+                write!(
+                    f,
+                    "wrong argument count: expected between {min} and {max}, got {got}{}",
+                    ctx.location()
+                )
             }
-            TypeError { expected, got, span: ctx } => {
-                write!(f, "type error: expected {expected}, got {got}{}", ctx.location())
+            IndexOutOfBounds {
+                index,
+                length,
+                span: ctx,
+            } => {
+                write!(
+                    f,
+                    "index out of bounds: index {index} but length is {length}{}",
+                    ctx.location()
+                )
+            }
+            TypeError {
+                expected,
+                got,
+                span: ctx,
+            } => {
+                write!(
+                    f,
+                    "type error: expected {expected}, got {got}{}",
+                    ctx.location()
+                )
             }
             DivisionByZero { span: ctx } => write!(f, "division by zero{}", ctx.location()),
             InvalidForm(msg, ctx) => write!(f, "invalid form: {msg}{}", ctx.location()),
             MacroError(msg, ctx) => write!(f, "macro error: {msg}{}", ctx.location()),
             RecurNotTail { span: ctx } => write!(f, "recur not in tail position{}", ctx.location()),
-            RecurWithoutLoop { span: ctx } => write!(f, "recur without loop frame{}", ctx.location()),
+            RecurWithoutLoop { span: ctx } => {
+                write!(f, "recur without loop frame{}", ctx.location())
+            }
             Custom(msg, ctx) => write!(f, "{msg}{}", ctx.location()),
         }
     }
@@ -240,11 +328,32 @@ impl EvalError {
         match self {
             Self::SymbolNotFound(s, _) => Self::SymbolNotFound(s, ctx),
             Self::NotAFunction { value, .. } => Self::NotAFunction { value, span: ctx },
-            Self::WrongArgCount { expected, got, .. } => Self::WrongArgCount { expected, got, span: ctx },
-            Self::WrongArgCountMin { min, got, .. } => Self::WrongArgCountMin { min, got, span: ctx },
-            Self::WrongArgCountRange { min, max, got, .. } => Self::WrongArgCountRange { min, max, got, span: ctx },
-            Self::IndexOutOfBounds { index, length, .. } => Self::IndexOutOfBounds { index, length, span: ctx },
-            Self::TypeError { expected, got, .. } => Self::TypeError { expected, got, span: ctx },
+            Self::WrongArgCount { expected, got, .. } => Self::WrongArgCount {
+                expected,
+                got,
+                span: ctx,
+            },
+            Self::WrongArgCountMin { min, got, .. } => Self::WrongArgCountMin {
+                min,
+                got,
+                span: ctx,
+            },
+            Self::WrongArgCountRange { min, max, got, .. } => Self::WrongArgCountRange {
+                min,
+                max,
+                got,
+                span: ctx,
+            },
+            Self::IndexOutOfBounds { index, length, .. } => Self::IndexOutOfBounds {
+                index,
+                length,
+                span: ctx,
+            },
+            Self::TypeError { expected, got, .. } => Self::TypeError {
+                expected,
+                got,
+                span: ctx,
+            },
             Self::DivisionByZero { .. } => Self::DivisionByZero { span: ctx },
             Self::InvalidForm(s, _) => Self::InvalidForm(s, ctx),
             Self::MacroError(s, _) => Self::MacroError(s, ctx),

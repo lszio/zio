@@ -13,7 +13,7 @@ use zio_core::context::EvalContext;
 use zio_core::error::EvalError;
 use zio_core::value::{NativeFn, Value};
 
-use crate::contracts::{digest_bytes, ArtifactRef, Error, ErrorKind, Result};
+use crate::contracts::{ArtifactRef, Error, ErrorKind, Result, digest_bytes};
 
 /// Digests as hex strings, so a manifest is greppable and a test can assert
 /// on it without decoding bytes.
@@ -34,8 +34,12 @@ struct PendingWrite {
 impl ArtifactStore {
     pub fn open(root: impl Into<PathBuf>) -> Result<Self> {
         let root = root.into();
-        fs::create_dir_all(root.join("objects").join("tmp"))
-            .map_err(|e| Error::new(ErrorKind::BackendFailed, format!("create artifact root: {e}")))?;
+        fs::create_dir_all(root.join("objects").join("tmp")).map_err(|e| {
+            Error::new(
+                ErrorKind::BackendFailed,
+                format!("create artifact root: {e}"),
+            )
+        })?;
         Ok(Self { root })
     }
 
@@ -74,15 +78,9 @@ impl ArtifactStore {
                 let Ok(digest) = ArtifactRef::parse_hex(hex) else {
                     continue; // a temp or foreign file is not a live object
                 };
-                let mtime = object
-                    .metadata()
-                    .and_then(|m| m.modified())
-                    .map_err(|e| {
-                        Error::new(
-                            ErrorKind::BackendFailed,
-                            format!("stat object {hex}: {e}"),
-                        )
-                    })?;
+                let mtime = object.metadata().and_then(|m| m.modified()).map_err(|e| {
+                    Error::new(ErrorKind::BackendFailed, format!("stat object {hex}: {e}"))
+                })?;
                 out.push((digest, mtime));
             }
         }
@@ -141,13 +139,22 @@ impl ArtifactStore {
         let artifact = digest_bytes(bytes);
         {
             let mut file = fs::File::create(&path).map_err(|e| {
-                Error::new(ErrorKind::BackendFailed, format!("create temp artifact: {e}"))
+                Error::new(
+                    ErrorKind::BackendFailed,
+                    format!("create temp artifact: {e}"),
+                )
             })?;
             file.write_all(bytes).map_err(|e| {
-                Error::new(ErrorKind::BackendFailed, format!("write temp artifact: {e}"))
+                Error::new(
+                    ErrorKind::BackendFailed,
+                    format!("write temp artifact: {e}"),
+                )
             })?;
             file.sync_all().map_err(|e| {
-                Error::new(ErrorKind::BackendFailed, format!("fsync temp artifact: {e}"))
+                Error::new(
+                    ErrorKind::BackendFailed,
+                    format!("fsync temp artifact: {e}"),
+                )
             })?;
         }
         Ok(PendingWrite { path, artifact })
@@ -220,54 +227,48 @@ pub fn install(ctx: &EvalContext, store: Option<std::sync::Arc<crate::store::Sto
     let put_store = store.clone();
     ctx.env.set(
         "grove-artifact-put".to_string(),
-        Value::NativeFunction(NativeFn::new(
-            "grove-artifact-put",
-            move |args, _engine| {
-                let store = put_store.as_ref().ok_or_else(|| {
-                    EvalError::custom(
-                        "capability-denied: grove store not installed (grove-artifact-put)",
-                    )
-                })?;
-                let text = match args.get(0) {
-                    Some(Value::String(s)) => s,
-                    _ => {
-                        return Err(EvalError::custom(
-                            "grove-artifact-put: expected a string body",
-                        ));
-                    }
-                };
-                let artifact = store.artifacts().put(text.as_bytes()).map_err(eval_err)?;
-                Ok(Value::String(artifact.to_hex()))
-            },
-        )),
+        Value::NativeFunction(NativeFn::new("grove-artifact-put", move |args, _engine| {
+            let store = put_store.as_ref().ok_or_else(|| {
+                EvalError::custom(
+                    "capability-denied: grove store not installed (grove-artifact-put)",
+                )
+            })?;
+            let text = match args.get(0) {
+                Some(Value::String(s)) => s,
+                _ => {
+                    return Err(EvalError::custom(
+                        "grove-artifact-put: expected a string body",
+                    ));
+                }
+            };
+            let artifact = store.artifacts().put(text.as_bytes()).map_err(eval_err)?;
+            Ok(Value::String(artifact.to_hex()))
+        })),
     );
 
     let get_store = store;
     ctx.env.set(
         "grove-artifact-get".to_string(),
-        Value::NativeFunction(NativeFn::new(
-            "grove-artifact-get",
-            move |args, _engine| {
-                let store = get_store.as_ref().ok_or_else(|| {
-                    EvalError::custom(
-                        "capability-denied: grove store not installed (grove-artifact-get)",
-                    )
-                })?;
-                let hex = match args.get(0) {
-                    Some(Value::String(s)) => s,
-                    _ => {
-                        return Err(EvalError::custom(
-                            "grove-artifact-get: expected a digest string",
-                        ));
-                    }
-                };
-                let artifact = ArtifactRef::parse_hex(hex).map_err(eval_err)?;
-                let bytes = store.artifacts().get(&artifact).map_err(eval_err)?;
-                let text = String::from_utf8(bytes)
-                    .map_err(|e| EvalError::custom(format!("grove-artifact-get: {e}")))?;
-                Ok(Value::String(text))
-            },
-        )),
+        Value::NativeFunction(NativeFn::new("grove-artifact-get", move |args, _engine| {
+            let store = get_store.as_ref().ok_or_else(|| {
+                EvalError::custom(
+                    "capability-denied: grove store not installed (grove-artifact-get)",
+                )
+            })?;
+            let hex = match args.get(0) {
+                Some(Value::String(s)) => s,
+                _ => {
+                    return Err(EvalError::custom(
+                        "grove-artifact-get: expected a digest string",
+                    ));
+                }
+            };
+            let artifact = ArtifactRef::parse_hex(hex).map_err(eval_err)?;
+            let bytes = store.artifacts().get(&artifact).map_err(eval_err)?;
+            let text = String::from_utf8(bytes)
+                .map_err(|e| EvalError::custom(format!("grove-artifact-get: {e}")))?;
+            Ok(Value::String(text))
+        })),
     );
 }
 

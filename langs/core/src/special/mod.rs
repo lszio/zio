@@ -6,12 +6,12 @@ use crate::context::EvalEngine;
 use crate::env::Env;
 use crate::error::EvalError;
 use crate::sexp::Sexp;
-use crate::value::{Value};
+use crate::value::Value;
 
 mod bindings;
 mod control;
-mod letloop;
 mod data;
+mod letloop;
 pub(crate) mod module_forms;
 pub(crate) mod zos_forms;
 /// Result of evaluating an expression, possibly a recur or tail call.
@@ -76,16 +76,15 @@ pub fn eval_special_form(
 // ── Shared Helpers ─────────────────────────────────────────────────
 
 /// Parse bindings like `[x 1 y 2]` into (names, init-exprs).
-pub fn parse_bindings(
-    binding_sexp: &Sexp,
-) -> Result<(Vector<String>, Vec<&Sexp>), EvalError> {
+pub fn parse_bindings(binding_sexp: &Sexp) -> Result<(Vector<String>, Vec<&Sexp>), EvalError> {
     let items = match binding_sexp {
         Sexp::Vector(v, _) => v.iter().collect::<Vec<_>>(),
         Sexp::List(l, _) => l.iter().collect::<Vec<_>>(),
         other => {
-            return Err(EvalError::invalid_form(
-                format!("bindings must be a vector or list, got {}", other.kind()),
-            ));
+            return Err(EvalError::invalid_form(format!(
+                "bindings must be a vector or list, got {}",
+                other.kind()
+            )));
         }
     };
     if items.len() % 2 != 0 {
@@ -100,9 +99,10 @@ pub fn parse_bindings(
         let name = match name_sexp {
             Sexp::Symbol(s, _) => s.clone(),
             other => {
-                return Err(EvalError::invalid_form(
-                    format!("binding name must be a symbol, got {}", other.kind()),
-                ));
+                return Err(EvalError::invalid_form(format!(
+                    "binding name must be a symbol, got {}",
+                    other.kind()
+                )));
             }
         };
         names.push_back(name);
@@ -112,16 +112,15 @@ pub fn parse_bindings(
 }
 
 /// Parse fn-style params: `[a b & rest]` or `[a b]`.
-pub fn parse_params(
-    param_sexp: &Sexp,
-) -> Result<(Vector<String>, Option<String>), EvalError> {
+pub fn parse_params(param_sexp: &Sexp) -> Result<(Vector<String>, Option<String>), EvalError> {
     let items = match param_sexp {
         Sexp::Vector(v, _) => v.clone(),
         Sexp::List(l, _) => l.clone(),
         other => {
-            return Err(EvalError::invalid_form(
-                format!("params must be a vector or list, got {}", other.kind()),
-            ));
+            return Err(EvalError::invalid_form(format!(
+                "params must be a vector or list, got {}",
+                other.kind()
+            )));
         }
     };
     let mut names = Vector::new();
@@ -139,9 +138,10 @@ pub fn parse_params(
                 names.push_back(s.clone());
             }
             other => {
-                return Err(EvalError::invalid_form(
-                    format!("param name must be a symbol, got {}", other.kind()),
-                ));
+                return Err(EvalError::invalid_form(format!(
+                    "param name must be a symbol, got {}",
+                    other.kind()
+                )));
             }
         }
     }
@@ -173,12 +173,15 @@ mod tests {
     use im::vector;
     #[test]
     fn test_parse_bindings() {
-        let sexp = Sexp::Vector(vector![
-            Sexp::Symbol("x".into(), None),
-            Sexp::Integer(1, None),
-            Sexp::Symbol("y".into(), None),
-            Sexp::Integer(2, None),
-        ], None);
+        let sexp = Sexp::Vector(
+            vector![
+                Sexp::Symbol("x".into(), None),
+                Sexp::Integer(1, None),
+                Sexp::Symbol("y".into(), None),
+                Sexp::Integer(2, None),
+            ],
+            None,
+        );
         let (names, inits) = parse_bindings(&sexp).unwrap();
         assert_eq!(names, vector!["x".to_string(), "y".to_string()]);
         assert_eq!(inits.len(), 2);
@@ -192,10 +195,13 @@ mod tests {
 
     #[test]
     fn test_parse_params() {
-        let sexp = Sexp::Vector(vector![
-            Sexp::Symbol("a".into(), None),
-            Sexp::Symbol("b".into(), None),
-        ], None);
+        let sexp = Sexp::Vector(
+            vector![
+                Sexp::Symbol("a".into(), None),
+                Sexp::Symbol("b".into(), None),
+            ],
+            None,
+        );
         let (names, rest) = parse_params(&sexp).unwrap();
         assert_eq!(names, vector!["a".to_string(), "b".to_string()]);
         assert!(rest.is_none());
@@ -203,11 +209,14 @@ mod tests {
 
     #[test]
     fn test_parse_params_variadic() {
-        let sexp = Sexp::Vector(vector![
-            Sexp::Symbol("a".into(), None),
-            Sexp::Symbol("&".into(), None),
-            Sexp::Symbol("rest".into(), None),
-        ], None);
+        let sexp = Sexp::Vector(
+            vector![
+                Sexp::Symbol("a".into(), None),
+                Sexp::Symbol("&".into(), None),
+                Sexp::Symbol("rest".into(), None),
+            ],
+            None,
+        );
         let (names, rest) = parse_params(&sexp).unwrap();
         assert_eq!(names, vector!["a".to_string()]);
         assert_eq!(rest, Some("rest".to_string()));
@@ -221,7 +230,9 @@ mod tests {
         let env = Arc::new(Env::new(None));
         let ctx = EvalContext::new(env.clone());
         let body = [Sexp::Integer(1, None), Sexp::Integer(2, None)];
-        let result = eval_last_body(&body, &env, false, &ctx).unwrap().into_value();
+        let result = eval_last_body(&body, &env, false, &ctx)
+            .unwrap()
+            .into_value();
         assert_eq!(result, Value::Integer(2));
     }
 }

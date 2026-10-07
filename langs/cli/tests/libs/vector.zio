@@ -5,7 +5,7 @@
 (defn check [label actual expected]
   (if (= actual expected)
     (println "PASS" label)
-    (println "FAIL" label "got:" actual "want:" expected)))
+    (error (str "FAIL " label " got: " actual " want: " expected))))
 
 (def v1 {:memory/id "v-1" :memory/encoder "bge-small"
          :memory/space-version 2 :memory/vector [10 0 0]})
@@ -19,7 +19,14 @@
 (check "space-ok" (vector--check-space records 2) true)
 (check "space-mismatch-refused" (string? (vector--check-space records 3)) true)
 (check "space-mismatch-mentions-version"
-       (str-contains? (vector--check-space records 3) "3") true)
+       ;; 42 appears nowhere else in the fixtures, so a split on it has
+       ;; two parts exactly when the refusal names the version.
+       (if (string? (vector--check-space records 42))
+         (let [refusal (vector--check-space records 42)]
+           (if (= (count (str-split "42" refusal)) 2)
+             true (error "FAIL refusal does not mention the space version")))
+         (error "FAIL expected a refusal string"))
+       true)
 (check "space-empty-index-ok" (vector--check-space [] 9) true)
 
 ;; encoder mismatch is equally refused
@@ -27,11 +34,19 @@
 (check "encoder-mismatch-refused" (string? (vector--check-encoder records "gte-base")) true)
 
 ;; ── similarity is integer basis points ──────────────────────────
-(check "cosine-identical" (vector--cosine-bp [10 0 0] [20 0 0]) 1000)
+(check "cosine-identical" (vector--cosine-bp [10 0 0] [20 0 0]) 10000)
 (check "cosine-orthogonal" (vector--cosine-bp [10 0 0] [0 10 0]) 0)
 (check "cosine-zero-vector" (vector--cosine-bp [0 0 0] [0 10 0]) 0)
-(check "threshold-passes" (vector--threshold-bp 1000 900) true)
-(check "threshold-fails" (vector--threshold-bp 400 900) false)
+(check "cosine-opposed" (vector--cosine-bp [3.0 4.0] [-3.0 -4.0]) -10000)
+(check "cosine-non-axis-collinear" (vector--cosine-bp [1.0 1.0] [2.0 2.0]) 10000)
+(check "cosine-rounding" (vector--cosine-bp [1 0] [1 1]) 7071)
+(check "cosine-tiny-finite" (vector--cosine-bp [1e-200 2e-200] [2e-200 4e-200]) 10000)
+(check "cosine-large-finite" (vector--cosine-bp [1e200 2e200] [2e200 4e200]) 10000)
+(check "shape-refused" (try (vector--cosine-bp [1 2] [1]) false (catch any true)) true)
+(check "nonnumeric-refused" (try (vector--cosine-bp [1 "x"] [1 2]) false (catch any true)) true)
+(check "nonfinite-refused" (try (vector--cosine-bp [(* 1e308 1e308)] [1]) false (catch any true)) true)
+(check "threshold-passes" (vector--threshold-bp 10000 9000) true)
+(check "threshold-fails" (vector--threshold-bp 4000 9000) false)
 
 ;; ── the semantic query: a real result, and real refusals ────────
 ;; the query points straight at v-3, so the nearest is not a tie
@@ -49,6 +64,8 @@
 ;; a query with a different encoder is refused too
 (def q2 {:memory/encoder "gte-base" :memory/space-version 2 :memory/vector [1 0 0]})
 (check "query-encoder-refused" (string? (vector--nearest records q2 2)) true)
+(check "query-claimed-space-refused"
+       (string? (vector--nearest records (put q :memory/space-version 9) 2)) true)
 
 ;; ── changing the space invalidates, or migrates explicitly ─────
 (def migrated (vector--migrate v1 {:version 3 :encoder "bge-large"}

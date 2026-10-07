@@ -9,8 +9,8 @@ use std::sync::Arc;
 
 use grove::contracts::{Actor, ActorRole, ErrorKind, SCHEMA_VERSION};
 use grove::events::{
-    append_events, read_events, read_events_from_start, EventLog, EventSourceStub, ExecutionEvent,
-    MAX_TRACE_BYTES,
+    EventLog, EventSourceStub, ExecutionEvent, MAX_TRACE_BYTES, append_events, read_events,
+    read_events_from_start,
 };
 use grove::store::Store;
 
@@ -47,7 +47,9 @@ fn event(run: &str, kind: &str, detail: &str, seq: u64) -> ExecutionEvent {
 #[test]
 fn events_are_read_in_sequence_from_a_cursor() {
     let store = store("cursor");
-    let events: Vec<ExecutionEvent> = (0..5).map(|i| event("run-1", "call", &format!("f{i}"), i)).collect();
+    let events: Vec<ExecutionEvent> = (0..5)
+        .map(|i| event("run-1", "call", &format!("f{i}"), i))
+        .collect();
     append_events(&store, &recorder(), &events).expect("append");
 
     // A cursor is exclusive, so the whole log is "before the first
@@ -80,7 +82,11 @@ fn events_are_read_in_sequence_from_a_cursor() {
     let last = read_events(&store, "run-1", 3).expect("read last");
     assert_eq!(last.len(), 1);
     assert_eq!(last[0].sequence, 4);
-    assert!(read_events(&store, "run-1", 99).expect("past the end").is_empty());
+    assert!(
+        read_events(&store, "run-1", 99)
+            .expect("past the end")
+            .is_empty()
+    );
 }
 
 #[test]
@@ -90,7 +96,10 @@ fn a_second_append_continues_the_sequence_rather_than_restarting_it() {
     append_events(&store, &recorder(), &[event("run-1", "call", "b", 1)]).expect("second");
     let all = read_events_from_start(&store, "run-1").expect("read");
     assert_eq!(all.len(), 2);
-    assert_eq!(all[1].detail, "b", "the second append must not be lost or reordered");
+    assert_eq!(
+        all[1].detail, "b",
+        "the second append must not be lost or reordered"
+    );
 }
 
 // ── durability ────────────────────────────────────────────────────
@@ -101,10 +110,14 @@ fn events_survive_reopening_the_store() {
     let _ = std::fs::remove_dir_all(&root);
     {
         let store = Store::open(&root).expect("open");
-        append_events(&store, &recorder(), &[
-            event("run-1", "branch", "then", 0),
-            event("run-1", "error", "boom", 1),
-        ])
+        append_events(
+            &store,
+            &recorder(),
+            &[
+                event("run-1", "branch", "then", 0),
+                event("run-1", "error", "boom", 1),
+            ],
+        )
         .expect("append");
     }
     // A second process would see exactly this.
@@ -130,7 +143,11 @@ fn a_reader_cannot_append_events() {
     let err = append_events(&store, &reader, &[event("run-1", "call", "x", 0)])
         .expect_err("only the runner writes the log");
     assert_eq!(err.kind, ErrorKind::CapabilityDenied);
-    assert!(read_events_from_start(&store, "run-1").expect("read").is_empty());
+    assert!(
+        read_events_from_start(&store, "run-1")
+            .expect("read")
+            .is_empty()
+    );
 }
 
 #[test]
@@ -140,8 +157,12 @@ fn a_log_is_append_only() {
     // Re-appending the same sequence is refused rather than silently
     // overwriting: two claims about what happened at one point in a run
     // is a contradiction, not an update.
-    let err = append_events(&store, &recorder(), &[event("run-1", "call", "rewritten", 0)])
-        .expect_err("a sequence number may be written once");
+    let err = append_events(
+        &store,
+        &recorder(),
+        &[event("run-1", "call", "rewritten", 0)],
+    )
+    .expect_err("a sequence number may be written once");
     assert_eq!(err.kind, ErrorKind::Conflict);
     let all = read_events_from_start(&store, "run-1").expect("read");
     assert_eq!(all.len(), 1, "the original event must survive the attempt");
@@ -154,14 +175,23 @@ fn a_gap_is_fine_but_a_reused_number_is_not() {
     // A gap is legal: the log is ordered, not dense. A step that was
     // never observed leaves a hole, and inventing an event to fill it
     // would be a fabrication.
-    append_events(&store, &recorder(), &[event("run-1", "call", "a", 0), event("run-1", "call", "c", 2)])
-        .expect("a gap is not a conflict");
+    append_events(
+        &store,
+        &recorder(),
+        &[
+            event("run-1", "call", "a", 0),
+            event("run-1", "call", "c", 2),
+        ],
+    )
+    .expect("a gap is not a conflict");
     append_events(&store, &recorder(), &[event("run-1", "call", "b", 1)])
         .expect("filling the gap later is still an append, not a rewrite");
 
     let all = read_events_from_start(&store, "run-1").expect("read");
     assert_eq!(
-        all.iter().map(|e| (e.sequence, e.detail.as_str())).collect::<Vec<_>>(),
+        all.iter()
+            .map(|e| (e.sequence, e.detail.as_str()))
+            .collect::<Vec<_>>(),
         vec![(0, "a"), (1, "b"), (2, "c")],
         "the log reads in sequence order whatever order it was written"
     );
@@ -188,18 +218,26 @@ fn an_oversized_trace_is_refused_rather_than_truncated_silently() {
         "the error must name the cap: {err}"
     );
     // Nothing partial was written.
-    assert!(read_events_from_start(&store, "run-1").expect("read").is_empty());
+    assert!(
+        read_events_from_start(&store, "run-1")
+            .expect("read")
+            .is_empty()
+    );
 }
 
 #[test]
 fn a_batch_is_all_or_nothing() {
     let store = store("atomic");
-    let mut batch: Vec<ExecutionEvent> = (0..3).map(|i| event("run-1", "call", &format!("e{i}"), i)).collect();
+    let mut batch: Vec<ExecutionEvent> = (0..3)
+        .map(|i| event("run-1", "call", &format!("e{i}"), i))
+        .collect();
     batch[2].detail = "x".repeat(MAX_TRACE_BYTES + 1);
     let err = append_events(&store, &recorder(), &batch).expect_err("the batch is refused");
     assert!(err.to_string().contains("cap") || err.to_string().contains("bytes"));
     assert!(
-        read_events_from_start(&store, "run-1").expect("read").is_empty(),
+        read_events_from_start(&store, "run-1")
+            .expect("read")
+            .is_empty(),
         "a refused batch must leave nothing behind: a partial trace is a lie about coverage"
     );
 }
@@ -246,9 +284,15 @@ fn a_real_program_produces_a_trace_the_store_can_serve() {
     assert!(kinds.contains(&"call"), "the call to choose: {kinds:?}");
 
     // The branch event names the arm that ran, and points at the source.
-    let branch = served.iter().find(|e| e.kind.as_str() == "branch").expect("a branch");
+    let branch = served
+        .iter()
+        .find(|e| e.kind.as_str() == "branch")
+        .expect("a branch");
     assert_eq!(branch.detail, "then", "the taken arm is named");
-    let where_ = branch.source.as_ref().expect("the event knows where it happened");
+    let where_ = branch
+        .source
+        .as_ref()
+        .expect("the event knows where it happened");
     assert!(where_.line >= 1, "the event knows where it happened");
 
     // And no event claims the arm that did not run.
@@ -259,7 +303,11 @@ fn a_real_program_produces_a_trace_the_store_can_serve() {
 
     // The cursor serves the tail of the same run.
     let last = served.last().expect("events exist").sequence;
-    assert!(read_events(&store, "run-real", last).expect("tail").is_empty());
+    assert!(
+        read_events(&store, "run-real", last)
+            .expect("tail")
+            .is_empty()
+    );
 }
 
 // ── the log is not a second fact store ────────────────────────────
@@ -267,8 +315,12 @@ fn a_real_program_produces_a_trace_the_store_can_serve() {
 #[test]
 fn events_carry_no_authority_they_never_had() {
     let store = store("no_authority");
-    append_events(&store, &recorder(), &[event("run-1", "call", "approve candidate", 0)])
-        .expect("append");
+    append_events(
+        &store,
+        &recorder(),
+        &[event("run-1", "call", "approve candidate", 0)],
+    )
+    .expect("append");
     let all = read_events_from_start(&store, "run-1").expect("read");
     // An event saying "approve" is a *record that a call named approve
     // happened*. It is not an approval: publishing still goes through
