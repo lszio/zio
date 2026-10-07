@@ -36,10 +36,8 @@ const state = {
 
 const $ = (sel) => {
   if (!sel || typeof sel !== 'string') return null;
-  const el = sel.startsWith('#') ? document.getElementById(sel.slice(1))
-    : sel.startsWith('.') ? document.querySelector(sel)
-    : document.querySelector(sel);
-  return el || null;
+  if (sel.startsWith('#') && !/\s/.test(sel)) return document.getElementById(sel.slice(1));
+  return document.querySelector(sel);
 };
 
 const setText = (id, t, kind) => {

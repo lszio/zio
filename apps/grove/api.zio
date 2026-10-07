@@ -22,12 +22,12 @@
   "GROVE_TOKEN_OPERATOR" "operator"
   "GROVE_TOKEN_PUBLISHER" "publisher"})
 (defn api--load-tokens []
-  (reduce (fn [out entry]
-            (let [var (get entry 0) role (get entry 1)
+  (reduce (fn [out var]
+            (let [role (get api--env-role var nil)
                   tok (host/getenv var)]
-              (if (and tok (> (count tok) 0))
+              (if (and role tok (> (count tok) 0))
                 (assoc out tok role) out)))
-          {} (vec api--env-role)))
+          {} (keys api--env-role)))
 
 ;; ---------- HTTP envelope helpers ----------
 (defn api--status [class] (get {
@@ -40,36 +40,26 @@
   "backend-failed" 502 "protocol-violation" 400
 } class 500))
 
-(defn api--reply [request status body]
-  (host/http-reply request
-    (api--status status)
-    {"content-type" "application/json"}
-    (host/bytes (json-stringify body))))
+(defn api--reply [request status body] (host/http-reply (get request :listener) (get request :id) {:status (api--status status) :headers {"content-type" "application/json"} :body (json-stringify body)}))
 
 (defn api--ok [request body] (api--reply request "ok" body))
 (defn api--created [request body] (api--reply request "created" body))
 (defn api--accepted [request body] (api--reply request "accepted" body))
-(defn api--no-content [request] (host/http-reply request 204 {} (host/bytes "")))
+(defn api--no-content [request] (host/http-reply (get request :listener) (get request :id) {:status 204 :headers {} :body ""}))
 
 (defn api--error [request class detail extra]
-  (let [payload (merge {"class" class "detail" detail} (if extra extra {}))]
+  (let [payload (reduce (fn [out key] (assoc out key (get extra key)))
+                        {"class" class "detail" detail}
+                        (if (map? extra) (keys extra) []))]
     (api--reply request class payload)))
 
 ;; ---------- Auth ----------
 (defn api--bearer [headers]
-  (let [auth (get headers "authorization" "")]
-    (if (str-starts-with? auth "Bearer ")
-      (slice auth 7 (count auth))
+  (let [parts (str-split " " (get headers "authorization" ""))]
+    (if (and (= (count parts) 2) (= (get parts 0 "") "Bearer"))
+      (get parts 1 nil)
       nil)))
 
-(defn api--role-for [tokens token]
-  (get tokens token nil))
-
-(defn api--principal [tokens request]
-  (let* [token (api--bearer (get request :headers {}))
-         role (if token (api--role-for tokens token) nil)]
-    (if (and token role) {:id (str "token:" (slice token 0 12)) :role role}
-      (api--error request "unauthorized" "missing or unknown bearer token" nil))))
 
 ;; ---------- Idempotency ----------
 (defn api--operation-id [request]
@@ -89,7 +79,7 @@
 
 ;; ---------- Body parsing ----------
 (defn api--parse-body [request]
-  (let [raw (host/text (get request :body_bytes (host/bytes "{}")))]
+  (let [raw (host/bytes-utf8 (get request :body_bytes (host/bytes "{}")))]
     (if (= raw "") {} (codec--normalize (json-parse raw)))))
 
 ;; ---------- Path / query parsing ----------
@@ -103,6 +93,67 @@
 (defn api--int [v default]
   (let [n (try (json-parse (str v)) (catch any nil))]
     (if (and n (= (type n) :integer)) n default)))
+
+(defn api--hex-value [byte]
+  (get {"0" 0 "1" 1 "2" 2 "3" 3 "4" 4 "5" 5 "6" 6 "7" 7
+        "8" 8 "9" 9 "a" 10 "b" 11 "c" 12 "d" 13 "e" 14 "f" 15
+        "A" 10 "B" 11 "C" 12 "D" 13 "E" 14 "F" 15}
+       (host/bytes-utf8 byte) nil))
+
+(defn api--url-decode [text plus-as-space]
+  (try
+    (let* [source (host/bytes text)
+           length (host/byte-length source)
+           chunks (loop [offset 0 out []]
+                    (if (= offset length) out
+                      (let* [unit (host/byte-slice source offset 1)
+                             char (host/bytes-utf8 unit)]
+                        (cond
+                          ((= char "+") (recur (+ offset 1) (conj out (host/bytes (if plus-as-space " " "+")))))
+                          ((= char "%")
+                           (if (>= (+ offset 2) length) nil
+                             (let* [high (api--hex-value (host/byte-slice source (+ offset 1) 1))
+                                    low (api--hex-value (host/byte-slice source (+ offset 2) 1))]
+                               (if (and high low)
+                                 (recur (+ offset 3) (conj out (host/bytes [(+ (* high 16) low)])))
+                                 nil))))
+                          (true (recur (+ offset 1) (conj out unit)))))))]
+      (if chunks (host/bytes-utf8 (host/byte-concat chunks)) nil))
+    (catch any nil)))
+
+(defn api--query-map [raw]
+  (try
+    (reduce (fn [out pair]
+              (let* [parts (str-split "=" pair)
+                     raw-key (get parts 0 "")
+                     raw-value (if (> (count parts) 1) (reduce (fn [out piece] (str out "=" piece)) (get parts 1 "") (slice parts 2 (count parts))) "")
+                     key (api--url-decode raw-key true)
+                     value (api--url-decode raw-value true)]
+                (if (= raw-key "") out
+                  (if (and key value)
+                    (assoc out (keyword key) value)
+                    (grove--raise "bad-request" "invalid URL encoding")))))
+            {} (if (= raw "") [] (str-split "&" raw)))
+    (catch any nil)))
+
+(defn api--match-path [pattern path]
+  (let* [expected (str-split "/" pattern)
+         actual (str-split "/" path)
+         length (count expected)]
+    (if (not (= length (count actual))) nil
+      (loop [index 0 params {}]
+        (if (= index length) params
+          (let* [part (get expected index)
+                 value (get actual index)
+                 dynamic (and (str-starts-with? part "{") (str-ends-with? part "}"))]
+            (if dynamic
+              (let* [decoded (api--url-decode value false)
+                     name (get (str-split "}" (get (str-split "{" part) 1 "")) 0 "")]
+                (if (or (nil? decoded) (= decoded "")) nil
+                  (recur (+ index 1) (assoc params (keyword name) decoded))))
+              (if (= part value)
+                (recur (+ index 1) params)
+                nil))))))))
 
 ;; ---------- Public surface helpers ----------
 (defn api--list-runs [store]
@@ -140,18 +191,19 @@
                   (run [after run limit])
                   (kind [after kind limit])
                   (true [after limit]))
-         rows (store--query store (str "SELECT sequence,run_id,attempt_id,kind,detail,source,at_ms FROM events " clause) params)
+         rows (store--query store (str "SELECT sequence,run_id,attempt AS attempt_id,kind,detail,source,at_ms FROM execution_events " clause) params)
          cursor (if (empty? rows) after (get (last rows) :sequence after))]
     {:events rows :cursor cursor :has_more (= (count rows) limit)}))
 
 ;; ---------- Route handlers (one per path, each takes request + env) ----------
 (defn api--handle-health [request]
-  (let [store (get request :store)]
+  (let* [store (get request :store)
+         owner (coordinator--owner store)]
     (api--ok request
       {:status "ok"
        :schema 1
-       :owner_epoch (grove--get-key (coordinator--owner store) :epoch 0)
-       :owner_pid (grove--get-key (coordinator--owner store) :pid 0)
+       :owner_epoch (if owner (grove--get-key owner :epoch 0) 0)
+       :owner_pid (if owner (grove--get-key owner :pid 0) 0)
        :store_root (get store :root "")})))
 
 (defn api--handle-list-runs [request]
@@ -236,12 +288,27 @@
   (let* [store (get request :store)
          _ (grove--authorize store "reader")
          q (get request :query {})
+         active (store--active-publication store)
          snap (get q :snapshot nil)
-         digest (if snap snap (grove--get-key (store--active-publication store) :snapshot ""))
+         digest (if snap snap (if active (grove--get-key active :snapshot "") ""))
          modules (if (= digest "") []
                   (let [manifest (store--load-manifest store digest)]
-                    (get manifest :modules [])))]
-    (api--ok request {:modules modules :snapshot digest :snapshot_schema (get (store--active-publication store) :version 1)})))
+                    (get manifest :modules [])))
+         schema (if active (grove--get-key active :version 1) 1)]
+    (api--ok request {:modules modules :snapshot digest :snapshot_schema schema})))
+
+(defn api--handle-publication [request]
+  (let* [store (get request :store)
+         _ (grove--authorize store "reader")
+         active (store--active-publication store)
+         active-view (if (nil? active) nil
+                       {:version (grove--get-key active :version 1)
+                        :snapshot_digest (grove--get-key active :snapshot "")
+                        :published_by (grove--get-key active :actor "")
+                        :state "active"})
+         history (store--query store
+                   "SELECT version,snapshot AS snapshot_digest,actor AS published_by,state FROM publications ORDER BY version DESC" [])]
+    (api--ok request {:active active-view :history history})))
 
 (defn api--handle-lineage [request]
   (let* [store (get request :store)
@@ -435,6 +502,7 @@
   (let* [store (get request :store)
          body (get request :body)
          _ (grove--authorize store "publisher")
+         active (store--active-publication store)
          _ (api--replay request "POST /api/approve")
          op (grove--get-key body :operation_id
                 (str "op-"
@@ -443,7 +511,7 @@
                          [(host/bytes (str (host/clock-ms)))
                           (host/bytes (grove--principal-id store))
                           (host/bytes "POST /api/approve")]))))
-         publication {:version (+ 1 (grove--get-key (store--active-publication store) :version 0))
+         publication {:version (+ 1 (if active (grove--get-key active :version 0) 0))
                       :snapshot (grove--get-key body :snapshot "")
                       :actor (grove--principal-id store)}
          approval {:schema 1 :id (str "approval-" (host/sha256 (host/byte-concat [(host/bytes (str (host/clock-ms))) (host/bytes op)])))
@@ -463,62 +531,131 @@
          result (api--list-events (get request :store) (get request :query {}))]
     (api--ok request result)))
 
+(defn api--static-file [request path content-type]
+  (host/http-reply
+    (get request :listener)
+    (get request :id)
+    {:status 200
+     :headers {"content-type" content-type}
+     :body (host/read-bytes path)}))
+
+(defn api--handle-static-index [request]
+  (api--static-file request "apps/grove/web/index.html" "text/html; charset=utf-8"))
+(defn api--handle-static-bridge [request]
+  (api--static-file request "apps/grove/web/bridge.js" "text/javascript; charset=utf-8"))
+(defn api--handle-static-controller [request]
+  (api--static-file request "apps/grove/web/controller-source.js" "text/javascript; charset=utf-8"))
+(defn api--handle-static-styles [request]
+  (api--static-file request "apps/grove/web/styles.css" "text/css; charset=utf-8"))
+(defn api--handle-static-wasm-loader [request]
+  (api--static-file request "apps/site/public/wasm/zio_core.js" "text/javascript; charset=utf-8"))
+(defn api--handle-static-wasm [request]
+  (api--static-file request "apps/site/public/wasm/zio_core_bg.wasm" "application/wasm"))
+(defn api--handle-static-favicon [request]
+  (api--no-content request))
+
+(def api--routes [
+  {:path "/api/health" :methods {"GET" api--handle-health}}
+  {:path "/api/runs" :methods {"GET" api--handle-list-runs}}
+  {:path "/api/runs/{id}" :methods {"GET" api--handle-get-run}}
+  {:path "/api/observations" :methods {"POST" api--handle-post-observation}}
+  {:path "/api/predictions" :methods {"GET" api--handle-list-predictions "POST" api--handle-post-prediction}}
+  {:path "/api/signals" :methods {"POST" api--handle-post-signal}}
+  {:path "/api/signals/{id}" :methods {"GET" api--handle-get-signal}}
+  {:path "/api/modules" :methods {"GET" api--handle-list-modules}}
+  {:path "/api/learning/publication" :methods {"GET" api--handle-publication}}
+  {:path "/api/lineage" :methods {"GET" api--handle-lineage}}
+  {:path "/api/logic/candidates" :methods {"GET" api--handle-list-candidates}}
+  {:path "/api/logic/propose" :methods {"POST" api--handle-propose-candidate}}
+  {:path "/api/logic/evaluate" :methods {"POST" api--handle-evaluate-candidate}}
+  {:path "/api/evaluations/{snapshot}" :methods {"GET" api--handle-evaluation}}
+  {:path "/api/learning/queue" :methods {"POST" api--handle-queue}}
+  {:path "/api/learning/runs/{id}/cancel" :methods {"POST" api--handle-cancel}}
+  {:path "/api/learning/pause" :methods {"POST" api--handle-pause}}
+  {:path "/api/learning/resume" :methods {"POST" api--handle-resume}}
+  {:path "/api/learning/fork" :methods {"POST" api--handle-fork}}
+  {:path "/api/learning/select" :methods {"POST" api--handle-select}}
+  {:path "/api/approve" :methods {"POST" api--handle-approve}}
+  {:path "/api/events" :methods {"GET" api--handle-events}}
+  {:path "/" :methods {"GET" api--handle-static-index}}
+  {:path "/index.html" :methods {"GET" api--handle-static-index}}
+  {:path "/app.js" :methods {"GET" api--handle-static-bridge}}
+  {:path "/bridge.js" :methods {"GET" api--handle-static-bridge}}
+  {:path "/controller-source.js" :methods {"GET" api--handle-static-controller}}
+  {:path "/styles.css" :methods {"GET" api--handle-static-styles}}
+  {:path "/wasm/zio_core.js" :methods {"GET" api--handle-static-wasm-loader}}
+  {:path "/wasm/zio_core_bg.wasm" :methods {"GET" api--handle-static-wasm}}
+  {:path "/favicon.ico" :methods {"GET" api--handle-static-favicon}}
+])
+
+(defn api--find-route [path]
+  (loop [routes api--routes]
+    (if (empty? routes) nil
+      (let* [route (first routes)
+             params (api--match-path (get route :path) path)]
+        (if (nil? params) (recur (rest routes))
+          {:route route :params params})))))
+
+(defn api--route [request]
+  (let* [query (api--query-map (get request :query_raw ""))
+         body (try (api--parse-body request) (catch any nil))]
+    (if (nil? query)
+      (api--error request "bad-request" "invalid query string" nil)
+      (if (or (nil? body) (not (map? body)))
+        (api--error request "bad-request" "request body must be a JSON object" nil)
+        (let* [request (assoc request :query query :body body)
+               match (api--find-route (get request :path))]
+          (if (nil? match)
+            (api--error request "not_found" "route not found" nil)
+            (let* [route (get match :route)
+                   handler (get (get route :methods) (get request :method) nil)]
+              (if (nil? handler)
+                (api--error request "method-not-allowed" "method not allowed" nil)
+                (handler (assoc request :path_params (get match :params)))))))))))
+
+(defn api--public-path [path]
+  (or (= path "/api/health")
+      (= path "/")
+      (= path "/index.html")
+      (= path "/app.js")
+      (= path "/bridge.js")
+      (= path "/controller-source.js")
+      (= path "/styles.css")
+      (= path "/wasm/zio_core.js")
+      (= path "/wasm/zio_core_bg.wasm")
+      (= path "/favicon.ico")))
+
 ;; ---------- Static assets ----------
 (defn api--serve [bind root]
   (let* [tokens (api--load-tokens)
-         listener (host/http-listen bind)
+         listener (host/http-listen {:address bind :timeout-ms 30000})
          store (store--open root {:id "service" :role "reader"})]
     (loop [owner {:listener listener :store store :tokens tokens}]
-      (let* [raw (host/http-next (get owner :listener))]
-        (if (nil? raw) host--done
+      (let* [raw (host/http-next (get owner :listener) 60000)]
+        (if (nil? raw)
+          (recur owner)
           (let* [method (get raw :method "GET")
                  path (get raw :path "/")
                  token (api--bearer (get raw :headers {}))
                  role (if token (get tokens token) nil)
-                 principal (if role {:id (str "token:" (slice token 0 12)) :role role} nil)
-                 body-bytes (get raw :body_bytes (host/bytes "{}"))
-                 body (if (= method "GET") {}
-                        (let [raw2 (host/text body-bytes)]
-                          (if (= raw2 "") {} (codec--normalize (json-parse raw2)))))
-                 request {:method method :path path
+                 principal (if role {:id (str "token:" (host/sha256 (host/bytes token))) :role role} nil)
+                 body-bytes (get raw :body (host/bytes "{}"))
+                 request {:method method
+                          :path path
                           :headers (get raw :headers {})
                           :body_bytes body-bytes
-                          :body body
-                          :query (get raw :query {})
+                          :query_raw (get raw :query "")
                           :store (store--as (get store :db) (get store :root) principal)
-                          :tokens (get owner :tokens)}
-                 ;; The 401 answer is a value, not a second branch of a
-                 ;; conditional: a public route must still be reachable
-                 ;; with no token, and a private one must still be
-                 ;; answered. Folding both into one `if` is what made
-                 ;; this loop unclosable by eye.
-                 authorized (if (and (not role)
-                                     (not (or (= path "/api/health")
-                                              (= path "/")
-                                              (= path "/index.html")
-                                              (= path "/app.js")
-                                              (= path "/styles.css")
-                                              (= path "/favicon.ico"))))
-                            (do (host/http-reply (get raw :id) 401
-                                  {"content-type" "application/json"}
-                                  (host/bytes (json-stringify
-                                    {"class" "unauthorized"
-                                     "detail" "missing or unknown bearer token"})))
-                                false)
-                            true)
-                 _ (if authorized
-                     ;; A route that raises must still answer: an
-                     ;; unhandled error is a 500 with a class, not a
-                     ;; dropped connection the client times out on.
-                     (try
-                       (api--route (assoc request :id (get raw :id)))
-                       (catch any
-                         (let [body {:class "backend-failed" :detail (str *error*)}]
-                           (host/http-reply (get raw :id) 500
-                             {"content-type" "application/json"}
-                             (host/bytes (json-stringify body))))))
-                     nil)]
-            (host/http-close (get raw :id))
+                          :tokens (get owner :tokens)
+                          :principal principal
+                          :listener (get owner :listener)
+                          :id (get raw :id)}]
+            (if (and (nil? role) (not (api--public-path path)))
+              (api--error request "unauthorized" "missing or unknown bearer token" nil)
+              (try
+                (api--route request)
+                (catch any
+                  (api--error request "backend-failed" (str *error*) nil))))
             (recur owner)))))))
 
 (defn api--check-bind [bind token-count]

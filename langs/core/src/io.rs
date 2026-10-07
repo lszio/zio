@@ -185,23 +185,26 @@ impl IoHost for BufferIoHost {
     }
 
     fn canonicalize_path(&self, path: &str) -> Result<String, EvalError> {
-        let path = std::path::Path::new(path);
-        if !path.is_absolute() {
+        if !path.starts_with('/') {
             return Err(EvalError::custom("virtual paths must be absolute"));
         }
-        let mut result = std::path::PathBuf::new();
-        for part in path.components() {
+        let mut components = Vec::new();
+        for part in path.split('/') {
             match part {
-                std::path::Component::ParentDir => {
-                    if !result.pop() {
+                "" | "." => {}
+                ".." => {
+                    if components.pop().is_none() {
                         return Err(EvalError::custom("virtual path escapes root"));
                     }
                 }
-                std::path::Component::CurDir => {}
-                other => result.push(other.as_os_str()),
+                part => components.push(part),
             }
         }
-        Ok(result.to_string_lossy().into_owned())
+        if components.is_empty() {
+            Ok("/".into())
+        } else {
+            Ok(format!("/{}", components.join("/")))
+        }
     }
 
     fn is_directory(&self, path: &str) -> Result<bool, EvalError> {
@@ -235,3 +238,16 @@ mod tests {
         assert!(io.current_dir().is_err(), "sandboxed host has no cwd");
     }
 }
+
+    #[test]
+    fn virtual_paths_are_canonicalized_independently_of_host_os() {
+        let io = BufferIoHost::new();
+        assert_eq!(
+            io.canonicalize_path("/zio/apps/grove/../site/./index.zio")
+                .unwrap(),
+            "/zio/apps/site/index.zio"
+        );
+        assert_eq!(io.canonicalize_path("/").unwrap(), "/");
+        assert!(io.canonicalize_path("zio/apps").is_err());
+        assert!(io.canonicalize_path("/../escape").is_err());
+    }

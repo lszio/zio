@@ -1,6 +1,6 @@
 ;; Validation always precedes artifact durability, which precedes the ledger row.
 (defn checkpoint--manifest [body expected-run level]
-  (let [state (codec--normalize (json-parse (host/text body)))]
+  (let [state (codec--normalize (json-parse (host/bytes-utf8 body)))]
     (grove--require (= (get state :protocol) "grove.worker.state/1") "incompatible-state" "unknown worker state protocol")
     (grove--require (grove--contains [1 2] (get state :schema)) "incompatible-state" "unknown worker state schema")
     (grove--require (= expected-run (get state :run_id)) "incompatible-state" "checkpoint belongs to another run")

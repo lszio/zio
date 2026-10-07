@@ -42,19 +42,17 @@ use crate::{HostPolicy, values};
 const PROCESS_HANDLE: &str = "host/process-handle";
 const HTTP_HANDLE: &str = "host/http-handle";
 
-/// Helper for [`http::HttpResponse::from_json`].
-fn http_response_from_json(value: &Json) -> Result<HttpResponse, EvalError> {
-    let object = value
-        .as_object()
-        .ok_or_else(|| invalid("HTTP response must be a map"))?;
-    let status = object
-        .get("status")
-        .and_then(Json::as_u64)
+/// Convert an evaluator response map while preserving buffer-valued bodies.
+fn http_response_from_value(value: &Value) -> Result<HttpResponse, EvalError> {
+    let status = values::get(value, "status")
         .ok_or_else(|| invalid("HTTP response requires integer status"))?;
-    let status = u16::try_from(status).map_err(|_| invalid("HTTP status out of range"))?;
-    let headers = object
-        .get("headers")
-        .and_then(Json::as_object)
+    let status = u16::try_from(values::integer(status)?)
+        .map_err(|_| invalid("HTTP status out of range"))?;
+    let headers = values::get(value, "headers")
+        .ok_or_else(|| invalid("HTTP response headers must be an object"))?;
+    let headers = values::to_json(headers)?;
+    let headers = headers
+        .as_object()
         .ok_or_else(|| invalid("HTTP response headers must be an object"))?;
     let mut resolved = BTreeMap::new();
     for (key, value) in headers {
@@ -63,24 +61,8 @@ fn http_response_from_json(value: &Json) -> Result<HttpResponse, EvalError> {
             .ok_or_else(|| invalid("HTTP response header values must be strings"))?;
         resolved.insert(key.clone(), value.to_owned());
     }
-    let body = match object.get("body") {
-        Some(Json::String(text)) => text.as_bytes().to_vec(),
-        Some(Json::Array(bytes)) => {
-            let mut out = Vec::with_capacity(bytes.len());
-            for byte in bytes {
-                let number = byte
-                    .as_u64()
-                    .ok_or_else(|| invalid("HTTP body bytes must be integers"))?;
-                out.push(u8::try_from(number).map_err(|_| invalid("HTTP body byte out of range"))?);
-            }
-            out
-        }
-        Some(other) => {
-            return Err(invalid(format!(
-                "HTTP body must be string or byte sequence, got {}",
-                type_name(other)
-            )));
-        }
+    let body = match values::get(value, "body") {
+        Some(body) => values::with_bytes(body, |bytes| bytes.to_vec())?,
         None => Vec::new(),
     };
     Ok(HttpResponse {
@@ -135,16 +117,6 @@ fn json_to_value(value: Json) -> Result<Value, EvalError> {
     values::from_json(value)
 }
 
-fn type_name(value: &Json) -> &'static str {
-    match value {
-        Json::Null => "null",
-        Json::Bool(_) => "boolean",
-        Json::Number(_) => "number",
-        Json::String(_) => "string",
-        Json::Array(_) => "array",
-        Json::Object(_) => "object",
-    }
-}
 
 fn exit_map(exit: &ProcessExit) -> Value {
     keyword_map([
@@ -280,7 +252,7 @@ fn http_handle(server: Server) -> Value {
             "reply" => {
                 values::arity(&args, 3)?;
                 let id = values::integer(&args[1])?;
-                let response = http_response_from_json(&values::to_json(&args[2])?)?;
+                let response = http_response_from_value(&args[2])?;
                 server.reply(id, response)?;
                 Ok(Value::Nil)
             }
@@ -434,6 +406,77 @@ pub fn install(ctx: &EvalContext, policy: &HostPolicy) {
             let config = HttpConfig::from_json(&json)?;
             let server = Server::listen(config)?;
             Ok(http_handle(server))
+        });
+    }
+
+    // The server half. `http-listen` returns an opaque handle, and these
+    // three are how a program drives it. They are bound separately
+    // rather than folded into the handle's own arity so the call sites
+    // read as what they do: take the next request, answer it, close
+    // the exchange.
+    {
+        let policy_10 = Arc::clone(&policy);
+        bind(ctx, "host/http-next", move |args, engine| {
+            if !policy_10.network {
+                return Err(capability("network"));
+            }
+            values::arity(&args, 2)?;
+            let timeout = Duration::from_millis(non_negative_ms(values::integer(&args[1])?)?);
+            call_handle(
+                &args[0],
+                "next",
+                Vector::from(vec![Value::Integer(timeout.as_millis() as i64)]),
+                engine,
+                HTTP_HANDLE,
+            )
+        });
+    }
+    {
+        let policy_11 = Arc::clone(&policy);
+        bind(ctx, "host/http-readable", move |args, engine| {
+            if !policy_11.network {
+                return Err(capability("network"));
+            }
+            values::arity(&args, 1)?;
+            call_handle(
+                &args[0],
+                "readable",
+                Vector::new(),
+                engine,
+                HTTP_HANDLE,
+            )
+        });
+    }
+    {
+        let policy_12 = Arc::clone(&policy);
+        bind(ctx, "host/http-reply", move |args, engine| {
+            if !policy_12.network {
+                return Err(capability("network"));
+            }
+            values::arity(&args, 3)?;
+            call_handle(
+                &args[0],
+                "reply",
+                Vector::from(vec![args[1].clone(), args[2].clone()]),
+                engine,
+                HTTP_HANDLE,
+            )
+        });
+    }
+    {
+        let policy_13 = Arc::clone(&policy);
+        bind(ctx, "host/http-close", move |args, engine| {
+            if !policy_13.network {
+                return Err(capability("network"));
+            }
+            values::arity(&args, 1)?;
+            call_handle(
+                &args[0],
+                "close",
+                Vector::new(),
+                engine,
+                HTTP_HANDLE,
+            )
         });
     }
 

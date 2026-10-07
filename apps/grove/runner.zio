@@ -84,8 +84,8 @@
              validation (if (get work :val_rows nil) (get work :val_rows)
                           (if (get work :val_data nil) (learn--decode-gvd1 (runner--read-input runner (get work :val_data))) []))
              weights (if (get work :params nil) {:params (get work :params)}
-                       (if (get work :weights nil) (codec--normalize (json-parse (host/text (runner--read-input runner (get work :weights))))) {}))
-             resume (if (get work :resume nil) (codec--normalize (json-parse (host/text (artifact--get store (get work :resume))))) nil)
+                       (if (get work :weights nil) (codec--normalize (json-parse (host/bytes-utf8 (runner--read-input runner (get work :weights))))) {}))
+             resume (if (get work :resume nil) (codec--normalize (json-parse (host/bytes-utf8 (artifact--get store (get work :resume))))) nil)
              request (assoc work :rows rows :val_rows validation :weights weights :resume_state resume)]
         (assoc claim :work request :config config :budget (get claim :reserved_steps)
                :ledger_step (get run :steps_consumed))))))

@@ -5,12 +5,12 @@
 ;; state, malformed input is rejected before HTTP, and the trace cursor advances
 ;; by exactly one sequence step per acknowledged page.
 
-(load-file "../browser-controller.zio")
+(load "../browser-controller.zio")
 
 (defn browser-check [ok message]
   (if ok true (error (str "CONTRACT FAIL: " message))))
 (defn commands-with-http-path [result path]
-  (filter (fn [c] (= (get c :path) path)) (get result :commands)))
+  (> (count (filter (fn [c] (= (get c :path nil) path)) (get result :commands))) 0))
 (defn has-op [result op]
   (> (count (filter (fn [c] (= (get c :op) op)) (get result :commands))) 0))
 (defn flatten-commands [result]
@@ -20,8 +20,17 @@
       (conj a c))) [] (get result :commands)))
 
 (let [boot (grove--browser-step {} {:kind "boot" :fields {}})]
+  (browser-check (and (= (get (first (get boot :commands)) :target) "#runtime-status")
+                      (= (get (first (get boot :commands)) :text) "Zio/WASM controller ready · explicit AST bootstrap"))
+    "boot must emit the ready status command")
   (browser-check (not (commands-with-http-path boot ["api" "approve"]))
     "boot must never approve anything"))
+(let* [boot (grove--browser-step {} {:kind "boot" :fields {}})
+       restored (grove--browser-step (json-parse (json-stringify (get boot :state)))
+         {:kind "storage" :value "[]" :fields {}})
+       roundtrip (json-parse (json-stringify (get restored :state)))]
+  (browser-check (= (grove--browser-get roundtrip "filed" []) [])
+    "storage restore must preserve string-keyed state across the JSON boundary"))
 (let [ev (grove--browser-step {} {:kind "response" :status 200
   :body "{\"candidate_id\":\"cand-1\",\"status\":\"qualified\",\"active_unchanged\":true,\"evaluation_refs\":[]}"
   :context {:purpose "evaluate" :output "evaluate-out"} :fields {}})]
@@ -41,18 +50,18 @@
   :fields {"obs-mask" "true,true" "obs-readings" "1,NaN" "obs-bar" "horizontal"}})]
   (browser-check (not (commands-with-http-path bad-num ["api" "observations"]))
     "non-numeric sensor reading must not become an observation"))
-(let* [state {:event-run "run-a" :cursor nil :events [] :loss []}
+(let* [state {"event-run" "run-a" "cursor" nil "events" [] "loss" []}
        first-poll (grove--browser-step state {:kind "click" :id "poll-events" :fields {"event-run" "run-a"}})
        request (first (get first-poll :commands))
        response (grove--browser-step (get first-poll :state)
         {:kind "response" :status 200 :body "{\"events\":[{\"sequence\":0,\"at_ms\":0,\"kind\":\"loss\",\"detail\":\"loss=0.7\"},{\"sequence\":1,\"at_ms\":50,\"kind\":\"loss\",\"detail\":\"loss=0.5 step=1\"}],\"cursor\":1}"
         :context (get request :context) :fields {}})
        next-poll (grove--browser-step (get response :state) {:kind "click" :id "poll-events" :fields {"event-run" "run-a"}})]
-  (browser-check (nil? (get (get request :query) :after_sequence))
+  (browser-check (nil? (get (get request :query) :after_sequence nil))
     "first poll must omit the after_sequence cursor to read sequence zero")
   (browser-check (= (get (get (first (get next-poll :commands)) :query) :after_sequence) 1)
     "next poll must use the acknowledged cursor exclusively")
-  (browser-check (= (count (get (get response :state) :loss)) 2)
+  (browser-check (= (count (grove--browser-get (get response :state) "loss" [])) 2)
     "controller must record a real loss sample per loss event"))
 (let [approve-cancel (grove--browser-step {} {:kind "confirm" :accepted false
   :context {:action "approve" :body {:operation_id "approve-n" :snapshot "abc" :protocol_id "p"}}} )]
@@ -62,11 +71,12 @@
   :context {:action "approve" :body {:operation_id "approve-n" :snapshot "abc" :protocol_id "p" :expected_version 0}}})]
   (browser-check (commands-with-http-path approve-ok ["api" "approve"])
     "accepted confirmation with the right context must POST to /api/approve"))
-(let [no-snapshot (try (grove--browser-step {} {:kind "submit" :id "publish-form" :nonce "n"
-                                :fields {"pub-snapshot" "" "pub-protocol" "p" "pub-version" ""}})
-                       (catch any {:empty-snapshot true}))]
-  (browser-check (= (get no-snapshot :empty-snapshot) true)
-    "publish with empty snapshot must be rejected, not auto-confirmed"))
+(let [no-snapshot (grove--browser-step {} {:kind "submit" :id "publish-form" :nonce "n"
+                                :fields {"pub-snapshot" "" "pub-protocol" "p" "pub-version" ""}})]
+  (browser-check (and (not (has-op no-snapshot "confirm"))
+                      (str-contains? (get (first (get no-snapshot :commands)) :text) "Snapshot digest required")
+                      (= (get (first (get no-snapshot :commands)) :class) "error"))
+    "publish with empty snapshot must show an error, not request confirmation"))
 (let [publish-body (grove--browser-step {} {:kind "submit" :id "publish-form" :nonce "n"
   :fields {"pub-snapshot" "abc" "pub-protocol" "p" "pub-version" ""}})]
   (browser-check (= (get (get (first (get publish-body :commands)) :context) :action) "approve")
@@ -75,12 +85,36 @@
   :fields {"pred-snapshot" "abc" "pred-observation" "obs-1"}})]
   (browser-check (commands-with-http-path predict ["api" "predictions"])
     "predict form must POST to /api/predictions"))
+(let [runs (grove--browser-step {} {:kind "response" :status 200
+  :body "{\"runs\":[]}" :context {:purpose "runs" :output "runtime-status"} :fields {}})]
+  (browser-check (str-contains? (json-stringify (get runs :commands)) "No runs.")
+    "run renderer must read the runs array from its response envelope"))
+(let [predictions (grove--browser-step {} {:kind "response" :status 200
+  :body "{\"predictions\":[]}" :context {:purpose "predictions" :output "runtime-status"} :fields {}})]
+  (browser-check (str-contains? (json-stringify (get predictions :commands)) "No predictions recorded.")
+    "prediction renderer must read the predictions array from its response envelope"))
 (let [modules (grove--browser-step {} {:kind "response" :status 200
   :body "{\"snapshot\":\"abc\",\"snapshot_schema\":1,\"modules\":[{\"name\":\"encoder\",\"input_space\":\"img-64\",\"output_space\":\"feat-128\",\"depends_on\":[],\"shared_group\":\"g1\",\"frozen\":false,\"requires\":\"role:reader\"}]}"
   :context {:purpose "modules" :output "runtime-status"} :fields {}})]
   (browser-check (has-op modules "replace")
     "modules response must produce a replace command"))
-(let [loss-curve (grove--browser-step {} {:kind "response" :status 200
+(let* [anonymous (grove--browser-step {} {:kind "click" :id "refresh" :fields {}})
+       token-input (grove--browser-step {} {:kind "click" :id "token" :value "reader-test" :fields {}})
+       authenticated (grove--browser-step {} {:kind "click" :id "refresh" :fields {"token" "reader-test"}})]
+  (browser-check (not (has-op anonymous "http"))
+    "refresh without a bearer token must not issue unauthenticated requests")
+  (browser-check (str-contains? (json-stringify (get anonymous :commands)) "Enter an API bearer token")
+    "refresh without a bearer token must explain how to load records")
+  (browser-check (= (count (get token-input :commands)) 0)
+    "editing the bearer token must wait for an explicit refresh")
+  (browser-check (commands-with-http-path authenticated ["api" "runs"])
+    "refresh with a bearer token must load records"))
+(let [publication (grove--browser-step {} {:kind "response" :status 200
+  :body "{\"active\":{\"version\":2,\"snapshot_digest\":\"abc\",\"published_by\":\"alice\",\"state\":\"active\"},\"history\":[{\"version\":2,\"snapshot_digest\":\"abc\",\"published_by\":\"alice\",\"state\":\"active\"}]}"
+  :context {:purpose "publication" :output "publication"} :fields {}})]
+  (browser-check (str-contains? (json-stringify (get publication :commands)) "published by alice")
+    "publication history must use the persisted publisher field"))
+(let [loss-curve (grove--browser-step {"event-run" "run-a" "cursor" nil "events" [] "loss" []} {:kind "response" :status 200
   :body "{\"events\":[{\"sequence\":0,\"at_ms\":0,\"kind\":\"loss\",\"detail\":\"loss=1.0\"},{\"sequence\":1,\"at_ms\":50,\"kind\":\"loss\",\"detail\":\"loss=0.5\"}],\"cursor\":1}"
   :context {:purpose "events" :output "events-out" :run "run-a" :cursor nil} :fields {}})]
   (browser-check (has-op loss-curve "svg")

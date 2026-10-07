@@ -9,12 +9,16 @@
 export class ZioSession {
     free(): void;
     [Symbol.dispose](): void;
+    add_source(path: string, source: string): void;
     /**
      * Evaluate a Zio source string; returns the last value's repr, or an
      * `Error: ...` string on failure. State persists across calls.
      */
     eval(code: string): string;
+    eval_json(source: string, name: string): string;
+    eval_source(source: string, name: string): string;
     constructor();
+    parse(source: string, name: string): string;
 }
 
 /**
@@ -22,21 +26,26 @@ export class ZioSession {
  */
 export function eval_zio(code: string): string;
 
+export function parse_zio(source: string, name: string): string;
+
 export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembly.Module;
 
 export interface InitOutput {
     readonly memory: WebAssembly.Memory;
     readonly __wbg_ziosession_free: (a: number, b: number) => void;
-    readonly eval_zio: (a: number, b: number) => [number, number];
-    readonly ziosession_eval: (a: number, b: number, c: number) => [number, number];
-    readonly ziosession_new: () => number;
-    readonly __wbindgen_malloc: (a: number, b: number) => number;
-    readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
-    readonly __externref_table_alloc: () => number;
-    readonly __wbindgen_externrefs: WebAssembly.Table;
-    readonly __wbindgen_exn_store: (a: number) => void;
-    readonly __wbindgen_free: (a: number, b: number, c: number) => void;
-    readonly __wbindgen_start: () => void;
+    readonly eval_zio: (a: number, b: number, c: number) => void;
+    readonly parse_zio: (a: number, b: number, c: number, d: number, e: number) => void;
+    readonly ziosession_add_source: (a: number, b: number, c: number, d: number, e: number, f: number) => void;
+    readonly ziosession_eval: (a: number, b: number, c: number, d: number) => void;
+    readonly ziosession_eval_json: (a: number, b: number, c: number, d: number, e: number, f: number) => void;
+    readonly ziosession_eval_source: (a: number, b: number, c: number, d: number, e: number, f: number) => void;
+    readonly ziosession_new: (a: number) => void;
+    readonly ziosession_parse: (a: number, b: number, c: number, d: number, e: number, f: number) => void;
+    readonly __wbindgen_export: (a: number, b: number) => number;
+    readonly __wbindgen_export2: (a: number, b: number, c: number, d: number) => number;
+    readonly __wbindgen_export3: (a: number) => void;
+    readonly __wbindgen_add_to_stack_pointer: (a: number) => number;
+    readonly __wbindgen_export4: (a: number, b: number, c: number) => void;
 }
 
 export type SyncInitInput = BufferSource | WebAssembly.Module;

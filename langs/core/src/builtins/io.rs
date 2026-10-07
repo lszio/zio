@@ -113,7 +113,7 @@ fn resolve_builtin_path(
     engine: &dyn EvalEngine,
 ) -> Result<std::path::PathBuf, EvalError> {
     let p = std::path::PathBuf::from(path);
-    if p.is_absolute() {
+    if p.is_absolute() || (cfg!(target_arch = "wasm32") && path.starts_with('/')) {
         return Ok(p);
     }
     // The source's own directory first, then the working directory.
