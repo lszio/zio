@@ -1060,27 +1060,27 @@
   (store--receipt-lookup store operation (grove--principal-id store) route payload))
 
 (defn store--receipt-put [store operation route payload status response]
-  ;; The record half. `INSERT`, never `INSERT OR REPLACE`: an id that
-  ;; already exists is a replay, and the second writer must be *told* so
-  ;; rather than silently overwriting the first answer. Same answer twice
-  ;; is idempotent; a different answer under the same id, or a lost race
-  ;; for it, is a conflict. The Rust oracle is `put_receipt`
-  ;; (apps/grove/native/learning/src/store.rs:1451).
+  ;; The record half. An id that already exists is a replay, and the
+  ;; second writer must be *told* rather than silently believing it won.
+  ;; Same answer twice is idempotent; a different answer under the same
+  ;; id, or a lost race for it, is a conflict. The Rust oracle is
+  ;; `put_receipt` (apps/grove/native/learning/src/store.rs:1451).
+  ;; The pre-read is only an optimization: skip the write when the answer
+  ;; is already recorded. The stored answer is ALWAYS re-read, never taken
+  ;; from `store--receipt-store`, which returns the caller's own map back
+  ;; -- comparing that with the caller's answer compares the answer with
+  ;; itself, so a writer whose INSERT OR IGNORE did nothing would be told
+  ;; it won while a later replay hands out the first writer's answer.
   (do (grove--authorize store "operator")
-      (let [principal (grove--principal-id store)
-        existing (store--receipt-lookup store operation principal route payload)
-        claimed (if (nil? existing)
-                  ;; A unique violation means another writer claimed the
-                  ;; id between this read and this write; its answer
-                  ;; stands and this caller gets told.
-                  (try (store--receipt-store store operation principal route payload status response)
-                       (catch any
-                         (grove--require (not (nil? (store--receipt-lookup store operation principal route payload)))
-                           "conflict"
-                           (str "operation " operation " was claimed by another writer"))
-                         nil))
-                  nil)
-        answer (if (nil? claimed) (store--receipt-lookup store operation principal route payload) claimed)]
+      (let* [principal (grove--principal-id store)
+        answer (let [existing (store--receipt-lookup store operation principal route payload)]
+                 (if (nil? existing) (store--receipt-store store operation principal route payload status response))
+                 (store--receipt-lookup store operation principal route payload))]
+    ;; The row is ours (we just wrote it) or another writer's; either way
+    ;; nil here means the receipt vanished, which cannot be reported as
+    ;; success for an answer nobody can replay.
+    (grove--require (not (nil? answer)) "conflict"
+      (str "operation " operation " was not recorded and cannot be replayed"))
     ;; The recorded body comes back through json-parse, so both sides are
     ;; normalized before the comparison: comparing a round-tripped map to
     ;; the caller's keyword-keyed map would call every replay a conflict.

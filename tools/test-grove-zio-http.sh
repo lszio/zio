@@ -147,6 +147,13 @@ fetch -X POST "http://$bind/api/learning/queue" \
   --data '{"run_id":"run-2-other","task_id":"task-1","steps_budget":9,"kind":"training","work":{"steps":1,"graph":{}},"operation_id":"op-replay-queue"}'
 [[ "$http_status" == 409 && "$http_body" == *'"class":"conflict"'* ]] \
   || fail "conflicting replay under one operation id: expected HTTP 409 conflict; got HTTP $http_status: $http_body"
+# The refusal must leave the FIRST answer standing: a second writer whose
+# insert was ignored must not have replaced the stored receipt, or the id
+# would now mean two things and a later replay would answer the wrong one.
+fetch -X POST "http://$bind/api/learning/queue" \
+  -H 'Authorization: Bearer operator-test' -H 'Content-Type: application/json' --data "$replay_body"
+[[ "$http_status" == "$first_status" && "$http_body" == "$first_body" ]] \
+  || fail "a refused conflicting replay changed the stored answer: HTTP $http_status $http_body"
 
 # Give the owner loop real time to claim, start and settle the run.
 state=""
