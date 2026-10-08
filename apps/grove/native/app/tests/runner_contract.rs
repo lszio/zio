@@ -370,7 +370,7 @@ fn a_claim_names_the_work_it_took_and_the_epoch_it_was_stamped_with() {
 #[test]
 fn a_resumed_run_is_actually_executed_rather_than_left_queued() {
     let Some(env) = training_env() else {
-        eprintln!("SKIP: no torch worker; a resumed run's execution is unverified");
+        eprintln!("SKIP: torch worker or namespaces unavailable; resumed execution unverified");
         return;
     };
     let (store, dir) = store("resume-executes");
@@ -466,7 +466,10 @@ fn training_env() -> Option<grove_app::runner::TrainingEnvironment> {
         .nth(4)
         .unwrap()
         .to_path_buf();
-    grove_app::runner::TrainingEnvironment::probe(&root)
+    let environment = grove_app::runner::TrainingEnvironment::probe(&root)?;
+    grove::worker::Isolation::probe("unshare")?
+        .namespaces
+        .then_some(environment)
 }
 
 #[test]
@@ -510,9 +513,7 @@ fn a_training_run_without_a_worker_is_refused_not_reported_done() {
 #[test]
 fn a_real_cpu_training_run_actually_trains_and_logs_its_progress() {
     let Some(env) = training_env() else {
-        eprintln!(
-            "SKIP: no .venv/bin/python + apps/grove/workers/torch/worker.py; CPU training unverified"
-        );
+        eprintln!("SKIP: torch worker or namespaces unavailable; CPU training unverified");
         return;
     };
     let (store, dir) = store("training-real");
