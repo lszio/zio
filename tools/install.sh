@@ -88,7 +88,7 @@ cat > "$TARGET/bin/grove" <<LAUNCHER
 # the isolation profile advisory.
 set -euo pipefail
 HERE="\$(cd "\$(dirname "\${BASH_SOURCE[0]}")" && pwd)"
-SHARE="\$HERE/../share"
+SHARE="\$(readlink -f "\$HERE/../share")"
 
 ROOT_DIR="\${GROVE_ROOT:-\$PWD}"
 BIND="\${GROVE_BIND:-127.0.0.1:8787}"
@@ -127,6 +127,7 @@ exec "\$HERE/zio" \\
   --app-root "\$SHARE/zio/apps/grove" \\
   --app-share "\$SHARE/zio" \\
   --app-resource-root "\$SHARE" \\
+  --app-web-root "\$SHARE/grove/web" \\
   --app-tensor-backend "\$SHARE/tensor/backend.py" \\
   --app-tensor-python "\$PYTHON" \\
   --app-root-dir "\$ROOT_DIR" \\

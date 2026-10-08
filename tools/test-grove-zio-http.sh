@@ -48,10 +48,11 @@ run_grove() {
     /|/usr|/usr/*) mount_dir "$base_dir" ;;
     *) mount_dir "$alias_dir" ;;
   esac
-  ./target/debug/zio-cli \
-    --app apps/grove/main.zio \
-    --app-root apps/grove \
-    --app-share . \
+  "$root/target/debug/zio-cli" \
+    --app "$root/apps/grove/main.zio" \
+    --app-root "$root/apps/grove" \
+    --app-share "$root" \
+    --app-web-root "$root/apps/grove/web" \
     --app-root-dir "$test_dir" \
     --app-bind "$bind" \
     --app-worker-script "$worker_script" \
@@ -113,9 +114,11 @@ expect "public controller source" 200 "Trusted Zio sources" "http://$bind/contro
 expect "public stylesheet" 200 "--ink:" "http://$bind/styles.css"
 fetch "http://$bind/favicon.ico"
 [[ "$http_status" == 204 ]] || fail "public favicon: expected HTTP 204; got HTTP $http_status"
-wasm_meta="$(curl -sS --max-time 3 -o "$test_dir/served-wasm" -w '%{http_code} %{content_type}' "http://$bind/wasm/zio_core_bg.wasm" 2>/dev/null || true)"
-[[ "$wasm_meta" == "200 application/wasm" ]] || fail "public WASM: expected HTTP 200 application/wasm; got $wasm_meta"
-cmp -s apps/site/public/wasm/zio_core_bg.wasm "$test_dir/served-wasm" || fail "public WASM body differs from the checked-in bundle"
+# The site owns /wasm/*; the Grove service must not duplicate it.
+expect "Grove must not serve the wasm loader" 404 '"class":"not_found"' \
+  -H 'Authorization: Bearer reader-test' "http://$bind/wasm/zio_core.js"
+expect "Grove must not serve WASM any more (site does)" 404 '"class":"not_found"' \
+  -H 'Authorization: Bearer reader-test' "http://$bind/wasm/zio_core_bg.wasm"
 expect "public health" 200 '"status":"ok"' "http://$bind/api/health"
 expect "private read without a token" 401 '"class":"unauthorized"' "http://$bind/api/runs"
 expect "reader run listing" 200 '"runs":[]' -H 'Authorization: Bearer reader-test' "http://$bind/api/runs"

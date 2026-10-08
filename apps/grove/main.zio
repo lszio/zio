@@ -182,7 +182,12 @@
         ;; `--root` wins over the launcher's `--app-root-dir` because it is
         ;; the operator's per-invocation decision; the launcher value stays
         ;; the default for the installed service.
-        serve-root (if (= (get opts :root "") "") (get config :root "") (get opts :root))]
+        serve-root (if (= (get opts :root "") "") (get config :root "") (get opts :root))
+        ;; Like the store root: argv's sibling `web` directory is the
+        ;; default when the launcher did not grant a UI tree.
+        config (if (= (get config :web-root "") "")
+                 (assoc config :web-root (str serve-root "/web"))
+                 config)]
     (load "api.zio")
     (api--check-bind bind (count (api--load-tokens)))
     (api--serve bind serve-root config)))

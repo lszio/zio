@@ -237,6 +237,8 @@ struct AppLaunch {
     app_root: Option<PathBuf>,
     app_share: Option<PathBuf>,
     resource_root: Option<PathBuf>,
+    /// The directory Grove serves its UI assets from.
+    web_root: Option<PathBuf>,
     tensor_backend: Option<PathBuf>,
     tensor_python: Option<PathBuf>,
     /// The isolated worker script and the interpreter that execs it.
@@ -279,6 +281,10 @@ impl AppLaunch {
         put(
             "resource-root",
             self.resource_root.as_ref().map(|p| p.display().to_string()),
+        );
+        put(
+            "web-root",
+            self.web_root.as_ref().map(|p| p.display().to_string()),
         );
         put(
             "tensor-backend",
@@ -402,6 +408,11 @@ fn app_context(launch: &AppLaunch) -> Result<EvalContext, EvalError> {
     }
     if let Some(share) = &launch.app_share {
         policy.read_roots.push(share.clone());
+    }
+    // The UI tree may sit beside the share rather than inside it (the
+    // installed layout is share/grove/web), so it is granted on its own.
+    if let Some(web_root) = &launch.web_root {
+        policy.read_roots.push(web_root.clone());
     }
     // The worker's interpreter and script must be readable by the service
     // to be mounted into the jail, and /usr is what any interpreter links
@@ -546,7 +557,7 @@ fn run_repl() {
 const USAGE: &str = "Usage: zio [--lib-dir DIR]... [--entry NAME] [--step-limit N] \
 [--timeout-ms N] [--emit-framed] [script.zio|-]\n\
        zio --app PATH --app-root DIR [--app-share DIR] [--app-resource-root DIR]\n\
-       \x20        [--app-tensor-backend FILE] [--app-tensor-python FILE]\n\
+       \x20        [--app-web-root DIR] [--app-tensor-backend FILE] [--app-tensor-python FILE]\n\
        \x20        [--app-root-dir DIR] [--app-bind ADDR] [--app-workers N] [--args ARG]...\n\
        \n\
        --entry NAME     call NAME after the source loads, with no arguments\n\
@@ -607,6 +618,7 @@ fn main() {
             "--app-root" => launch.app_root = Some(path()),
             "--app-share" => launch.app_share = Some(path()),
             "--app-resource-root" => launch.resource_root = Some(path()),
+            "--app-web-root" => launch.web_root = Some(path()),
             "--app-tensor-backend" => launch.tensor_backend = Some(path()),
             "--app-tensor-python" => launch.tensor_python = Some(path()),
             "--app-worker-script" => launch.worker_script = Some(path()),

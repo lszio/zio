@@ -585,26 +585,30 @@
          result (api--list-events (get request :store) (get request :query {}))]
     (api--ok request result)))
 
-(defn api--static-file [request path content-type]
+(defn api--web-root [request]
+  ;; Assets resolve from the root the host granted, never from the process
+  ;; working directory: an installed service is launched from wherever the
+  ;; supervisor happens to be.
+  (let [root (get request :web_root "")]
+    (grove--require (not (= root "")) "invalid-input" "no web root was granted to the service")
+    root))
+
+(defn api--static-file [request relative content-type]
   (host/http-reply
     (get request :listener)
     (get request :id)
     {:status 200
      :headers {"content-type" content-type}
-     :body (host/read-bytes path)}))
+     :body (host/read-bytes (str (api--web-root request) "/" relative))}))
 
 (defn api--handle-static-index [request]
-  (api--static-file request "apps/grove/web/index.html" "text/html; charset=utf-8"))
+  (api--static-file request "index.html" "text/html; charset=utf-8"))
 (defn api--handle-static-bridge [request]
-  (api--static-file request "apps/grove/web/bridge.js" "text/javascript; charset=utf-8"))
+  (api--static-file request "bridge.js" "text/javascript; charset=utf-8"))
 (defn api--handle-static-controller [request]
-  (api--static-file request "apps/grove/web/controller-source.js" "text/javascript; charset=utf-8"))
+  (api--static-file request "controller-source.js" "text/javascript; charset=utf-8"))
 (defn api--handle-static-styles [request]
-  (api--static-file request "apps/grove/web/styles.css" "text/css; charset=utf-8"))
-(defn api--handle-static-wasm-loader [request]
-  (api--static-file request "apps/site/public/wasm/zio_core.js" "text/javascript; charset=utf-8"))
-(defn api--handle-static-wasm [request]
-  (api--static-file request "apps/site/public/wasm/zio_core_bg.wasm" "application/wasm"))
+  (api--static-file request "styles.css" "text/css; charset=utf-8"))
 (defn api--handle-static-favicon [request]
   (api--no-content request))
 
@@ -637,8 +641,6 @@
   {:path "/bridge.js" :methods {"GET" api--handle-static-bridge}}
   {:path "/controller-source.js" :methods {"GET" api--handle-static-controller}}
   {:path "/styles.css" :methods {"GET" api--handle-static-styles}}
-  {:path "/wasm/zio_core.js" :methods {"GET" api--handle-static-wasm-loader}}
-  {:path "/wasm/zio_core_bg.wasm" :methods {"GET" api--handle-static-wasm}}
   {:path "/favicon.ico" :methods {"GET" api--handle-static-favicon}}
 ])
 
@@ -675,8 +677,6 @@
       (= path "/bridge.js")
       (= path "/controller-source.js")
       (= path "/styles.css")
-      (= path "/wasm/zio_core.js")
-      (= path "/wasm/zio_core_bg.wasm")
       (= path "/favicon.ico")))
 
 ;; ---------- Static assets ----------
@@ -774,6 +774,7 @@
                             :tokens (get next :tokens)
                             :principal principal
                             :scheduler_failure (get next :scheduler_failure nil)
+                            :web_root (get config :web-root "")
                             :listener (get next :listener)
                             :id (get raw :id)}]
               (if (and (nil? role) (not (api--public-path path)))
