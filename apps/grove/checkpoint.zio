@@ -17,7 +17,7 @@
             (grove--require (not (nil? (get state :rng))) "incompatible-state" "continuation requires RNG state")))) nil)
     state))
 
-(defn checkpoint--commit [store run-id parent level body]
+(defn checkpoint--commit [store run-id parent level body origin]
   (grove--authorize store "operator")
   (let* [run (grove--get store "Run" run-id)
          state (checkpoint--manifest body run-id level)]
@@ -26,7 +26,14 @@
     ;; row pointing at it. The record goes through the checkpoint domain
     ;; write, not the validating-only grove--put, or resume/fork could
     ;; never read the row back.
-    (grove--require (= (get state :step) (get run :steps_consumed)) "incompatible-state" "checkpoint step does not match the observed budget ledger")
+    ;; The worker's state is cumulative over the checkpoint it restored
+    ;; (its step S at claim time), while the ledger starts at the run's
+    ;; base (0 fresh/replay, the parent's spent for continuation): the
+    ;; equality must be base + ledger, so `origin` is that base — the
+    ;; restored step minus the ledger at claim time, which the caller
+    ;; threads from the claim. A CLI pause has no claim and assumes a
+    ;; 0-origin worker state.
+    (grove--require (= (get state :step) (+ origin (get run :steps_consumed))) "incompatible-state" "checkpoint step does not match the observed budget ledger")
     (let* [checkpoint {:schema 1 :id (str "ckpt-" run-id "-" (get state :step))
              :owner (get (get store :principal) :id) :run_id run-id
              :snapshot (get run :base_snapshot) :parent parent :resume_level level
@@ -38,7 +45,10 @@
 (defn checkpoint--pause [store run-id body]
   (store--transaction store (fn []
     (let* [run (grove--get store "Run" run-id)
-           cp (checkpoint--commit store run-id nil "learning-continuation" body)]
+           ;; CLI pause has no claim, so origin 0 assumes the paused
+           ;; worker state started at step 0 (fresh or weights-only
+           ;; resume) — the pre-existing behavior of this path.
+           cp (checkpoint--commit store run-id nil "learning-continuation" body 0)]
       (runner--transition! (get run :state) "paused")
       (runner--write-run store (assoc run :state "paused"))
       (store--execute store "UPDATE attempts SET active=0 WHERE run=?1" [run-id])

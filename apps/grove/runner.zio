@@ -81,7 +81,12 @@
                  attempt (str "attempt-" id "-" (get runner :epoch) "-" (host/sha256 (host/random-bytes 16)))
                  claim {:run_id id :attempt_id attempt :epoch (get runner :epoch)
                         :reserved_steps steps :lease_expires_ms (+ (host/clock-ms) (get config :lease-ms 30000))
-                        :kind kind :work work}]
+                        :kind kind :work work
+                        ;; The ledger baseline this attempt starts from: the
+                        ;; worker's restored step over it is this attempt's
+                        ;; own consumption, and the difference is the
+                        ;; checkpoint ledger origin (see checkpoint--commit).
+                        :base_consumed (get run :steps_consumed)}]
             (grove--require (<= steps remaining) "budget-exhausted" "requested work cannot fit in the remaining run grant")
             (coordinator--reserve store attempt (get work :population nil) steps)
             (runner--transition! (get run :state) "running")
@@ -246,7 +251,11 @@
     ;; Billing is by cumulative step deltas, so the handle remembers the
     ;; worker's restored starting step: the delta over it is this
     ;; attempt's consumption, whatever origin the run ledger inherited.
-    {:claim claim :process proc :started_ms (host/clock-ms) :last_seen (host/clock-ms)
+    ;; The checkpoint ledger origin is that restored step minus the
+    ;; baseline the claim carried (0 fresh/replay, the parent's spent for
+    ;; continuation); checkpoint--commit's equality runs over it.
+    {:claim (assoc claim :origin (- (get frame :start_step 0) (get claim :base_consumed 0)))
+     :process proc :started_ms (host/clock-ms) :last_seen (host/clock-ms)
      :billed_step (get frame :start_step 0)}))
 
 (defn runner--finish [runner worker state detail]
@@ -305,7 +314,8 @@
           ;; always the billed step's.
           (let [continued (if (get f :saved nil)
                             (let* [cp (checkpoint--commit store (get claim :run_id) nil "learning-continuation"
-                                                          (host/read-bytes (runner--saved-state-path runner claim (get f :saved nil) step)))]
+                                                          (host/read-bytes (runner--saved-state-path runner claim (get f :saved nil) step))
+                                                          (get claim :origin 0))]
                               (store--execute store "UPDATE grove_progress SET checkpoint=?1 WHERE attempt=?2" [(get cp :id) (get claim :attempt_id)])
                               (runner--event store claim "checkpoint" (get cp :id))
                               ;; A stop_after_save claim ends here: the run
@@ -325,7 +335,7 @@
                 (assoc worker :last_seen (host/clock-ms) :billed_step (if (> step billed) step billed)))))))
       (if (= type "checkpoint")
         (let* [body (host/bytes (json-stringify (get f :state)))
-               cp (checkpoint--commit store (get claim :run_id) nil "learning-continuation" body)]
+               cp (checkpoint--commit store (get claim :run_id) nil "learning-continuation" body (get claim :origin 0))]
           (store--execute store "UPDATE grove_progress SET checkpoint=?1 WHERE attempt=?2" [(get cp :id) (get claim :attempt_id)])
           (runner--event store claim "checkpoint" (get cp :id))
           (if (get f :paused false) (runner--finish runner worker "paused" (get cp :id)) worker))
