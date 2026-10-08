@@ -58,10 +58,11 @@
     (do (grove--require (grove--hex? ref) "invalid-input" "digest must be lowercase 64-hex") ref)
     (let [bytes (grove--get-key ref :digest [])]
       (grove--require (= (count bytes) 32) "invalid-input" "ArtifactRef must hold 32 bytes")
+      ;; nth yields the nibble CHARACTER; grove--hex-digit would map it
+      ;; back to an integer and corrupt every digest containing a-f.
       (apply str (map (fn [b]
         (grove--require (and (integer? b) (>= b 0) (< b 256)) "invalid-input" "digest byte out of range")
-        (str (grove--hex-digit (grove--hex-slice "0123456789abcdef" (/ b 16) (+ (/ b 16) 1)))
-             (grove--hex-digit (grove--hex-slice "0123456789abcdef" (mod b 16) (+ (mod b 16) 1))))) bytes)))))
+        (str (nth (grove--hex-digits) (/ b 16)) (nth (grove--hex-digits) (mod b 16)))) bytes)))))
 (defn grove--digest [bytes]
   (host/sha256 (host/byte-concat [(host/bytes "grove-artifact-v1") (host/bytes [0]) (host/bytes bytes)])))
 ;; A new actor's identity is the request-bound principal; never trust a
