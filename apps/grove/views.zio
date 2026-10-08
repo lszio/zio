@@ -29,7 +29,7 @@
         mean (get row :mean [])
         gates (get row :meets_gates false)
         metrics (str-join "," (map (fn [m] (str (get m 0) "=" (get m 1))) mean))]
-    (str snap "  repeats=" repeats "  metrics=[" metrics "]  gates=" met)))
+    (str snap "  repeats=" repeats "  metrics=[" metrics "]  gates=" gates)))
 
 (defn views--render-comparison [rows]
   (str-join "\n" (map views--render-snapshot-row rows)))

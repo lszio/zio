@@ -4,7 +4,12 @@
 (def grove--schema 1)
 (def grove--errors ["invalid-input" "capability-denied" "conflict" "incompatible-state" "budget-exhausted" "artifact-unavailable" "timeout" "cancelled" "backend-failed" "protocol-violation"])
 (defn grove--get-key [record key fallback]
-  (get record key (get record (name key) fallback)))
+  ;; A nil record is a missing record, not a lookup error: an empty
+  ;; store has no owner and no snapshot, and every caller that reads
+  ;; one wants the fallback, not a crash.
+  (if (nil? record)
+    fallback
+    (get record key (get record (name key) fallback))))
 (defn grove--fail [class detail] (error (str class ": " detail)))
 (defn grove--require [condition class detail]
   (if condition true (grove--fail class detail)))
