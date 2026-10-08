@@ -233,7 +233,11 @@
   (grove--authorize store "operator")
   (grove--owned store record)
   (artifact--get store (grove--get-key record :state_artifact nil))
-  (store--require-owner store (grove--get-key record :snapshot nil))
+  ;; A from-scratch checkpoint has no base lineage to own: a nil snapshot
+  ;; means the run never resumed from a manifest, not that a manifest is
+  ;; missing. state_artifact ownership is already proven by artifact--get.
+  (if (nil? (grove--get-key record :snapshot nil)) nil
+    (store--require-owner store (grove--get-key record :snapshot nil)))
   (let* [bytes (codec--encode "Checkpoint" record)
          digest (artifact--put store bytes)
          body (codec--text "Checkpoint" record)]
@@ -507,7 +511,10 @@
       nil)))
 
 (defn store--require-resumable [store snapshot]
-  (store--require-deployable store snapshot))
+  ;; A from-scratch checkpoint has no base snapshot: nil means there is no
+  ;; lineage to check against retraction invalidations, not a missing one.
+  (if (nil? snapshot) nil
+    (store--require-deployable store snapshot)))
 
 (defn store--publish [store snapshot expected-version]
   (grove--authorize store "publisher")
@@ -806,7 +813,9 @@
          ckpt-rows (if (= 0 (count ckpt-ids)) []
                      (store--query store ckpt-sql ckpt-ids))
          ckpt-snap (map (fn [row] (grove--get-key (codec--decode (get row :body) (get row :schema)) :snapshot nil)) ckpt-rows)]
-    (grove--unique (map grove--ref-hex (into run-snap ckpt-snap)))))
+    ;; From-scratch runs and their checkpoints carry no snapshot ref; a nil
+    ;; is nothing to invalidate, not a digest to resolve.
+    (grove--unique (map grove--ref-hex (filter (fn [ref] (not (nil? ref))) (into run-snap ckpt-snap))))))
 
 (defn store--propagate-retraction [store signal-id]
   ;; A retraction does not just mark the signal: it follows the signal's
