@@ -1,0 +1,76 @@
+name: MR preview
+# Dokploy builds the PR commit, so PR code is never executed here. The
+# credential-bearing steps only run for pull_request_target, whose steps
+# always check out the BASE ref, and only for same-repo PRs from users with
+# write access. Forks and first-time contributors are skipped entirely.
+# workflow_dispatch lets a maintainer delete a preview for any PR number.
+on:
+  pull_request_target:
+    types: [opened, reopened, synchronize, closed]
+  workflow_dispatch:
+    inputs:
+      pull_request:
+        description: pull request number (deletes its preview)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  preview:
+    runs-on: ubuntu-latest
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (
+        github.event.pull_request.head.repo.full_name == github.repository &&
+        contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.pull_request.author_association)
+      )
+    steps:
+      # pull_request_target always checks out the base ref by default, so this
+      # runs repo (base) scripts only — never PR code. No explicit ref needed.
+      - uses: actions/checkout@v4
+
+      - name: Resolve preview identity
+        id: preview
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number || inputs.pull_request }}
+          PREVIEW_ZONE: ${{ vars.PREVIEW_ZONE }}
+        run: |
+          : "${PR_NUMBER:?PR number unresolved}"
+          : "${PREVIEW_ZONE:?vars.PREVIEW_ZONE must be set, e.g. lszio.space}"
+          echo "project=zio-pr-$PR_NUMBER" >> "$GITHUB_OUTPUT"
+          echo "domain=zio-pr-$PR_NUMBER.$PREVIEW_ZONE" >> "$GITHUB_OUTPUT"
+
+      - name: Delete preview
+        if: >-
+          github.event_name == 'workflow_dispatch' ||
+          github.event.action == 'closed'
+        env:
+          DOKPLOY_API_URL: ${{ secrets.DOKPLOY_API_URL }}
+          DOKPLOY_API_TOKEN: ${{ secrets.DOKPLOY_API_TOKEN }}
+          DOKPLOY_PROJECT_ID: ${{ secrets.DOKPLOY_PROJECT_ID }}
+          DOKPLOY_ENVIRONMENT_ID: ${{ secrets.DOKPLOY_ENVIRONMENT_ID }}
+          DOKPLOY_GITHUB_ID: ${{ secrets.DOKPLOY_GITHUB_ID }}
+          PREVIEW_PROJECT: ${{ steps.preview.outputs.project }}
+          PREVIEW_DOMAIN: ${{ steps.preview.outputs.domain }}
+          PR_NUMBER: ${{ github.event.pull_request.number || inputs.pull_request }}
+        run: bash tools/preview-stack.sh delete
+
+      - name: Create preview
+        if: >-
+          github.event_name != 'workflow_dispatch' &&
+          github.event.action != 'closed'
+        env:
+          DOKPLOY_API_URL: ${{ secrets.DOKPLOY_API_URL }}
+          DOKPLOY_API_TOKEN: ${{ secrets.DOKPLOY_API_TOKEN }}
+          DOKPLOY_PROJECT_ID: ${{ secrets.DOKPLOY_PROJECT_ID }}
+          DOKPLOY_ENVIRONMENT_ID: ${{ secrets.DOKPLOY_ENVIRONMENT_ID }}
+          DOKPLOY_GITHUB_ID: ${{ secrets.DOKPLOY_GITHUB_ID }}
+          PREVIEW_PROJECT: ${{ steps.preview.outputs.project }}
+          PREVIEW_DOMAIN: ${{ steps.preview.outputs.domain }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          GROVE_PREVIEW_TOKEN_READER: ${{ secrets.GROVE_PREVIEW_TOKEN_READER }}
+          GROVE_PREVIEW_TOKEN_OPERATOR: ${{ secrets.GROVE_PREVIEW_TOKEN_OPERATOR }}
+          GROVE_PREVIEW_TOKEN_PUBLISHER: ${{ secrets.GROVE_PREVIEW_TOKEN_PUBLISHER }}
+        run: bash tools/preview-stack.sh up
