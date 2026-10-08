@@ -40,7 +40,9 @@ ENV GROVE_ROOT=/srv/grove/data \
     GROVE_WORKER_SCRIPT=/opt/zio/share/grove/workers/torch/worker.py
 EXPOSE 8787
 # Health asks the running service, it does not start a second one: two
-# owners on one store would fight over the coordinator epoch.
+# owners on one store would fight over the coordinator epoch. The body is
+# checked because the API answers 200 with status "degraded" while the
+# scheduler cannot advance — a stalled queue must not report healthy.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
-  CMD ["/opt/grove-venv/bin/python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8787/api/health', timeout=3).status == 200 else 1)"]
+  CMD ["/opt/grove-venv/bin/python", "-c", "import urllib.request,json,sys; r=urllib.request.urlopen('http://127.0.0.1:8787/api/health', timeout=3); sys.exit(0 if r.status == 200 and json.load(r).get('status') == 'ok' else 1)"]
 CMD ["/opt/zio/bin/grove", "serve", "--root", "/srv/grove/data"]
