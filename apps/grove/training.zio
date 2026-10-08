@@ -28,10 +28,16 @@
   ;; module. Keys match the ModuleSpec field list in apps/grove/codec.zio,
   ;; because `codec--text` writes only the fields it knows and silently
   ;; drops the rest.
+  ;; `params` comes from `codec--normalize`, so its layer keys are
+  ;; KEYWORDS; the graph's `output` names are STRINGS, and a keyword never
+  ;; equals a string. Comparing them raw silently matched nothing and every
+  ;; trained model published `modules: []`. `name` renders a keyword as the
+  ;; bare layer name it came from, so both sides compare as strings.
   (let* [ops (if (map? graph) (get graph :ops []) [])
          linears (filter (fn [op] (and (map? op) (= (get op :kind "") "linear"))) ops)
          total (count linears)
-         fusion-name (if (empty? linears) "" (str (get (first linears) :output "")))]
+         fusion-name (if (empty? linears) "" (str (get (first linears) :output "")))
+         trained (map (fn [layer] (name layer)) (keys params))]
     (loop [index 0 remaining linears acc []]
       (if (empty? remaining) acc
         (let [op (first remaining)
@@ -39,7 +45,7 @@
               fusion (= index 0)
               head (= index (- total 1))]
           (recur (+ index 1) (rest remaining)
-                 (if (grove--contains (keys params) name)
+                 (if (grove--contains trained name)
                    ;; input/output spaces chain: the first module consumes
                    ;; the fused modalities, the last emits logits, and the
                    ;; head is frozen context because it is the class
@@ -57,6 +63,9 @@
 (defn training--rows [params artifact]
   ;; One ParamRef per trained layer; `shape` is the row count the worker
   ;; wrote, so a consumer can size the tensor before loading the bytes.
+  ;; `module` stays the `params` KEY: `json-stringify` encodes a keyword as
+  ;; its bare name (`"h0"`), so the ParamRef decodes back with the same
+  ;; string `training--modules` put in a ModuleSpec `name`.
   (map (fn [layer]
          {:module layer
           :shape [(count (get (get params layer) :w []))]
