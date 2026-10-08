@@ -6,6 +6,8 @@
 # (https://dokploy.lszio.space, tRPC, header x-api-key, 2026-10-09):
 #   POST compose.create            {projectId,environmentId,name,sourceType:"github",composeType:"docker-compose"} -> composeId
 #                                  (create IGNORES git fields; set them via compose.update)
+#   GET  environment.one           {environmentId} -> environment with a compose[] list (name -> composeId lookup;
+#                                  compose.one only accepts a composeId and 404s on a name, VERIFIED 2026-10-09)
 #   POST compose.update            {composeId,sourceType:"github",githubId,owner,repository,branch,composePath,autoDeploy}
 #   POST compose.saveEnvironment   {composeId,env:"K=V\n..."}
 #   POST compose.deploy            {composeId}
@@ -15,6 +17,11 @@
 # ASSUMED (not verified against a live PR stack):
 #   - Dokploy can clone the GitHub ref "pull/<N>/head" as a branch.
 #   - compose.create response path .result.data.json.composeId.
+# RESIDUAL RACE (compose.update API takes a branch/ref only, no commit SHA):
+#   the deploy builds whatever `pull/<N>/head` points at when Dokploy clones,
+#   which may have moved past the head SHA whose checks passed in CI. The
+#   check-gate in preview.yml therefore bounds (but cannot eliminate) this
+#   race; pinning the SHA requires a Dokploy create/update API change.
 set -euo pipefail
 
 dry_run=false
@@ -55,26 +62,30 @@ get() { # get <procedure> <json-input>
   fi
 }
 
-# composeId of the PR stack, or empty if absent.
-compose_one() {
-  get compose.one "{\"composeId\":\"$project\"}" 2>/dev/null || true
+# composeId of the PR stack, or empty if absent. Stacks are resolved by
+# NAME within the environment: the PR name is not a composeId, and using
+# it as one made `synchronize` create a duplicate stack and PR close delete
+# nothing.
+resolve_compose_id() {
+  if $dry_run; then
+    get environment.one "{\"environmentId\":\"$env_id\"}" # name -> composeId lookup
+    printf '<composeId-of-%s>\n' "$project"
+  else
+    get environment.one "{\"environmentId\":\"$env_id\"}" \
+      | jq -r --arg name "$project" '(.result.data.json // .result.data // .).compose[]? | select(.name == $name) | .composeId' || true
+  fi
 }
 
 case "${1:?usage: preview-stack.sh [--dry-run] up|delete}" in
   up)
-    if $dry_run; then
-      compose_id="$project"
-      post compose.one "{\"composeId\":\"$compose_id\"}" >/dev/null # existence lookup
+    compose_id="$(resolve_compose_id)"
+    if [ -n "$compose_id" ]; then
+      printf 'stack %s exists (%s), updating\n' "$project" "$compose_id"
     else
-      existing="$(compose_one)"
-      if [ -n "$existing" ] && printf '%s' "$existing" | jq -e '.result.data.json.composeId' >/dev/null; then
-        compose_id="$project"
-        printf 'stack %s exists, updating\n' "$project"
-      else
-        compose_id="$(post compose.create "{\"projectId\":\"$project_id\",\"environmentId\":\"$env_id\",\"name\":\"$project\",\"sourceType\":\"github\",\"composeType\":\"docker-compose\"}" \
-          | jq -r '.result.data.json.composeId // .result.data.composeId // .composeId')"
-        [ -n "$compose_id" ] || { echo 'compose.create returned no composeId' >&2; exit 1; }
-      fi
+      compose_id="$(post compose.create "{\"projectId\":\"$project_id\",\"environmentId\":\"$env_id\",\"name\":\"$project\",\"sourceType\":\"github\",\"composeType\":\"docker-compose\"}" \
+        | jq -r '.result.data.json.composeId // .result.data.composeId // .composeId')"
+      [ -n "$compose_id" ] || { echo 'compose.create returned no composeId' >&2; exit 1; }
+      printf 'created stack %s (%s)\n' "$project" "$compose_id"
     fi
     post compose.update "{\"composeId\":\"$compose_id\",\"sourceType\":\"github\",\"githubId\":\"$github_id\",\"owner\":\"$repo_owner\",\"repository\":\"$repo_name\",\"branch\":\"pull/$pr_number/head\",\"composePath\":\"$compose_file\",\"autoDeploy\":true}" >/dev/null
     preview_env=""
@@ -89,11 +100,15 @@ case "${1:?usage: preview-stack.sh [--dry-run] up|delete}" in
         | jq -r '(.result.data.json // .result.data // .)[]?.domainId' \
         | while IFS= read -r d; do post domain.delete "{\"domainId\":\"$d\"}" >/dev/null; done
     fi
-    post domain.create "{\"host\":\"$domain\",\"path\":\"/\",\"port\":80,\"https\":true,\"certificateType\":\"letsencrypt\",\"composeId\":\"$compose_id\",\"serviceName\":\"\",\"domainType\":\"compose\"}" >/dev/null
+    post domain.create "{\"host\":\"$domain\",\"path\":\"/\",\"port\":80,\"https\":true,\"certificateType\":\"letsencrypt\",\"composeId\":\"$compose_id\",\"serviceName\":\"site\",\"domainType\":\"compose\"}" >/dev/null
     printf 'preview %s is deploying from pull/%s/head\n' "$domain" "$pr_number"
     ;;
   delete)
-    compose_id="$project"
+    compose_id="$(resolve_compose_id)"
+    if [ -z "$compose_id" ] && ! $dry_run; then
+      printf 'no stack named %s; nothing to delete\n' "$project"
+      exit 0
+    fi
     if ! $dry_run; then
       ids="$(get domain.byComposeId "{\"composeId\":\"$compose_id\"}" \
         | jq -r '(.result.data.json // .result.data // .)[]?.domainId' || true)"
