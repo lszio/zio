@@ -1,0 +1,45 @@
+;; ── zio.entity — Entity model (identity + metadata) ─────────────
+;;
+;; defentity / make-entity / entity-id work in native and browser sessions.
+;; Default ids are unique only within this loaded library context. A host
+;; may explicitly supply a cryptographic identity generator.
+
+(defmacro defentity [name fields]
+  (let [entity-class-name (symbol (str "entity-" name))]
+    (list 'defclass entity-class-name nil
+          (map (fn [f] (list f :initarg (keyword f))) fields))))
+
+;; No implicit host dependency: browser pure use retains local identity.
+(def entity--counter 0)
+(def entity--identity-source nil)
+
+(defn entity-set-identity-source! [source]
+  (if (fn? source)
+    (set! entity--identity-source source)
+    (error "invalid-input: entity identity source must be callable")))
+
+(defn entity-use-host-identity! []
+  (entity-set-identity-source!
+    (fn [] (host/sha256 (host/random-bytes 32)))))
+
+(defn make-entity [type-sym & kvs]
+  ;; defentity names the class "entity-<type>"; use the same name here.
+  (let* [cls (symbol (str "entity-" (str type-sym)))
+         inst (apply make-instance (cons cls kvs))
+         id (if (nil? entity--identity-source)
+              (do (set! entity--counter (+ entity--counter 1))
+                  (str "entity-" type-sym "-" entity--counter))
+              (let* [generated (entity--identity-source)]
+                (if (string? generated)
+                  (if (> (count generated) 0)
+                    generated
+                    (error "invalid-input: empty entity identity"))
+                  (error "invalid-input: entity identity must be a string"))))]
+    {:entity/type type-sym
+     :entity/id id
+     :entity/instance inst}))
+
+(defn entity-id [entity]
+  (if (map? entity)
+    (get entity :entity/id)
+    nil))

@@ -1,0 +1,179 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  # The compiler walks form trees recursively and a test thread's 2 MiB
+  # is not enough for a whole program. Rust test threads are spawned
+  # with this size, so it is a real requirement, not a preference.
+  RUST_MIN_STACK: 134217728
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: build and test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        run: cargo build --workspace --all-targets
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # Workspace isolation contracts exercise the real CPU worker and require
+      # its gitignored virtual environment in a clean checkout.
+      - name: Set up CPU worker runtime
+        run: |
+          python -m venv .venv
+          .venv/bin/python -m pip install \
+            --index-url https://download.pytorch.org/whl/cpu \
+            -r apps/grove/workers/torch/requirements.txt
+
+      - name: Test
+        run: cargo test --workspace
+
+      # A test that says the compiler compiles itself has to actually
+      # run; it is not a smoke test to be skipped for speed.
+      - name: Self-hosting contracts
+        run: cargo test -p zio-core --test self_hosting
+
+      - name: Formatting
+        run: cargo fmt --all -- --check
+
+      # `-D warnings` is the bar for anything that indicates a defect.
+      # The list below is style and idiom only. Each is named so a new
+      # one has to be argued for rather than arriving by accident, and
+      # the two that dominate are worth explaining:
+      #
+      #   arc_with_non_send_sync — the evaluation context is
+      #     deliberately `!Send` because it owns mutable registries, and
+      #     every `Arc` it hands out inherits that. Making it `Send`
+      #     would mean `Mutex`, which is a design change, not a lint fix.
+      #
+      #   redundant_closure_for_method_calls, needless_return, and the
+      #     rest — these rewrite a line without changing what it means.
+      #     Fixing them individually is churn in files this repository
+      #     is still migrating, and the rewrite hides the line that a
+      #     later review actually needs to read.
+      #
+      # The legacy Grove crates are excluded from the lint target: they
+      # are being replaced by the Zio implementation and are deleted at
+      # cutover, so a lint there describes code whose lifetime is
+      # already over. They are still built and tested above.
+      - name: Clippy
+        run: |
+          cargo clippy --workspace --exclude grove --exclude grove-app \
+            --all-targets -- -D warnings \
+            -A clippy::arc_with_non_send_sync \
+            -A clippy::too_many_arguments \
+            -A clippy::needless_return \
+            -A clippy::needless_for_each \
+            -A clippy::needless_borrow \
+            -A clippy::single_match \
+            -A clippy::collapsible_if \
+            -A clippy::collapsible_else_if \
+            -A clippy::collapsible_match \
+            -A clippy::type_complexity \
+            -A clippy::useless_conversion \
+            -A clippy::useless_format \
+            -A clippy::len_zero \
+            -A clippy::manual_clamp \
+            -A clippy::suspicious_map \
+            -A clippy::wrong_self_convention \
+            -A clippy::new_without_default \
+            -A clippy::question_mark \
+            -A clippy::unnecessary_to_owned \
+            -A clippy::iter_cloned_collect \
+            -A clippy::cmp_owned \
+            -A clippy::unnecessary_cast \
+            -A clippy::explicit_auto_deref \
+            -A clippy::module_inception \
+            -A clippy::vec_init_then_push \
+            -A clippy::redundant_locals \
+            -A clippy::redundant_closure \
+            -A clippy::redundant_closure_for_method_calls \
+            -A clippy::single_char_pattern \
+            -A clippy::single_char_add_str \
+            -A clippy::while_let_on_iterator \
+            -A clippy::err_expect \
+            -A clippy::map_unwrap_or \
+            -A clippy::single_match_else \
+            -A dead_code
+
+  wasm:
+    name: wasm build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: wasm
+
+      # The build script shells out to `wasm-bindgen`, which is a separate
+      # binary from the compiler. Without it the step fails with a
+      # "command not found" that says nothing about the toolchain.
+      - name: Install wasm-bindgen
+        run: cargo install wasm-bindgen-cli --version 0.2.126 --locked
+
+      - name: Build the browser engine
+        run: ./tools/build-wasm.sh
+
+      # The site serves this artifact, so a stale engine is a silently
+      # broken playground rather than a failed build.
+      - name: Check the artifact exists
+        run: |
+          test -f apps/site/public/wasm/zio_core.js || {
+            echo "wasm glue missing: run ./tools/build-wasm.sh"; exit 1; }
+          test -f apps/site/public/wasm/zio_core_bg.wasm || {
+            echo "wasm module missing: run ./tools/build-wasm.sh"; exit 1; }
+
+      - name: Show what the build changed
+        run: git status --porcelain -- apps/site/public/wasm || true
+
+  library-contracts:
+    name: library contracts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test -p zio-cli --test lib_contract
+
+  language-server:
+    name: language server
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build
+        run: cargo build -p zio-lsp
+      # Drives a real stdio session: a document with CJK, emoji and CRLF,
+      # a definition, a reference, and an `(eval ...)` that must never
+      # run. The canary check is the point of it.
+      - name: Protocol session
+        run: python3 tools/lsp_probe.py target/debug/zio-lsp

@@ -1,0 +1,17 @@
+;; Host HTTP bindings — names map onto the primitives the NativeTransport
+;; agent is shipping under (host/http-listen, host/http-next, host/http-reply,
+;; host/http-close). Each function is a one-liner so the api dispatcher stays
+;; readable. The transport agent owns the actual implementation; this file is
+;; the contract surface for the grove app.
+
+(defn http--listen [bind]
+  (host/http-listen bind))
+
+(defn http--next [listener]
+  (host/http-next listener))
+
+(defn http--reply [id status headers body]
+  (host/http-reply id status headers body))
+
+(defn http--close [id]
+  (host/http-close id))

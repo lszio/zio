@@ -1,5 +1,7 @@
 # 03: 显式状态：EvalEngine Trait
 
+> 2026-10-07 目录更新：本文教学代码与旧阶段/验收描述保留历史语境；源码链接和运行路径已映射到当前位置。现行目标是 `libs/` 的 Zio 库与 `apps/grove/` 的 Zio 业务迁移，Rust Grove 业务尚未整体重写；通用 Rust transport/host adapter 在 `contribs/native/loom/`。当前归属见[架构](../docs/zio-architecture.md)与[批准目录计划](../docs/superpowers/plans/2026-10-07-language-first-layout.md)。
+
 > 从 4 个 `thread_local!` 全局变量到 trait object 注入——一次有洁癖的架构重构。
 
 ---
@@ -9,7 +11,7 @@
 > Numa（计算）、Rill（CLI 组合）、Loom（Agent harness）是按需安装、独立
 > 版本发布的官方库，不是语言内置特性；Grove 消费语言与三库，负责学习、
 > 评价、检查点与发布治理，核心无反向依赖。三库新增能力仍 Planned。
-> 当前 `zio-ai` 是 Loom 的起点，`zio-cli` 是未来消费 Rill 的可执行宿主；
+> 当前 Rust `loom` adapter 位于 `contribs/native/loom/`，`zio-cli` 是未来消费 Rill 的可执行宿主；
 > 历史代码、函数和命令不改名，正式短名不是已注册包 ID。现行职责见
 > [ADR-019](../docs/adrs.md#adr-019-grove-独立应用与同像性逻辑演化)及
 > [统一实现计划](../docs/superpowers/plans/2026-10-05-zio-grove-convergence.md)。
@@ -78,7 +80,7 @@ type EvalFn = fn(&Sexp, &Env, bool, &dyn Fn(...)) -> ...;
 
 ## 解决方案：EvalContext + EvalEngine Trait
 
-打开 [`core/src/context.rs`](../core/src/context.rs)：
+打开 [`langs/core/src/context.rs`](../langs/core/src/context.rs)：
 
 ```rust
 pub trait EvalEngine {
@@ -129,7 +131,7 @@ Trait 打破了这个循环：
 eval.rs          → 调用 special::eval_special_form
 special/*.rs     → 调用 engine.eval_expr (trait method)
                                            ↑
-core/src/lib.rs  ← 汇编：impl EvalEngine for EvalContext
+langs/core/src/lib.rs  ← 汇编：impl EvalEngine for EvalContext
 ```
 
 Trait 放在一个独立的 `context.rs` 中，不依赖 `special`、`macros` 等模块。所有需要环回调用 eval 的代码只依赖 `EvalEngine` trait，不依赖 `EvalContext` struct。
@@ -203,13 +205,13 @@ ADR-002: EvalContext + EvalEngine trait 收容所有 mutable 状态
 
 ## 在代码中
 
-- 打开 [`core/src/context.rs`](../core/src/context.rs) 看 `EvalEngine` trait 和 `EvalContext`
-- 打开 [`core/src/eval.rs`](../core/src/eval.rs) 看 `impl EvalEngine for EvalContext`
-- 打开 [`core/src/builtins/collections.rs`](../core/src/builtins/collections.rs) 搜索 `engine` 看高阶函数如何使用它
+- 打开 [`langs/core/src/context.rs`](../langs/core/src/context.rs) 看 `EvalEngine` trait 和 `EvalContext`
+- 打开 [`langs/core/src/eval.rs`](../langs/core/src/eval.rs) 看 `impl EvalEngine for EvalContext`
+- 打开 [`langs/core/src/builtins/collections.rs`](../langs/core/src/builtins/collections.rs) 搜索 `engine` 看高阶函数如何使用它
 
 ```bash
 # 当前解释器路径；是否匹配以实际命令输出为准
-grep -r "thread_local" core/src/
+grep -r "thread_local" langs/core/src/
 ```
 
 ---

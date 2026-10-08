@@ -1,5 +1,7 @@
 # Zio VM、应用场景与落地页设计规格
 
+> Historical document: paths, commands and delivery claims below describe their original date. The 2026-10-07 language-first cutover supersedes directory and library ownership targets; see [current architecture](../../zio-architecture.md) and [approved layout plan](../plans/2026-10-07-language-first-layout.md). Rust Grove business migration remains outstanding.
+
 **日期：** 2026-08-10
 
 **状态：** 历史批准设计；未实现部分为参考，不是当前开工顺序
@@ -148,6 +150,7 @@ ZIR 显式表达局部槽位、闭包捕获、函数调用、尾调用、条件�
 - 常量与栈：`Const`、`Nil`、`True`、`False`、`Pop`、`Dup`。
 - 变量：`LoadLocal`、`StoreLocal`、`LoadUpvalue`、`StoreUpvalue`、`LoadGlobal`、`DefineGlobal`。
 - 控制流：`Jump`、`JumpIfFalse`、`Loop`、`Return`。
+
 - 调用：`Call`、`TailCall`、`CallNative`、`CallGeneric`。
 - 闭包：`MakeClosure`、`CloseUpvalue`。
 - 数据：List、Vector、Map 和 Tensor 构造指令。
@@ -298,6 +301,7 @@ Trace 等级为 `off`、`errors`、`calls`、`instructions`。指令级跟踪默
 - 局部变量访问；
 - 普通函数、闭包、NativeFn 和 GF 调用；
 - 尾循环；
+
 - List/Vector/Map 构造与遍历；
 - Tensor 运算；
 - 宏展开和动态编译缓存；
@@ -447,6 +451,7 @@ site/public/wasm/                 提交的引擎产物，由 tools/build-wasm.s
 - Host 请求序列。
 
 Corpus 覆盖字面量、词法作用域、闭包、递归、TCO、宏、模块、错误、ZOS、Tensor 和动态编译。
+
 
 ### 13.2 编译器与 VM 测试
 

@@ -1,0 +1,49 @@
+;; Feedback domain: signals, conflicts, frozen datasets.
+;; All writes go through the store's domain-validated functions.
+(load "store.zio")
+
+(def feedback--human-kinds ["human-correction" "human-preference" "demonstration"])
+(def feedback--kinds ["teacher-label" "human-correction" "human-preference" "demonstration" "environment-result" "revision" "retraction"])
+
+(defn feedback--target [signal]
+  (let [oid (grove--get-key signal :observation_id nil)]
+    (if (not (nil? oid)) oid
+      (let [pid (grove--get-key signal :prediction_id nil)]
+        (if (not (nil? pid)) pid (grove--get-key signal :task_id nil))))))
+
+;; Submit a signal. The store enforces the role-required-for-kind rule,
+;; the producer-must-be-principal rule, and the idempotency contract.
+;; Returns "accepted" or "duplicate".
+(defn feedback--submit [store signal]
+  (store--submit-signal store signal))
+
+(defn feedback--active [store target]
+  (store--active-signals store target))
+
+(defn feedback--status [store id]
+  (store--signal-status store id))
+
+(defn feedback--conflicts [store target]
+  (store--signal-conflicts store target))
+
+(defn feedback--resolve [store keep supersede]
+  (store--resolve-conflict store keep supersede))
+
+;; Freeze the in-force signal set for a task. Membership is written
+;; once and never rewritten: a later signal produces a new revision
+;; rather than mutating a view a run is already training on.
+(defn feedback--freeze [store revision]
+  (store--freeze-dataset store revision))
+
+(defn feedback--datasets [store signal]
+  (map (fn [d] (grove--get-key d :id nil))
+    (filter (fn [d] (grove--contains (grove--get-key d :signal_ids []) signal))
+      (grove--list store "DatasetRevision"))))
+
+(defn feedback--pending [store task]
+  (map (fn [id] id) (store--pending-signals store task)))
+
+;; The kinds whose messages the API takes as `:kind` strings. Re-stated
+;; here so feedback-only consumers do not import store internals.
+(defn feedback--kind-allowed? [kind]
+  (grove--contains feedback--kinds kind))

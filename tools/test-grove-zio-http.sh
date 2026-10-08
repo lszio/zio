@@ -1,0 +1,104 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+test_dir="$(mktemp -d)"
+server_pid=""
+http_status=""
+http_body=""
+trap 'if [[ -n "$server_pid" ]]; then kill "$server_pid" 2>/dev/null || true; wait "$server_pid" 2>/dev/null || true; fi; rm -rf "$test_dir"' EXIT
+
+cd "$root"
+cargo build -q -p zio-cli
+port="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()')"
+bind="127.0.0.1:$port"
+export GROVE_TOKEN_READER=reader-test
+export GROVE_TOKEN_OPERATOR=operator-test
+export GROVE_TOKEN_PUBLISHER=publisher-test
+
+run_grove() {
+  local args=()
+  for arg in "$@"; do
+    args+=(--args "$arg")
+  done
+  ./target/debug/zio-cli \
+    --app apps/grove/main.zio \
+    --app-root apps/grove \
+    --app-share . \
+    --app-root-dir "$test_dir" \
+    --app-bind "$bind" \
+    "${args[@]}"
+}
+
+fail() {
+  printf '%s\n' "$1" >&2
+  if [[ -f "$test_dir/server.log" ]]; then
+    cat "$test_dir/server.log" >&2
+  fi
+  exit 1
+}
+
+fetch() {
+  local response
+  response="$(curl -sS --max-time 3 -w $'\n%{http_code}' "$@" 2>/dev/null || true)"
+  http_status="${response##*$'\n'}"
+  http_body="${response%$'\n'*}"
+}
+
+expect() {
+  local label="$1" expected_status="$2" expected_body="$3"
+  shift 3
+  fetch "$@"
+  if [[ "$http_status" != "$expected_status" || "$http_body" != *"$expected_body"* ]]; then
+    fail "$label: expected HTTP $expected_status containing '$expected_body'; got HTTP $http_status: $http_body"
+  fi
+}
+
+(
+  cd apps/grove
+  ../../target/debug/zio-cli web/browser-contract.zio
+) || fail "Grove browser controller contract failed"
+
+run_grove demo --case dual --root "$test_dir" >"$test_dir/demo.log" 2>&1 || fail "Grove demo store initialization failed"
+run_grove serve --root "$test_dir" >"$test_dir/server.log" 2>&1 &
+server_pid=$!
+
+ready=0
+for _ in {1..30}; do
+  fetch "http://$bind/api/health"
+  if [[ "$http_status" != 000 ]]; then
+    ready=1
+    break
+  fi
+  if ! kill -0 "$server_pid" 2>/dev/null; then
+    fail "Grove server exited before accepting requests"
+  fi
+  sleep 1
+done
+[[ "$ready" == 1 ]] || fail "Grove server did not become ready"
+
+expect "public Grove page" 200 "Grove · learning control" "http://$bind/"
+expect "public browser bridge" 200 "Grove browser bridge" "http://$bind/bridge.js"
+expect "public controller source" 200 "Trusted Zio sources" "http://$bind/controller-source.js"
+expect "public stylesheet" 200 "--ink:" "http://$bind/styles.css"
+fetch "http://$bind/favicon.ico"
+[[ "$http_status" == 204 ]] || fail "public favicon: expected HTTP 204; got HTTP $http_status"
+wasm_meta="$(curl -sS --max-time 3 -o "$test_dir/served-wasm" -w '%{http_code} %{content_type}' "http://$bind/wasm/zio_core_bg.wasm" 2>/dev/null || true)"
+[[ "$wasm_meta" == "200 application/wasm" ]] || fail "public WASM: expected HTTP 200 application/wasm; got $wasm_meta"
+cmp -s apps/site/public/wasm/zio_core_bg.wasm "$test_dir/served-wasm" || fail "public WASM body differs from the checked-in bundle"
+expect "public health" 200 '"status":"ok"' "http://$bind/api/health"
+expect "private read without a token" 401 '"class":"unauthorized"' "http://$bind/api/runs"
+expect "reader run listing" 200 '"runs":[]' -H 'Authorization: Bearer reader-test' "http://$bind/api/runs"
+expect "reader module listing without an active publication" 200 '"modules":[]' -H 'Authorization: Bearer reader-test' "http://$bind/api/modules"
+expect "reader publication history" 200 '"history":[]' -H 'Authorization: Bearer reader-test' "http://$bind/api/learning/publication"
+expect "dynamic path parameter decoding" 200 '"snapshot":"snapshot-1"' -H 'Authorization: Bearer reader-test' "http://$bind/api/evaluations/snapshot%2D1"
+expect "literal plus preserved in path parameter" 200 '"snapshot":"snapshot+1"' -H 'Authorization: Bearer reader-test' "http://$bind/api/evaluations/snapshot+1"
+expect "percent-encoded plus preserved in path parameter" 200 '"snapshot":"snapshot+1"' -H 'Authorization: Bearer reader-test' "http://$bind/api/evaluations/snapshot%2B1"
+expect "known path with unsupported method" 405 '"class":"method-not-allowed"' -X POST -H 'Authorization: Bearer reader-test' -H 'Content-Type: application/json' --data '{}' "http://$bind/api/runs"
+expect "reader event query" 200 '"events":[]' -H 'Authorization: Bearer reader-test' "http://$bind/api/events?after_sequence=0&limit=10"
+expect "query value preserves equals after first separator" 200 '"root":"snapshot=1"' -H 'Authorization: Bearer reader-test' "http://$bind/api/lineage?root=snapshot=1"
+expect "query plus decodes to space" 200 '"root":"snapshot 1"' -H 'Authorization: Bearer reader-test' "http://$bind/api/lineage?root=snapshot+1"
+expect "unknown route" 404 '"class":"not_found"' -H 'Authorization: Bearer reader-test' "http://$bind/api/not-a-route"
+expect "server remains available after requests" 200 '"status":"ok"' "http://$bind/api/health"
+
+printf 'PASS Grove Zio HTTP health, auth, query, routing and request lifecycle\n'

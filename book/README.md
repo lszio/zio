@@ -1,5 +1,7 @@
 # Zio 语言从零入门教程
 
+> 2026-10-07 目录更新：本文教学代码与旧阶段/验收描述保留历史语境；源码链接和运行路径已映射到当前位置。现行目标是 `libs/` 的 Zio 库与 `apps/grove/` 的 Zio 业务迁移，Rust Grove 业务尚未整体重写；通用 Rust transport/host adapter 在 `contribs/native/loom/`。当前归属见[架构](../docs/zio-architecture.md)与[批准目录计划](../docs/superpowers/plans/2026-10-07-language-first-layout.md)。
+
 > 面向编程新手，从零开始理解 Zio：一门用 Rust 实现的现代 Lisp 语言。
 
 ## 致读者
@@ -13,14 +15,14 @@
 
 ## 当前架构入口
 
-- [项目概览与目标边界](01-项目概览与哲学.md)：当前五个 crate 与目标职责的区别。
+- [项目概览与目标边界](01-项目概览与哲学.md)：当前源树与目标职责的区别。
 - [批准的 Zio/Grove 基线](../docs/self-learning-architecture.md)与[语言架构](../docs/zio-architecture.md)：ZOS 留在核心，Zio 编译器自举（Planned）与 Zio 应用开发分别验收。
-- [收敛实施计划](../docs/superpowers/plans/2026-10-05-zio-grove-convergence.md)：Numa（计算）、Rill（CLI 组合）、Loom（Agent harness）官方独立库与独立 Grove APP 的可执行工作包。
+- [收敛实施计划](../docs/superpowers/plans/2026-10-05-zio-grove-convergence.md)：Numa（计算）、Rill（CLI 组合）、Loom（Agent harness）官方 Zio 库与独立 Grove APP 的可执行工作包。
 
 Grove 的真实模型调用、隔离执行证据、反馈候选、独立评估和人工发布闭环仍是 Planned；本教程的 REPL、宏与对象示例不代表该闭环已经交付。
 
 三库按需安装、独立版本发布，不是 Zio 语言内置特性；Grove 消费语言与库，
-核心无反向依赖，三库新增能力仍为 Planned。当前 `zio-ai` 是 Loom 的起点，
+核心无反向依赖，三库新增能力仍为 Planned。当前 Rust `loom` adapter 位于 `contribs/native/loom/`，
 `zio-cli` 是未来消费 Rill 的可执行宿主；教程代码、包名和命令不改名。
 正式短名不指定注册包 ID，未来目录/逻辑命名空间见[术语表](../docs/glossary.md)，
 边界以 [ADR-019](../docs/adrs.md#adr-019-grove-独立应用与同像性逻辑演化) 为准。
@@ -72,7 +74,7 @@ Grove 的真实模型调用、隔离执行证据、反馈候选、独立评估�
 
 | 资源 | 位置 | 用途 |
 |------|------|------|
-| 项目源码 | `core/src/` | 所有核心实现 |
+| 项目源码 | `langs/core/src/` | 所有核心实现 |
 | 架构文档 | `docs/zio-architecture.md` | 系统架构总览 |
 | 哲学文档 | `docs/zio-philosophy.md` | 设计原则 |
 | eval 管线 | `docs/eval-pipeline.md` | 求值流程详解 |
@@ -84,7 +86,7 @@ Grove 的真实模型调用、隔离执行证据、反馈候选、独立评估�
 
 ```bash
 cd zio
-cargo run
+cargo run -p zio-cli
 ```
 
 看到 REPL 提示符 `zio>`，输入你的第一个 Zio 表达式：

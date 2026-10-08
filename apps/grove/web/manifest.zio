@@ -1,0 +1,31 @@
+;; Trusted Zio source resources for the browser WASM bundle.
+;;
+;; The browser has no native filesystem. The Foundation WASM build reads
+;; this manifest and assembles `globalThis.groveResources` (or equivalent)
+;; as an array of {path, source} pairs. The bridge calls
+;; `session.add_source(path, source)` for each entry before the bundle
+;; evaluates.
+;;
+;; Every entry below MUST resolve in both the CLI build (real filesystem)
+;; and the browser build (embedded). Paths are the canonical /-rooted
+;; paths the WASM host uses for `add_source`.
+;;
+;; AST startup is explicit: the bundle entry is evaluated by the AST
+;; evaluator until compiled execution lands. Saying so plainly because
+;; nothing here implies compilation.
+
+(def grove--bundle-paths [
+  ;; The controller is the application business. The bridge calls
+  ;; grove--browser-step by symbol; the controller must be loaded before
+  ;; the bundle evaluates so the symbol resolves.
+  "/zio/apps/grove/browser-controller.zio"
+
+  ;; Bundle entry: registers the controller and exposes the boot result.
+  "/zio/apps/grove/browser-bundle.zio"])
+
+;; A JSON description for the build to embed alongside the bundle.
+(defn grove--manifest-entry [path]
+  {:path path :trust "trusted-application"})
+
+(defn grove--manifest []
+  (into [] (map grove--manifest-entry grove--bundle-paths)))

@@ -1,0 +1,30 @@
+;; Bundle entry the Foundation WASM build evaluates at startup.
+;;
+;; AST startup is explicit: the Foundation build reads this file with the
+;; AST evaluator. Compiled execution is acceptable once the Compiler agent
+;; lands; nothing here implies compilation is live.
+;;
+;; The bundle returns a JSON map the bridge consumes:
+;;   { initialState:    <the controller's persisted state>
+;;     initialCommands: <the command list from the boot event> }
+;; The bridge applies the initial commands immediately and uses
+;; initialState as the seed for every subsequent event.
+
+;; Load the controller via load; the Foundation build embedded
+;; /zio/apps/grove/browser-controller.zio via add_source, so this
+;; resolves. The browser IoHost's "no cwd" capability short-circuits
+;; relative load resolution, so the path is absolute.
+(load "/zio/apps/grove/browser-controller.zio")
+
+(defn grove--browser-boot []
+  ;; Dispatch the synthetic boot event through the public step entry so
+  ;; the controller's own boot path produces the welcome command list.
+  (grove--browser-step {} {:kind "boot" :fields {}}))
+
+(defn grove--browser-export []
+  ;; Single expression so eval_json returns it as the bundle value.
+  (let* [boot (grove--browser-boot)]
+    {:initialState (get boot :state)
+     :initialCommands (get boot :commands)
+     :version "grove.bundle/1"
+     :startup "ast"}))

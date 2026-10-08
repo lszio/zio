@@ -1,171 +1,108 @@
 # Zio 系统架构
 
-> Version 0.7 — Zio 核心/自举、Numa/Rill/Loom 官方独立库与 Grove 应用（2026-10-05）
+> Version 0.8 — language-first 平铺目录（2026-10-07）
 >
-> 本文件同时描述当前架构与未来目标。实现状态以
-> [特性矩阵](feature-matrix.md)为唯一依据，生成的仓库数量见
-> [项目状态](status.md)。实现细节见 [eval-pipeline.md](eval-pipeline.md)，
-> ZOS 规范见 [zos-spec.md](zos-spec.md)，设计决策见 [adrs.md](adrs.md)。
+> 本页区分已落地的结构迁移、已有运行能力与尚未实现的目标。
+> 能力和历史实跑证据见[特性矩阵](feature-matrix.md)，数量见[项目状态](status.md)。
+> 本次目录合同以[批准计划](superpowers/plans/2026-10-07-language-first-layout.md)为准；
+> 旧 T/C/I/H/G 与 W00–W17 计划保留历史证据，不再规定当前物理布局。
 
----
+## 1 语言优先的职责边界
 
-## 1 概述
+Zio 是通用 Lisp 语言。ZOS 仍属于语言核心；库和应用不是语言内置组成。
+Rust 保留语言运行时、可信宿主与必要原语；领域组合、策略与库的目标实现语言是 Zio。
+这不是把独立 Rust 业务库重新命名为 Zio 库，也不是已经完成编译器自举。
 
-### 1.1 系统定义
-
-```text
-语言 Zio = Lisp 核心 + ZOS + 最小运行时/宿主 + 自举工具链
-官方独立库 = Numa（计算） / Rill（CLI） / Loom（harness/ACP）
-独立应用 Grove 使用语言与官方库；库和应用不是语言内置组成
-```
-
-详细哲学定义在 [zio-philosophy.md](zio-philosophy.md)。
-
-### 1.2 目标用户
-
-| 用户画像 | 场景 | Zio 价值 |
-|----------|------|----------|
-| 系统程序员 | CLI 工具、配置文件、脚本 | Rust 宿主与 Lisp 表达力；FFI/性能按实际能力验收，不宣称零开销 |
-| LLM 开发者 | Agent 编排、tool-use | 可编码逻辑与执行证据；真实 harness 为规划 |
-| Common Lisp 用户 | 现代 CL + Rust 生态 | CLOS + MOP + cargo |
-| 教学 | 编程语言课程 | 代码最简、概念正交 |
-
-### 1.3 设计定理
-
-| # | 定理 | 状态 |
-|---|------|------|
-| 1 | **所有 mutable 状态必须显式** | ✅ 0 thread_local 全局变量 |
-| 2 | **Rust 是合同边界，Lisp 是组合层** | ✅ NativeFn + EvalEngine |
-| 3 | **宏是用户扩展 eval 的方式** | ✅ defmacro 可用 |
-| 4 | **核心收敛，领域能力外置** | 保留 ZOS；基础设施与应用不反向进入核心；各组件状态见[特性矩阵](feature-matrix.md) |
-| 5 | **协议比实现重要** | ZOS 子集为 [Experimental](feature-matrix.md)，完整 MOP 为规划 |
-
----
-
-## 2 当前状态
-
-### 2.1 可验证状态
-
-当前 workspace 由 `zio-core`、`zio-cli`、`zio-ai`、`grove`、`grove-app`
-五个 crate 组成。测试、特殊形式、native binding 和 runnable example 数量由
-[`tools/project-status.sh`](../tools/project-status.sh) 生成，不在本页复制；
-快照见[项目状态](status.md)。
-
-### 2.2 组件成熟度
-
-| 组件 | 状态 | 说明 |
-|------|------|------|
-| Reader 与语法展开 | Stable | reader unit tests |
-| AST evaluator、闭包、核心宏与 stdlib | Stable | core tests 与 runnable examples |
-| ZOS class 与 generic dispatch 子集 | Experimental | 受 `zos-concept.zio` 合同覆盖，API 仍可能变化；GF 可调用性经 `zos::apply` 协议（ADR-013） |
-| Persistent library | Experimental | 全部函数可运行；map 迭代顺序未定义 |
-| Datalog 存储（create-db/transact） | Experimental | `lib/zio/datalog.zio`；查询求值器为 stub（Planned） |
-| Agent 框架 | Demo | 数据模型可运行；无 LLM 调用与工具执行 |
-| 协议系统（defprotocol/extend-type） | Experimental | 经 ZOS 泛型函数分派 |
-| Entity 模型 | Experimental | id 为 buffer 渲染；唯一身份待核心原语 |
-| 并发原语（future/chan） | Experimental — 同步占位 | 见 ADR-012：无线程，同步求值 |
-| 文件 I/O（经 IoHost） | Experimental | `load`/`slurp`/`spit`/`file-exists?`；BufferIoHost 提供内存 FS |
-| WASM 构建 + 落地页 REPL | Experimental | `core/src/wasm.rs` + `site/` |
-| AI 宿主协议（`LlmHost`/`EmbedHost`，外部 attach） | Experimental | [`ai/src/lib.rs`](../ai/src/lib.rs)（ADR-016）；无宿主 → `capability-denied:`；Mock 录制/回放 + `http` feature |
-| LLM 提议器库与代际学习循环 | Experimental | [`lib/zio/proposer.zio`](../lib/zio/proposer.zio) + [`lib/zio/learn.zio`](../lib/zio/learn.zio)；白名单/规范化去重/预算/错误隔离在循环内 |
-| Grove 内部宿主、CPU 训练与产品界面 | Experimental | `learning/`、`workers/torch/`、`app/`；组件与 demo 可复用，不代表新的 agent 产品主线完成 |
-| Grove 同像性 agent 逻辑、生成执行与可审查升级 | Planned | [整体设计](self-learning-architecture.md)与 ADR-019；服务训练队列、真实进度与冻结保护尚待贯通 |
-| ZIR、bytecode VM、JIT 与应用能力 | Planned | 只有批准设计，不是当前运行时 |
-
-完整证据和应用能力状态见[特性矩阵](feature-matrix.md)。
-
----
-
-## 3 分层架构
-
-### 3.1 层视图
-
-```text
-独立应用：Grove（模块、学习/实验、独立评价、人工批准、Web）
-                         ↓ 按需消费公开接口
-官方独立库：Numa（计算） / Rill（CLI） / Loom（harness/ACP）
-                         ↓ 必要时通过语言公开扩展接口接入
-语言：Zio 核心与 ZOS / 标准语义 / 自举工具链
-                         ↓ 宿主能力
-Rust：最小运行时、I/O、native、生命周期与可信隔离
-
-zio-cli 是语言二进制，目标消费 Rill；不是 Rill 库本身
-```
-
-这是目标职责图，不代表库已交付。Numa/Rill/Loom 独立版本、按需安装，
-核心不反向依赖它们；Rill 可用于不含 Zio 的 CLI，Numa/Loom 按需提供 Zio
-适配。ZOS 保留核心，应用不引入领域特殊形式；热路径不要求对象化。
-
-### 3.2 层职责
-
-| 层 | 做什么 | Crate | 语言 |
-|----|--------|-------|------|
-| **Host** | EvalContext、生命周期、全局状态 | `zio-core` | Rust |
-| **Reader** | tokenize + Sexp parse + reader macro | `zio-core` | Rust |
-| **Runtime** | eval/apply、TCO、special forms、macroexpand | `zio-core` | Rust |
-| **ZOS** | Experimental Class/GF/Method subset; broader MOP is planned | `zio-core` | Rust |
-| **Stdlib** | 当前 core macros/stdlib；更广标准库为规划 | `core` | Rust + Zio |
-| **Extension Libs** | persistent（部分）、Datalog 存储、agent demo；查询求值与真实编排为 Planned | `lib/zio/*.zio` | **Zio** |
-| **Grove application** | 独立应用；现有宿主、CPU 后端、CLI/HTTP/HTML，目标为同像性逻辑演化 | `grove` + `grove-app` | Rust + Zio + 外部后端 |
-
-### 3.3 Crate 依赖图
-
-**当前（五个 workspace crate）**：
-
-```
-zio-cli (CLI + REPL + 脚本执行 + --llm-replay 装配)
-├── zio-core (reader + AST evaluator + experimental ZOS subset
-│             + builtins/ 按域内建模块 + wasm 入口)
-└── zio-ai (宿主 AI 能力协议：LlmHost/EmbedHost + Mock record/replay
-            + http feature；依赖 zio-core，core 不依赖它)
-
-grove-app (独立应用；当前 demo、CLI + 可选 HTTP/HTML)
-├── grove (learning/：合同、制品、事务、协调、检查点、模块与经验)
-│   ├── zio-core
-│   └── zio-ai (可选 teacher-http 依赖；不表示产品教师已接通)
-└── zio-core
-
-workers/torch/ (应用经受约束进程协议调用的 CPU 参考后端；不是 crate)
-
-lib/zio/*.zio (扩展库，Zio 源码实现；不是 workspace crate)
-```
-
-### 3.4 已确认的领域边界
-
-| 组件 | 负责 | 不负责 |
+| 层 | 当前物理位置 | 职责与状态 |
 |---|---|---|
-| Zio + ZOS | 语言与对象语义、代码作为数据、执行与扩展入口 | 训练、产品治理、CLI 业务、ACP 会话 |
-| Numa 官方计算库（Planned） | 连续数组、dtype/shape、数值/向量/矩阵与模型后端接口 | Agent 决策、教师治理、产品评价/发布 |
-| Rill 官方 CLI 库（Planned） | 命令/子命令、参数、帮助、组合、终端 I/O、退出状态 | 求值器与 Grove 业务；`zio-cli` 是消费者，不是该库 |
-| Loom 官方 harness 库（Planned） | 模型/工具会话、预算/取消、供应商、受约束执行接口、双向 ACP | Grove 学习目标、独立评价或批准；当前 `zio-ai` 只是迁移起点 |
-| Grove 独立应用 | 模块组织、实验/反馈、运行、检查点、审查/发布、站点 | 新解释器、新数值引擎、必须先完成的通用学习框架 |
+| 语言 | `langs/core/`、`langs/cli/` | Rust AST evaluator、Reader、宏、Experimental ZOS 与普通语言 CLI；`langs` 下直接平铺，不设 `langs/zio` |
+| 标准库 | `libs/std/` | Zio `core.zio`、persistent、entity、protocol、pipeline、datalog；状态分别以特性矩阵为准 |
+| 领域库 | `libs/numa/`、`libs/loom/`、`libs/learning/` | Zio vector、agent/proposer、learn/memory 与学习子模块；不因目录迁移而新增功能或发布包 |
+| 基础设施 | `contribs/native/loom/` | 已有通用 Rust 模型/工具合同、预算、传输与教师适配；Rust crate 名仍为 `loom`，不是 `libs/loom/` 的 Zio 库 |
+| 语言站点 | `apps/site/` | 语言介绍、文档与 WASM playground；不是 Grove 产品 |
+| Grove 应用 | `apps/grove/` | `main.zio` 是实际 Zio 入口，组合 Loom 通用 agent 循环；`selection.zio` 决定 accuracy 与质量／成本候选筛选；其他 Rust 业务仍在 `native/app/` 与 `native/learning/`，CPU 后端在 `workers/torch/` |
 
-三个官方库按实际消费完善公开合同，不依赖 Grove 私有实现；独立维护版本、
-安装资源和依赖清单，不预设微服务或插件平台。当前 `zio-ai` 与 `zio-cli`
-仍是现有包名；目标 `loom/`、`rill/`、`numa/` 的迁移/创建在 H00/I00/C01 执行，
-不在本次文档修订中改包。注册表包 ID 尚未核验，不能把短名当作已发布包。
-Grove 先交付“真实 agent → 生成执行 → 证据 → 反馈候选 → 独立评价 → 人工批准”。
-详情以[整体设计](self-learning-architecture.md)和 ADR-019 为准。
+```text
+apps/grove/  →  libs/（Zio 领域组合） → langs/（语言语义）
+     ↓                    ↓
+contribs/（可信宿主、通用 native/transport adapters）
 
-### 3.5 工具链自举（Planned）
+apps/site/ → 语言介绍 / 文档 / playground
+```
+
+核心不反向依赖 Grove 业务或通用 harness。普通 `zio-cli` 只装配语言环境，
+不提供 `--llm-replay`；模型与 replay 合同仍由 `contribs/native/loom/`
+及明确装配它的应用/宿主管理。
+
+## 2 已完成的结构切换与未完成的业务迁移
+
+2026-10-07 首轮切换移动了源树、库文件与消费路径，取消旧根目录入口，
+没有兼容别名、symlink 或空占位目录。它不改变下面的能力验收口径：
+
+- Rust 语言实现仍在 `langs/core/`；完整展开/分析、bytecode VM、JIT 和自举编译器为 Planned。
+- `.zio` 库已归入 `libs/`，但 Datalog 查询等未实现能力不会因移动文件而完成。
+- Grove 的 `apps/grove/main.zio` 按宿主授权组合 `libs/loom/agent.zio`；`apps/grove/selection.zio`
+  已接管候选筛选，CLI 与 HTTP 共用一条 typed adapter，原 Rust `Candidate`/`non_dominated` 已删除。
+  应用的存储、调度、评估记录、发布硬门槛、治理、CLI/HTTP 外壳及其他 Rust 业务仍在 `apps/grove/native/`。
+  **这些业务后续迁为 Zio 是目标，当前 Grove 并未整体重写为 Zio。**
+- `contribs/native/loom/` 保留可复用 native transport/host adapter，
+  不把其整个 Rust 实现当成未来 Zio Loom 库的目标本体。
+- Tree-sitter 与 LSP 是后续工具目标，当前没有已交付实现；目录变更不证明工具链自托管。
+
+目录迁移只证明结构归属。下表区分首轮切换与后续业务迁移的 Linux x64 实跑证据，不泛化为其他平台验收：
+结构切换命令、警告与验收记录见[首轮计划](superpowers/plans/2026-10-07-language-first-layout.md#verified-integration-results-2026-10-07)，后续入口与候选筛选记录见[业务迁移计划](superpowers/plans/2026-10-07-grove-zio-entry.md#follow-on-real-candidate-selection-policy)。
+
+| 表面 | 已观察到的证据 |
+|---|---|
+| Rust workspace | 候选筛选迁移后 `cargo test --workspace --all-features`：491 passed，48 suites，0 failures |
+| torch worker | 首轮：77 个 Python 合同测试通过；真实隔离路径通过，未以无隔离模式替代 |
+| 普通语言 CLI | 首轮：basics、ZOS、learn 示例实际运行；后续：混合数值排序和 Grove Zio 策略实跑。CLI 的直接依赖为 `im` 与 `zio-core`，不再含 Loom |
+| 构建与站点 | 首轮：WASM、Astro、Docker 镜像与 nginx 46 页通过；后续：重建 WASM/Astro，47 页构建通过，未重新构建 Docker 镜像 |
+| 浏览器 | 首轮：多行编辑、持久定义、reader 错误恢复与 390/768/1024 宽度验证；后续：六个真实 WASM 预设、混合数值排序和 Ctrl+Enter 实跑，390px playground/Grove 无观察到的横向溢出，桌面与移动端截图已检查 |
+| Grove | 首轮：真实双路 CPU 候选与人工审批/重放/冲突拒绝；后续：CPU 基线 0.53125、候选 1.000，CLI/HTTP 的 Zio 筛选一致且不发布，未知 token 403 拒绝 |
+| 状态与限制 | `tools/project-status.sh --check` 通过；默认 feature 的测试清单为 476，不等同于全 feature 实跑数量。Grove Zio 化、自举编译器及其他平台验证未完成 |
+
+## 3 当前组成与演进方向
+
+### 3.1 原生 workspace 与 Zio 库
+
+```text
+langs/cli/ (zio-cli：REPL、脚本、模块根配置)
+└── langs/core/ (zio-core：Reader、AST eval/apply、ZOS、WASM 入口)
+
+apps/grove/native/app/ (grove-app，binary grove)
+├── apps/grove/native/learning/ (grove：现有 Rust 业务/可信宿主)
+├── contribs/native/loom/ (loom：通用 native harness/transport)
+└── langs/core/
+
+apps/grove/workers/torch/ (CPU 参考后端，不是 crate)
+libs/{std,numa,loom,learning}/ (Zio 源文件，不是 Rust workspace crate)
+```
+
+具体 Cargo feature 与依赖以实际 manifest 为准，不在文档复制固定 crate/测试数量。
+`apps/grove/main.zio` 定义 Grove 的 `agent-entry`，通过有根的 `require :libs.loom.agent :refer [agent-run]` 导入通用循环，不依赖进程 cwd；`libs/loom/proposer.zio` 是提议器。
+`apps/grove/selection.zio` 接收 keyword 行字段、保留 string 名称的指标对，决定 accuracy（缺失按零质量）、门槛失败候选排除与质量／成本比较；native 适配器只转换 `evaluation::Comparison` 并检查返回的整数行索引，不授予 Grove 存储、模型或发布 bindings。该策略在构建时嵌入 native 外壳；目前 CLI/HTTP 成本仍为 1，且保留同质同价互相排除的原弱比较行为，不声称热更新或完整推理成本核算。
+`libs/learning/` 持学习与记忆组合，`libs/numa/vector.zio` 持向量计算，
+学习/评价/发布治理不进入通用计算或传输适配器。
+
+### 3.2 目标库与应用
+
+Numa（计算）、Rill（CLI 组合）、Loom（harness）是 Zio 领域库方向，
+不再以独立 Rust 业务库为目标。Rill 尚无落地库目录，不创建占位目录；
+正式短名不保证注册表包 ID 或已发布版本。只在真实消费需要时补齐公开合同。
+Grove 是 `apps/grove/` 独立应用，不是语言 playground；其业务逐步迁入 Zio，
+可信授权、事务、隔离和原生后端仍按明确合同保留必要宿主边界。
+
+### 3.3 工具链自举（Planned）
 
 1. 固定必需语言、数值、模块、源码位置与首轮 ZOS 语义合同。
-2. 用 Zio 实现完整展开与分析；Rust AST 执行器作为初始运行环境及语义对照。
-   当前 `macroexpand` 只反复展开最外层，不能直接视为完整编译前端。
-3. 用版本化便携字节码与 Rust 最小执行后端引导 Zio 编译器，不同时把优化 ZIR/JIT 作为前提。
-4. Zio 编译器编译自身，再用产出的编译器重复构建；对照规范化产物与程序行为。
+2. 用 Zio 实现完整展开与分析；Rust AST 执行器是初始环境及语义对照。
+   当前 `macroexpand` 只反复展开最外层，不等于完整编译前端。
+3. 用版本化便携字节码与 Rust 最小执行后端引导 Zio 编译器，不同时要求优化 ZIR/JIT。
+4. 编译器编译自身并重复构建，对照规范化产物与程序行为。
 
-Rust 保留最小运行时、宿主能力与必要性能原语。ZOS 继续属于核心，完整 MOP
-是演进目标，但未实现的全部功能不作为首轮自举前提。Zio 应用自托管是沿途
-验证，不等同工具链自举；Grove 逻辑演化与自举分别验收，两条线互不阻塞。
-
-当前实施顺序、文件落点及阶段证据集中在
-[统一实现计划](superpowers/plans/2026-10-05-zio-grove-convergence.md)：
-T00–T03 验收语言/自举，C00–C02 验收 Numa，I00 验收 Rill，H00/G06/G07
-验收 Loom/ACP，G00–G08 验收 Grove。库独立消费与无库语言构建均需验证；
-工作包完成前维持 Planned。
-
----
+应用业务迁为 Zio、语言站点运行 WASM 和解释器加载 `.zio` 库均不等于自举。
+完整 MOP 仍为演进目标；应用迁移与编译器自举分别验收。
 
 ## 4 规划性能目标
 
@@ -181,12 +118,12 @@ release build 与 machine metadata。
 
 | 目标 | Rust target | 状态 |
 |------|-------------|------|
-| Linux x86_64 | `x86_64-unknown-linux-gnu` | ✅ 开发主力 |
-| macOS ARM | `aarch64-apple-darwin` | ✅ CI |
-| macOS x86_64 | `x86_64-apple-darwin` | ⏳ 需 CI |
-| Windows | `x86_64-pc-windows-msvc` | ⏳ 待测试 |
-| WASM | `wasm32-unknown-unknown` | ✅ Experimental（落地页 REPL） |
-| ARM Linux | `aarch64-unknown-linux-gnu` | Phase 7 |
+| Linux x86_64 | `x86_64-unknown-linux-gnu` | 开发与本轮运行验证平台 |
+| macOS ARM | `aarch64-apple-darwin` | 目标平台，本轮未验证 |
+| macOS x86_64 | `x86_64-apple-darwin` | 目标平台，本轮未验证 |
+| Windows | `x86_64-pc-windows-msvc` | 目标平台，本轮未验证 |
+| WASM | `wasm32-unknown-unknown` | Experimental（浏览器 playground），独立构建验收 |
+| ARM Linux | `aarch64-unknown-linux-gnu` | 目标平台，本轮未验证 |
 
 ---
 
@@ -203,4 +140,4 @@ release build 与 machine metadata。
 | [adrs.md](adrs.md) | 架构决策记录（ADR-001 ~ ADR-019） |
 | [self-learning-architecture.md](self-learning-architecture.md) | Grove 独立应用、同像性逻辑、生成执行与受控升级 |
 | [glossary.md](glossary.md) | 术语参考 |
-| [superpowers/plans/2026-10-05-zio-grove-convergence.md](superpowers/plans/2026-10-05-zio-grove-convergence.md) | 当前实施计划、依赖与实际验收；旧 Phase/W 编号保留为历史 |
+| [superpowers/plans/2026-10-07-language-first-layout.md](superpowers/plans/2026-10-07-language-first-layout.md) | 当前目录切换合同；旧 T/C/I/H/G 与 W 计划保留历史证据 |

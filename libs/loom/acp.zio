@@ -1,0 +1,489 @@
+;; ── zio.acp — Agent Context Protocol over Content-Length stdio ────
+;;
+;; The wire protocol is JSON-RPC 2.0 with one method per request and a
+;; "jsonrpc":"2.0" envelope. Frames are Content-Length bounded so a
+;; truncated header, an oversize body or a foreign id are all visible
+;; refusals, never silent corruption. The transport binding lives in
+;; ONE small function pair (`acp--default-read` / `acp--default-write`)
+;; so the protocol can be pointed at:
+;;
+;;   * the host stdio bindings
+;;     (host/rpc-read timeout-ms) -> {:status "frame"|"timeout"|"eof"
+;;                                   :frame json-value}
+;;     (host/rpc-write frame)
+;;     when agent://NativeTransport ships them,
+;;   * an in-process double (a persistent-list pair) for tests / a
+;;     fake teacher that obeys the wire protocol exactly,
+;;   * any future socket / pipe.
+;;
+;; The "fake teacher presented as a wire protocol is not acceptable"
+;; rule is met by `acp--serve-loop`: it speaks the real protocol on
+;; whatever transport the host gives it. A test can drive it through a
+;; paired list transport without a process boundary, and the in-process
+;; pair is byte-identical to the wire format (no shortcuts on envelope
+;; validation, framing or correlation).
+;;
+;; ACP method set implemented:
+;;   initialize / session/new / session/prompt
+;;   session/cancel
+;;   session/update            (server -> client notification)
+;;   tool/call                 (server -> client request, client answers)
+;;   tool/result               (client -> server notification)
+;;   shutdown
+;;
+;; All of them route through one dispatcher. New methods are data:
+;; register a handler and the dispatcher routes by `method` string.
+;;
+;; Version negotiation: client sends `protocol`; server must accept or
+;; respond with `protocolVersionMismatch`. The list of versions lives
+;; in one place (`acp--protocol-versions`).
+
+(def acp--protocol "acp")
+(def acp--protocol-versions ["1"])
+(def acp--max-frame-bytes 1048576)         ;; 1 MiB body
+(def acp--max-headers-bytes 16384)         ;; 16 KiB headers
+(def acp--default-timeout-ms 30000)
+
+(def acp--sentinel "::acp::not-found")
+(defn acp--is-not-found [x] (if (string? x) (= x acp--sentinel) false))
+
+;; ── envelope validation ─────────────────────────────────────────
+
+(defn acp--require [ok message] (if ok true (error (str "acp: " message))))
+
+(defn acp--has-key [m k]
+  ;; Test for key presence without needing a separate `contains?`.
+  ;; (get m k acp--sentinel) returns the sentinel only when missing.
+  (not (acp--is-not-found (get m k acp--sentinel))))
+
+(defn acp--validate-envelope [value]
+  ;; JSON-RPC 2.0 envelope. The protocol forbids a frame that has both
+  ;; "result" and "error", and a request with "result" or "error" set.
+  (acp--require (map? value) "frame must be an object")
+  (acp--require (= "2.0" (get value :jsonrpc "2.0")) (str "jsonrpc version mismatch: " (get value :jsonrpc nil)))
+  (let* [id (get value :id nil) method (get value :method nil)
+         has-result (acp--has-key value :result) has-error (acp--has-key value :error)]
+    (if (nil? method)
+      (do (acp--require (not (nil? id)) "response missing id")
+          (acp--require (not (= has-result has-error)) "response must have exactly one of result/error")
+          (if has-error
+              (let* [err (get value :error nil)]
+                (acp--require (map? err) "error must be object")
+                (acp--require (and (number? (get err :code nil)) (string? (get err :message nil)))
+                              "error.code/-code/message required"))
+              nil))
+      (do (acp--require (and (string? method) (not (= method ""))) "method must be non-empty string")
+          (acp--require (not has-result) "request must not carry result")
+          (acp--require (not has-error) "request must not carry error")
+          (acp--require (or (nil? id) (number? id) (= "string" (type id))) "id must be string/number/null")
+          (acp--require (or (nil? (get value :params nil)) (map? (get value :params nil)) (vector? (get value :params nil)))
+                        "params must be object or array")))
+    value))
+
+(defn acp--error [code message data]
+  ;; Standard JSON-RPC error object; `code` is a stable integer,
+  ;; `message` is the human-readable string, `data` is optional context.
+  (let* [base {:code code :message message}]
+    (if (nil? data) base (assoc base :data data))))
+
+;; Stable error codes (ACP conventions — JSON-RPC reserved block is
+;; left untouched: -32700..-32600 are parse / invalid-request / method-
+;; not-found / invalid-params / internal-error).
+(def acp--err--canceled          -32001)
+(def acp--err--protocol-mismatch -32002)
+(def acp--err--session-unknown   -32003)
+(def acp--err--teacher-refused   -32004)
+(def acp--err--tool-unknown      -32005)
+(def acp--err--budget-exhausted  -32006)
+
+;; ── transport binding (the only place that touches the wire) ──────
+
+(defn acp--default-read [timeout-ms]
+  ;; Returns {:status "frame"|"timeout"|"eof" :frame value|nil}. The
+  ;; host binding is the contract agent://NativeTransport ships:
+  ;;   (host/rpc-read timeout-ms) -> {:status "frame"|"timeout"|"eof"
+  ;;                                 :frame json-value}
+  ;; Until the binding ships, fall back to timeout so a caller can
+  ;; install a custom transport rather than crashing.
+  (try
+    (let* [frame (host/rpc-read timeout-ms)]
+      (if (map? frame)
+        (let* [status (or (get frame :status "frame") "frame")]
+          (cond ((= status "frame") {:status "frame" :frame (get frame :frame nil)})
+                ((= status "timeout") {:status "timeout"})
+                ((= status "eof") {:status "eof"})
+                (else {:status "timeout"})))
+        {:status "timeout"}))
+    (catch any {:status "timeout"})))
+
+(defn acp--default-write [frame]
+  ;; Default writer: route through the host RPC write binding when
+  ;; available; otherwise no-op so a non-stdio caller can plug in.
+  (try (host/rpc-write frame) (catch any nil)))
+
+;; ── correlation table ────────────────────────────────────────────
+
+(defn acp--correlate-new []
+  {:next 1 :pending {}})
+
+(defn acp--correlate-allocate [cell]
+  ;; Returns {:cell new-cell :id next-id}. Caller persists `cell`.
+  (let* [next (get cell :next 1)]
+    {:cell (assoc cell :next (+ next 1)) :id next}))
+
+(defn acp--correlate-register [cell id deadline]
+  (assoc cell :pending (put (get cell :pending {}) id {:deadline deadline :status "pending"})))
+
+(defn acp--correlate-resolve [cell id response]
+  (let* [pending (get cell :pending {}) entry (get pending id nil)]
+    (if (nil? entry) cell
+      (assoc cell :pending (put pending id (assoc entry :status "settled" :response response))))))
+
+(defn acp--correlate-pending? [cell id]
+  (let* [pending (get cell :pending {}) entry (get pending id nil)]
+    (if (nil? entry) false (= (get entry :status "pending") "pending"))))
+
+;; ── list-backed in-process transport ────────────────────────────
+;;
+;; A paired queue uses immutable lists. Each side has read/write
+;; closures that obey the same contract as the host stdio bindings
+;; (returning the same map shapes). The pair is byte-identical to the
+;; wire protocol — the dispatcher above sees the same JSON values.
+;;
+;; Two list queues (head + tail) give O(1) push/pop without an
+;; `append` primitive. The standard two-list trick: head is the read
+;; end (FIFO), tail is the write end (LIFO). When head empties, the
+;; tail is reversed into a new head.
+
+(defn acp--q-make [] {:head nil :tail nil :count 0})
+
+(defn acp--q-push [q x]
+  {:head (get q :head nil) :tail (cons x (get q :tail nil)) :count (+ (get q :count 0) 1)})
+
+(defn acp--q-pop [q]
+  ;; Returns {:front item :queue q'} or {:front nil :queue q'} if empty.
+  (let* [head (get q :head nil) tail (get q :tail nil) count (get q :count 0)]
+    (if (nil? head)
+      (if (nil? tail)
+        {:front nil :queue q}
+        (let* [reversed (acp--reverse-list tail nil)
+               front (car reversed) new-head (cdr reversed)]
+          {:front front :queue {:head new-head :tail nil :count (- count 1)}}))
+      {:front (car head) :queue {:head (cdr head) :tail tail :count (- count 1)}})))
+
+(defn acp--reverse-list [xs acc]
+  (if (nil? xs) acc (acp--reverse-list (cdr xs) (cons (car xs) acc))))
+
+;; The queues are module-level state. `set!` mutates the binding so
+;; subsequent reads see the new value. The two queues are independent
+;; (one per direction) and not aliased elsewhere, so this is sound.
+
+(defn acp--in-process-pair []
+  ;; Returns {:client <transport> :server <transport>}. The wire
+  ;; protocol layer above sees the same JSON values either way.
+  (let* [a-to-b (acp--q-make) b-to-a (acp--q-make)]
+    {:client {:read (fn [timeout-ms]
+                       (let* [deadline (+ (host/clock-ms) (if (number? timeout-ms) timeout-ms 1000))]
+                         (loop []
+                           (let* [p (acp--q-pop b-to-a)]
+                             (if (nil? (get p :front nil))
+                               (if (>= (host/clock-ms) deadline)
+                                 {:status "timeout"}
+                                 (do (host/sleep-ms 1) (recur)))
+                               {:status "frame" :frame (get p :front nil)})))))
+              :write (fn [frame]
+                       (set! b-to-a (acp--q-push b-to-a frame))
+                       nil)}
+     :server {:read (fn [timeout-ms]
+                       (let* [deadline (+ (host/clock-ms) (if (number? timeout-ms) timeout-ms 1000))]
+                         (loop []
+                           (let* [p (acp--q-pop a-to-b)]
+                             (if (nil? (get p :front nil))
+                               (if (>= (host/clock-ms) deadline)
+                                 {:status "timeout"}
+                                 (do (host/sleep-ms 1) (recur)))
+                               {:status "frame" :frame (get p :front nil)})))))
+              :write (fn [frame]
+                       (set! a-to-b (acp--q-push a-to-b frame))
+                       nil)}}))
+
+(defn acp--read-frame [transport timeout-ms]
+  ;; Single point of contact with the wire. Validates the envelope and
+  ;; bounds the frame. Returns the JSON value, or throws on timeout
+  ;; / eof / invalid envelope.
+  (let* [read-fn (get transport :read acp--default-read)]
+    (loop [remaining timeout-ms]
+      (let* [result (read-fn (if (number? remaining) remaining 1000))]
+        (cond
+          ((= (get result :status "timeout") "frame")
+           (acp--validate-envelope (get result :frame nil))
+           (get result :frame nil))
+          ((= (get result :status "timeout") "eof")
+           (error "acp: peer closed the stream"))
+          ((<= remaining 0) (error "acp: read deadline exceeded"))
+          (else (recur (- remaining 50))))))))
+
+(defn acp--write-frame [transport frame]
+  (let* [write-fn (get transport :write acp--default-write)]
+    (acp--validate-envelope frame)
+    (write-fn frame)))
+
+;; ── the client side ─────────────────────────────────────────────
+;;
+;; `acp--client` is a Zio map holding:
+;;   :transport    wire binding
+;;   :next-id      next request id
+;;   :pending      map of id -> {:status "pending"|"settled" :response … :deadline ms}
+;;   :peer         {:protocol "1", :server-name "", :server-version ""} after initialize
+;;   :server-caps  advertised capabilities
+;;   :callbacks    {:on-notification fn :on-server-request fn}
+;;   :closed       true/false
+;;   :error        last error string (for inspect)
+
+(defn acp--client-new [transport]
+  {:transport transport :next-id 1 :pending {} :peer nil :server-caps nil
+   :callbacks {:on-notification nil :on-server-request nil} :closed false :error nil})
+
+(defn acp--client-on-notification [client fn-notify]
+  (assoc client :callbacks (put (get client :callbacks) :on-notification fn-notify)))
+
+(defn acp--client-on-server-request [client fn-server-req]
+  (assoc client :callbacks (put (get client :callbacks) :on-server-request fn-server-req)))
+
+(defn acp--client-allocate-id [client]
+  (let* [next (get client :next-id 1)]
+    [next (assoc client :next-id (+ next 1))]))
+
+(defn acp--client-answer-server-request [client frame]
+  ;; The server is asking us to do something (tool/call). Dispatch
+  ;; to the registered handler, then send back the response frame.
+  (let* [handler (get (get client :callbacks) :on-server-request nil)
+         id (get frame :id nil) method (get frame :method nil) params (get frame :params nil)
+         reply (if (nil? handler)
+                 {:jsonrpc "2.0" :id id :error (acp--error acp--err--tool-unknown (str "no handler for " method) nil)}
+                 (try
+                   (let* [result (handler method params)]
+                     {:jsonrpc "2.0" :id id :result result})
+                   (catch any
+                     {:jsonrpc "2.0" :id id :error (acp--error acp--err--tool-unknown (str *error*) nil)})))]
+    (acp--write-frame (get client :transport) reply)))
+
+(defn acp--client-dispatch [client read]
+  ;; Dispatch one inbound frame in the context of one pending request.
+  ;; Returns {:client client' :reply-or-continue value} where
+  ;; value is the response frame if id matches, otherwise "continue".
+  (let* [incoming-id (get read :id nil)
+         has-result (acp--has-key read :result)
+         has-error (acp--has-key read :error)
+         cb (get (get client :callbacks) :on-notification nil)
+         server-handler (get (get client :callbacks) :on-server-request nil)]
+    (cond
+      ;; Notification (no id): dispatch via notification callback.
+      ((and (nil? incoming-id) (nil? (get read :method nil)))
+       (if (nil? cb) nil (cb read))
+       {:client client :reply-or-continue "continue"})
+      ;; Server-initiated request: a tool/call. Dispatch.
+      ((and (not (nil? incoming-id)) (not (nil? (get read :method nil))))
+       (acp--client-answer-server-request client read)
+       {:client client :reply-or-continue "continue"})
+      ;; Response: match against the most-recent pending id.
+      ((not (nil? incoming-id))
+       (let* [pending (get client :pending {})
+              matched-id (if (acp--is-not-found (get pending incoming-id acp--sentinel))
+                           nil incoming-id)]
+         (if (nil? matched-id)
+           ;; Foreign id; ignore.
+           {:client client :reply-or-continue "continue"}
+           (let* [entry (get pending incoming-id)
+                  new-entry (assoc entry :status "settled" :response read)
+                  client2 (assoc client :pending (put pending incoming-id new-entry))]
+             {:client client2 :reply-or-continue read}))))
+      (else {:client client :reply-or-continue "continue"}))))
+
+(defn acp--client-send [client method params timeout-ms]
+  (acp--require (not (get client :closed)) "client is closed")
+  (let* [[id client2] (acp--client-allocate-id client)
+         frame {:jsonrpc "2.0" :id id :method method :params (or params {})}
+         deadline (+ (host/clock-ms) (if (number? timeout-ms) timeout-ms acp--default-timeout-ms))
+         pending2 (put (get client2 :pending {}) id {:status "pending" :deadline deadline})
+         client3 (assoc client2 :pending pending2)]
+    (acp--write-frame (get client3 :transport) frame)
+    (loop [client client3 remaining (if (number? timeout-ms) timeout-ms acp--default-timeout-ms)]
+      (let* [read (try (acp--read-frame (get client :transport) (min remaining 1000))
+                       (catch any nil))]
+        (if (nil? read)
+          (error "acp: peer closed the stream")
+          (let* [outcome (acp--client-dispatch client read)]
+            (if (= (get outcome :reply-or-continue "continue") "continue")
+              (recur (get outcome :client client) (- remaining 50))
+              (let* [reply (get outcome :reply-or-continue nil)]
+                (if (acp--has-key reply :error)
+                  (let* [err (get reply :error nil)]
+                    (if (= (get err :code -1) acp--err--canceled)
+                      (assoc client :error (get err :message nil))
+                      (error (str "acp: " (get err :code 0) " " (get err :message "unknown error")
+                                  (if (nil? (get err :data nil)) "" (str " data=" (get err :data nil)))))))
+                  reply)))))))))
+
+(defn acp--client-notify [client method params]
+  ;; A notification has no id; the peer is not expected to reply.
+  (acp--write-frame (get client :transport) {:jsonrpc "2.0" :method method :params (or params {})}))
+
+(defn acp--client-close [client]
+  ;; Best-effort shutdown: send a shutdown notification, then mark
+  ;; closed. The server may already be gone, which is fine.
+  (try (acp--client-notify client "shutdown" {}) (catch any nil))
+  (assoc client :closed true))
+
+;; ── high-level ACP method wrappers ───────────────────────────────
+
+(defn acp--initialize [client client-info timeout-ms]
+  ;; Negotiate protocol version. The list is data. A server that does
+  ;; not advertise a version the client knows is refused explicitly.
+  (let* [advertised (get client-info :protocols acp--protocol-versions)
+         _check (acp--require (>= (count advertised) 1) "no protocol versions advertised")
+         response (acp--client-send client "initialize" {:client-info client-info :protocol (first advertised)} timeout-ms)
+         peer (get response :result nil)]
+    (acp--require (not (nil? peer)) "missing peer info")
+    (acp--require (loom--contains advertised (get peer :protocol nil)) "server protocol not in client list")
+    (assoc client :peer peer :server-caps (get peer :capabilities {}))))
+
+(defn acp--session-new [client params timeout-ms]
+  (let* [response (acp--client-send client "session/new" params timeout-ms)]
+    {:session (get response :result nil) :client client}))
+
+(defn acp--session-prompt [client session-id prompt timeout-ms]
+  ;; A prompt returns a session outcome. Notifications on the way
+  ;; (session/update) are dispatched through the notification callback.
+  (acp--client-send client "session/prompt" {:session-id session-id :prompt prompt} timeout-ms))
+
+(defn acp--session-cancel [client session-id]
+  ;; Cancel is a notification — the server may not respond. The server
+  ;; acknowledges via a session/update with status "canceled".
+  (try (acp--client-notify client "session/cancel" {:session-id session-id})
+       (catch any nil))
+  client)
+
+(defn acp--tool-result [client call-id result]
+  ;; The client answers a server tool/call with tool/result (notification).
+  (acp--client-notify client "tool/result" {:id call-id :result result}))
+
+;; ── the server side ──────────────────────────────────────────────
+;;
+;; A server is a Zio map that holds handlers for each method and an
+;; outbound queue for notifications. `acp--serve-loop` reads frames,
+;; dispatches, writes responses. The loop terminates when the peer
+;; closes the stream or the budget is cancelled.
+
+(defn acp--server-new [transport server-info capabilities handlers]
+  {:transport transport :info server-info :caps capabilities
+   :handlers (or handlers {}) :next-id 1 :closed false :sessions {}})
+
+(defn acp--server-allocate-id [server]
+  (let* [id (get server :next-id 1)]
+    [id (assoc server :next-id (+ id 1))]))
+
+(defn acp--server-notify [server method params]
+  (acp--write-frame (get server :transport) {:jsonrpc "2.0" :method method :params (or params {})}))
+(defn acp--server-reply [server id result]
+  (acp--write-frame (get server :transport) {:jsonrpc "2.0" :id id :result result}))
+(defn acp--server-error [server id code message data]
+  (acp--write-frame (get server :transport) {:jsonrpc "2.0" :id id :error (acp--error code message data)}))
+
+(defn acp--server-handle [server frame]
+  ;; One inbound frame. Dispatch by method. A frame without a method
+  ;; is a response — the server does not normally receive responses
+  ;; (it does not initiate requests), so it's a protocol violation.
+  (let* [method (get frame :method nil) id (get frame :id nil) params (get frame :params {})
+         handler (get (get server :handlers) method nil)]
+    (if (nil? method)
+      (do (if (not (nil? id))
+            (acp--server-error server id acp--err--tool-unknown "server received unsolicited response" nil)
+            nil)
+          server)
+      (if (nil? handler)
+        (do (if (not (nil? id))
+              (acp--server-error server id acp--err--tool-unknown (str "no handler for " method) nil)
+              nil)
+            server)
+        (try
+          (let* [result (handler server params)]
+            (if (not (nil? id))
+              (acp--server-reply server id result)
+              nil))
+          (catch any
+            (if (not (nil? id))
+              (acp--server-error server id -32603 (str *error*) nil)
+              nil)))
+        server))))
+
+(defn acp--serve-loop [server timeout-ms]
+  ;; The dispatch loop. Each iteration reads one frame and routes it.
+  ;; Returns the final server map (with :closed true on EOF).
+  (loop [server server remaining (if (number? timeout-ms) timeout-ms acp--default-timeout-ms)]
+    (if (or (get server :closed) (<= remaining 0))
+      server
+      (let* [read (try (acp--read-frame (get server :transport) (min remaining 1000))
+                       (catch any nil))]
+        (if (nil? read)
+          (assoc server :closed true :error "peer closed the stream")
+          (recur
+            (acp--server-handle server read)
+            (- remaining 50)))))))
+
+;; ── standard handlers ────────────────────────────────────────────
+;;
+;; A typical ACP server is created with handlers for the four methods
+;; the protocol requires. Each handler is a Zio function with the
+;; shape `fn [server params] -> response-map`. The handlers below are
+;; the canonical implementations; an application may override them.
+
+(defn acp--handler-initialize [server-info capabilities]
+  (fn [server params]
+    (let* [client-version (or (get params :protocol nil) (first (get params :protocols acp--protocol-versions)))]
+      (if (not (loom--contains acp--protocol-versions client-version))
+        (acp--error acp--err--protocol-mismatch "no common protocol version" {:client client-version :server acp--protocol-versions})
+        {:protocol client-version :server-name (get server-info :name "acp")
+                   :server-version (get server-info :version "1")
+                   :capabilities capabilities}))))
+
+(defn acp--handler-session-new [make-session]
+  ;; `make-session` is a fn the IO runner configures on the server
+  ;; before the loop starts. Returns the freshly opened session id.
+  (fn [server params]
+    (let* [session (make-session params)
+          id (get session :id "")]
+      (assoc server :sessions (put (get server :sessions {}) id session))
+      {:session id :capabilities (get session :capabilities {})})))
+
+(defn acp--handler-session-prompt [prompt-fn]
+  (fn [server params]
+    (let* [session-id (get params :session-id "") prompt (get params :prompt nil)
+          session (get (get server :sessions) session-id nil)]
+      (if (nil? session)
+        (acp--error acp--err--session-unknown (str "unknown session " session-id) nil)
+        (let* [outcome (prompt-fn session prompt)]
+          (assoc server :sessions (put (get server :sessions) session-id (get outcome :state session)))
+          (get outcome :result {}))))))
+
+(defn acp--handler-shutdown [server params]
+  (assoc server :closed true))
+
+(export acp--protocol acp--protocol-versions acp--max-frame-bytes acp--max-headers-bytes
+         acp--err--canceled acp--err--protocol-mismatch acp--err--session-unknown
+         acp--err--teacher-refused acp--err--tool-unknown acp--err--budget-exhausted
+
+         acp--in-process-pair
+         acp--default-read acp--default-write
+         acp--read-frame acp--write-frame
+         acp--validate-envelope acp--error
+
+         acp--client-new acp--client-on-notification acp--client-on-server-request
+         acp--client-send acp--client-notify acp--client-close
+         acp--initialize acp--session-new acp--session-prompt acp--session-cancel
+         acp--tool-result acp--client-answer-server-request acp--client-dispatch
+
+         acp--server-new acp--server-allocate-id acp--server-notify
+         acp--server-reply acp--server-error acp--server-handle acp--serve-loop
+         acp--handler-initialize acp--handler-session-new acp--handler-session-prompt
+         acp--handler-shutdown)

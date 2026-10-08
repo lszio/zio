@@ -1,0 +1,17 @@
+[package]
+name = "loom"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Native model/session transport adapter for Zio applications; not the Zio Loom library."
+
+[dependencies]
+zio-core = { path = "../../../langs/core" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+parking_lot = "0.12"
+ureq = { version = "2", features = ["json"], optional = true }
+
+[features]
+default = []
+http = ["dep:ureq"]

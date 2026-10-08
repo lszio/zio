@@ -1,0 +1,204 @@
+;; One owner loop, one database, independent bounded worker processes.
+(defn grove--raise [class detail] (grove--fail class detail))
+(def runner--edges {"queued" ["running" "cancelled" "failed"]
+                   "running" ["evaluating" "paused" "failed" "cancelled"]
+                   "evaluating" ["accepted" "rejected" "failed" "cancelled"]})
+(defn runner--transition! [from to]
+  (grove--require (grove--contains (get runner--edges from []) to) "invalid-input" (str "a run cannot go " from " -> " to)))
+(defn runner--write-run [store run]
+  (store--execute store "UPDATE runs SET state=?1,body=?2 WHERE id=?3" [(get run :state) (codec--text "Run" run) (get run :id)])
+  run)
+(defn runner--event [store claim kind detail]
+  (events--append store [{:schema 1 :sequence 0 :run_id (get claim :run_id) :attempt_id (get claim :attempt_id "") :kind kind :detail detail :source nil :at_ms (host/clock-ms)}]))
+(defn runner--enqueue [store run kind work]
+  (grove--authorize store "operator")
+  (grove--require (= "queued" (get run :state)) "invalid-input" "only queued work can be submitted")
+  (grove--require (grove--contains ["training" "zio"] kind) "invalid-input" "unknown queue kind")
+  (grove--require (>= (get run :steps_budget) (get run :steps_consumed)) "budget-exhausted" "run grant is already exhausted")
+  (if (= kind "training")
+    (grove--require (> (grove--get-key work :steps 0) 0) "invalid-input" "training needs a positive step count")
+    (grove--require (string? (grove--get-key work :source nil)) "invalid-input" "queued Zio needs source"))
+  (store--transaction store (fn []
+    (grove--put store "Run" run)
+    (store--execute store "INSERT INTO queued_work(run,kind,payload,schema) VALUES(?1,?2,?3,1)" [(get run :id) kind (json-stringify work)])
+    (store--execute store "INSERT INTO grove_queue_identity(run,owner) VALUES(?1,?2)" [(get run :id) (get (get store :principal) :id)])
+    run)))
+
+(defn runner--recover [store]
+  ;; A crashed process's unobserved update is unknown, not a claimed success.
+  (map (fn [run]
+    (if (grove--contains ["running" "evaluating"] (get run :state))
+      (let* [rows (store--query store "SELECT checkpoint,step FROM grove_progress WHERE attempt IN (SELECT id FROM attempts WHERE run=?1) AND checkpoint IS NOT NULL ORDER BY step DESC LIMIT 1" [(get run :id)])
+             safe (if (empty? rows) nil (grove--get-key (first rows) :checkpoint nil))]
+        (coordinator--unknown store (str "recovery-" (get run :id)) 0 "owner restarted; in-flight outcome is unknown")
+        (if (= (get run :state) "running")
+          (runner--write-run store (assoc run :state (if safe "paused" "failed")))
+          (runner--write-run store (assoc run :state "failed")))
+        (runner--event store {:run_id (get run :id)} "recovered" (if safe (str "recoverable checkpoint " safe) "unknown attempt; no committed checkpoint"))) nil))
+    (grove--list store "Run")))
+
+(defn runner--open [store config]
+  (coordinator--init store)
+  (let [owner (coordinator--claim-owner store)]
+    (runner--recover store)
+    {:store store :config config :epoch (grove--get-key owner :epoch 0) :workers []}))
+
+(defn runner--claim-next [runner]
+  (let* [store (get runner :store) config (get runner :config)]
+    (store--transaction store (fn []
+      (coordinator--check-epoch store (get runner :epoch))
+      (let [rows (store--query store "SELECT r.id,q.kind,q.payload FROM runs r JOIN queued_work q ON q.run=r.id WHERE r.state='queued' ORDER BY r.rowid LIMIT 1" [])]
+        (if (empty? rows) nil
+          (let* [row (first rows) id (grove--get-key row :id nil)
+                 run (grove--get store "Run" id)
+                 work (codec--normalize (json-parse (grove--get-key row :payload "{}")))
+                 kind (grove--get-key row :kind nil)
+                 remaining (- (get run :steps_budget) (get run :steps_consumed))
+                 steps (if (= kind "training") (grove--get-key work :steps 0) remaining)
+                 attempt (str "attempt-" id "-" (get runner :epoch) "-" (host/sha256 (host/random-bytes 16)))
+                 claim {:run_id id :attempt_id attempt :epoch (get runner :epoch)
+                        :reserved_steps steps :lease_expires_ms (+ (host/clock-ms) (get config :lease-ms 30000))
+                        :kind kind :work work}]
+            (grove--require (<= steps remaining) "budget-exhausted" "requested work cannot fit in the remaining run grant")
+            (coordinator--reserve store attempt (get work :population nil) steps)
+            (runner--transition! (get run :state) "running")
+            (grove--require (= 1 (store--execute store "UPDATE runs SET state='running',body=?1 WHERE id=?2 AND state='queued'" [(codec--text "Run" (assoc run :state "running")) id])) "conflict" "run was claimed by another owner")
+            (store--execute store "INSERT INTO attempts(id,branch,run,lease_ms,active,billed) VALUES(?1,?2,?3,?4,1,0)" [attempt (get work :branch "") id (get claim :lease_expires_ms)])
+            (store--execute store "INSERT INTO grove_claims(run,attempt,epoch,reserved,cancel,pause,population,branch,expected_version) VALUES(?1,?2,?3,?4,0,0,?5,?6,?7) ON CONFLICT(run) DO UPDATE SET attempt=excluded.attempt,epoch=excluded.epoch,reserved=excluded.reserved,cancel=0,pause=0,population=excluded.population,branch=excluded.branch,expected_version=excluded.expected_version" [id attempt (get runner :epoch) steps (get work :population nil) (get work :branch nil) (get work :expected_version nil)])
+            (store--execute store "INSERT INTO grove_progress(attempt,step) VALUES(?1,?2)" [attempt (get run :steps_consumed)])
+            claim)))))))
+
+(defn runner--input-path [runner raw]
+  (grove--require (string? raw) "invalid-input" "input must name a permitted file")
+  (host/fs-resolve (get (get runner :config) :input-root (get (get runner :store) :root)) raw))
+(defn runner--read-input [runner raw]
+  (host/fs-read (runner--input-path runner raw)))
+
+(defn runner--prepare [runner claim]
+  (let* [store (get runner :store) config (get runner :config) work (get claim :work)
+         run (grove--get store "Run" (get claim :run_id))]
+    (if (= (get claim :kind) "zio")
+      (assoc claim :config config :budget (get claim :reserved_steps))
+      (let* [rows (if (get work :rows nil) (get work :rows)
+                    (learn--decode-gvd1 (runner--read-input runner (get work :data))))
+             validation (if (get work :val_rows nil) (get work :val_rows)
+                          (if (get work :val_data nil) (learn--decode-gvd1 (runner--read-input runner (get work :val_data))) []))
+             weights (if (get work :params nil) {:params (get work :params)}
+                       (if (get work :weights nil) (codec--normalize (json-parse (host/bytes-utf8 (runner--read-input runner (get work :weights))))) {}))
+             resume (if (get work :resume nil) (codec--normalize (json-parse (host/bytes-utf8 (artifact--get store (get work :resume))))) nil)
+             request (assoc work :rows rows :val_rows validation :weights weights :resume_state resume)]
+        (assoc claim :work request :config config :budget (get claim :reserved_steps)
+               :ledger_step (get run :steps_consumed))))))
+
+(defn runner--start [runner claim]
+  (let* [config (get runner :config)
+         process-config (assoc (get config :worker-config) :identity {:run_id (get claim :run_id) :attempt_id (get claim :attempt_id)}
+                              :max-frame-bytes (get config :max-frame-bytes 16777216))
+         proc (host/process-start process-config)]
+    (try
+      (host/process-write proc (runner--prepare runner claim))
+      (catch any (do (host/process-kill proc) (error (str *error*)))))
+    (runner--event (get runner :store) claim "worker-started" "isolated worker process admitted")
+    {:claim claim :process proc :started_ms (host/clock-ms) :last_seen (host/clock-ms)}))
+
+(defn runner--finish [runner worker state detail]
+  (let* [store (get runner :store) claim (get worker :claim)]
+    (store--transaction store (fn []
+      (coordinator--live store claim (host/clock-ms))
+      (let [run (grove--get store "Run" (get claim :run_id))]
+        (runner--transition! (get run :state) state)
+        (runner--write-run store (assoc run :state state)))
+      (store--execute store "UPDATE attempts SET active=0 WHERE id=?1" [(get claim :attempt_id)])
+      (store--execute store "DELETE FROM grove_reservations WHERE attempt=?1" [(get claim :attempt_id)])
+      (store--execute store "UPDATE grove_progress SET outcome=?1 WHERE attempt=?2" [state (get claim :attempt_id)])
+      (runner--event store claim state detail)))
+    (host/process-kill (get worker :process))
+    nil))
+
+(defn runner--intent [store run-id intent]
+  (grove--authorize store "operator")
+  (store--transaction store (fn []
+    (let [run (grove--get store "Run" run-id)]
+      (if (= (get run :state) "queued")
+        (if (= intent "cancel") (runner--write-run store (assoc run :state "cancelled"))
+          (grove--raise "incompatible-state" "a queued run has no checkpoint to pause"))
+        (do
+          (grove--require (= (get run :state) "running") "incompatible-state" "only a running attempt accepts control intents")
+          (if (= intent "cancel")
+            (store--execute store "UPDATE grove_claims SET cancel=1 WHERE run=?1" [run-id])
+            (store--execute store "UPDATE grove_claims SET pause=1 WHERE run=?1" [run-id]))
+          (assoc run :state (if (= intent "cancel") "cancelling" "pausing"))))))))
+
+(defn runner--receive [runner worker frame]
+  (let* [store (get runner :store) claim (get worker :claim)
+         f (codec--normalize frame) type (get f :type)]
+    (grove--require (and (= (get f :run_id) (get claim :run_id)) (= (get f :attempt_id) (get claim :attempt_id))) "protocol-violation" "foreign completion or progress frame")
+    (coordinator--live store claim (host/clock-ms))
+    (if (= type "progress")
+      (do
+        (coordinator--bill store claim (str (get claim :attempt_id) "-step-" (get f :step)) (get f :observed_steps 1))
+        (store--execute store "UPDATE grove_progress SET step=?1 WHERE attempt=?2" [(get f :step) (get claim :attempt_id)])
+        (runner--event store claim "progress" (json-stringify (select-keys f [:step :loss :metrics :consumed])))
+        (if (get f :consumed nil) (store--record-consumption store (get claim :run_id) (get f :consumed)) nil)
+        (coordinator--renew store claim (get (get runner :config) :lease-ms 30000))
+        (assoc worker :last_seen (host/clock-ms)))
+      (if (= type "checkpoint")
+        (let* [body (host/bytes (json-stringify (get f :state)))
+               cp (checkpoint--commit store (get claim :run_id) nil "learning-continuation" body)]
+          (store--execute store "UPDATE grove_progress SET checkpoint=?1 WHERE attempt=?2" [(get cp :id) (get claim :attempt_id)])
+          (runner--event store claim "checkpoint" (get cp :id))
+          (if (get f :paused false) (runner--finish runner worker "paused" (get cp :id)) worker))
+        (if (= type "done")
+          (do
+            (if (= (get claim :kind) "training")
+              (let [digest (inference--commit-trained store (get claim :run_id) (get f :model) (get (get claim :work) :graph) (get f :metrics {}))]
+                (store--execute store "UPDATE grove_progress SET result=?1 WHERE attempt=?2" [digest (get claim :attempt_id)])
+                (store--record-consumption store digest (get f :consumed [])))
+              (do
+                (coordinator--bill store claim (str (get claim :attempt_id) "-execution") (get f :steps 0))
+                (runner--event store claim "execution" (json-stringify (get f :execution {})))))
+            (runner--finish runner worker "evaluating" (json-stringify (get f :metrics {}))))
+          (if (= type "failed") (runner--finish runner worker "failed" (get f :error "worker failed"))
+            (grove--raise "protocol-violation" (str "unexpected worker frame " type))))))))
+
+(defn runner--poll-worker [runner worker]
+  (let* [store (get runner :store) claim (get worker :claim) proc (get worker :process)
+         rows (store--query store "SELECT cancel,pause FROM grove_claims WHERE run=?1 AND attempt=?2" [(get claim :run_id) (get claim :attempt_id)])
+         intent (if (empty? rows) {} (first rows))]
+    (if (= 1 (grove--get-key intent :cancel 0))
+      (do (host/process-kill proc) (runner--finish runner worker "cancelled" "cancel intent killed and reaped the process"))
+      (do
+        (if (= 1 (grove--get-key intent :pause 0))
+          (host/process-write proc {:type "pause" :run_id (get claim :run_id) :attempt_id (get claim :attempt_id)}) nil)
+        (let [reply (host/process-read proc 0)]
+          (if (= (get reply :status) :frame) (runner--receive runner worker (get reply :frame))
+            (if (= (get reply :status) :eof)
+              (runner--finish runner worker "failed" "worker exited without a terminal frame")
+              (if (> (- (host/clock-ms) (get worker :last_seen)) (get (get runner :config) :deadline-ms 300000))
+                (runner--finish runner worker "failed" "worker deadline exceeded")
+                (do (coordinator--renew store claim (get (get runner :config) :lease-ms 30000)) worker)))))))))
+
+(defn runner--tick [runner]
+  (let* [survivors (filter (fn [w] (not (nil? w)))
+                     (map (fn [worker]
+                       (try (runner--poll-worker runner worker)
+                         (catch any
+                           (do (host/process-kill (get worker :process))
+                               (try (runner--finish runner worker "failed" (str *error*)) (catch any nil))
+                               nil)))) (get runner :workers)))
+         initial (assoc runner :workers survivors)]
+    (loop [owner initial]
+      (if (>= (count (get owner :workers)) (get (get owner :config) :worker-count 2)) owner
+        (let [claim (runner--claim-next owner)]
+          (if claim
+            (let [worker (try (runner--start owner claim)
+                           (catch any
+                             (do (runner--finish owner {:claim claim :process nil} "failed" (str *error*)) nil)))]
+              (recur (if worker (assoc owner :workers (vector-conj (get owner :workers) worker)) owner)))
+            owner))))))
+
+(defn runner--drain [runner]
+  (loop [owner (runner--tick runner)]
+    (if (empty? (get owner :workers)) owner
+      (do (host/poll (map (fn [w] (get w :process)) (get owner :workers)) 20)
+          (recur (runner--tick owner))))))

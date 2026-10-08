@@ -48,7 +48,7 @@ ZOS（Zio Object System）是 Zio 的统一运行时对象模型（Unified Runti
 | Entity 模型 | `zio-entity` |
 | Protocol 系统 | `zio-protocol` |
 | Datalog 查询 | `zio-datalog` |
-| Agent / AI Runtime | Loom 官方独立 harness 库；Grove 独立应用持学习治理；`lib/zio/agent.zio` 当前只提供 demo 数据模型 |
+| Agent / AI Runtime | Loom 官方 Zio harness 库；Grove 独立应用持学习治理；`libs/loom/agent.zio` 当前只提供 demo 数据模型 |
 | Actor 并发模型 | `zio-actor` |
 | 图分析 | `zio-graph` |
 | Clojure 风格集合 | `zio-persistent` |
@@ -59,7 +59,7 @@ Datalog query evaluator 为 Planned，详见[特性矩阵](feature-matrix.md)。
 
 Numa 的连续数值数组/矩阵/向量与后端接口、Rill 的参数/子命令/帮助、
 命令组合/终端 I/O/退出状态、Loom 的模型/工具/会话/预算/取消/provider/ACP
-均为官方独立库能力，按需安装、独立版本发布，不是 ZOS 或语言内置特性。
+均为官方 Zio 库能力，按需安装、独立版本发布，不是 ZOS 或语言内置特性。
 Grove 消费语言与三库，拥有学习目标、实验、反馈、检查点、独立评价、
 人工批准、逻辑演化与 Web；语言核心没有反向依赖，三库新增能力均 Planned。
 应用可以使用对象/泛型函数实现自己的可编码逻辑，不必把所有热路径对象化；
@@ -148,6 +148,7 @@ Type (抽象)
 │   └── MetaClass  (Phase 2)
 ├── Protocol       (Phase 3, 库)
 ├── Trait          (Phase 3, 库)
+
 └── Interface      (Phase 3, 库)
 ```
 
@@ -298,6 +299,7 @@ GF 分派基于**全部必需参数的类型**。
 ```lisp
 ;; 单分派
 (draw rect)            ;; 基于 rect 类型
+
 (draw circle)
 
 ;; 多分派
@@ -448,6 +450,7 @@ ZOS 保持 Common Lisp Condition System 的设计精神，但采用**分阶段�
 
 | Phase | 特性 | 控制流模型 |
 |-------|------|-----------|
+
 | Phase 1 | `(try body (catch Type handler))` | Result 传播 + 局部 restart |
 | Phase 2+ | `handler-bind` + `signal` + 跨栈 `invoke-restart` | 扩展控制流 |
 
@@ -598,6 +601,7 @@ pub fn class_of(val: &Value) -> ClassRef {
 
 ### 13.1 四个官方扩展点
 
+
 ```
 优先度 ↓  →  1. Reader Macro (语法)
               2. Macro (语义)
@@ -641,12 +645,8 @@ zio-agent/               — Agent 框架
     memory.zio
 ```
 
-当前 `zio-ai`/`ai/` 是 Loom 的复用起点，`zio-cli`/`cli/` 是未来消费 Rill
-的可执行宿主，现有 crate、目录、函数名与命令不改名。未来规范目录和
-逻辑命名空间为 `numa/`、`rill/`、`loom/` 与 `numa/*`、`rill/*`、
-`loom/*`，不是 `zio/compute` 或 `zio/command` 等语言组件；正式短名
-不是已确认的注册包 ID，不能当安装命令。Numa 只持计算接口，Loom 持
-公共模型/工具/会话/预算，Grove 持学习、检查点、评价与发布治理；
+Zio 库目标采用 Zio 实现并归入 `libs/`：Numa 持计算，Rill 持 CLI 组合，Loom 持 harness 组合。现有 Rust 通用传输/宿主合同位于 `contribs/native/loom/`，不是 Zio 库本体；普通语言 CLI 位于 `langs/cli/`，不装配 LLM replay。Grove 是 `apps/grove/` 独立应用，其 Rust 业务仍待后续迁为 Zio；语言介绍、文档与 playground 位于 `apps/site/`。本轮只完成结构切换，不证明完整库交付、Tree-sitter、LSP 或编译器自举。当前合同见[架构](zio-architecture.md)与[批准目录计划](superpowers/plans/2026-10-07-language-first-layout.md)。短名不等于已注册包 ID。
+
 不再另建重叠的 agent 框架。公共抽取以实际复用需求为依据，执行顺序见
 [统一实现计划](superpowers/plans/2026-10-05-zio-grove-convergence.md)。
 
@@ -747,6 +747,7 @@ persistent、protocol、entity 与 Datalog storage 已有 Experimental 子集；
 权威状态见[特性矩阵](feature-matrix.md)，当前执行顺序见[实现计划](superpowers/plans/2026-10-05-zio-grove-convergence.md)。
 
 ### Phase 1: 最小对象系统
+
 
 **目标**：`defclass` + `defgeneric` + `defmethod` 可用，单继承、单分派优先。
 

@@ -1,0 +1,1078 @@
+;; Grove persistence and business rules.
+;;
+;; This module is the authority layer. Candidate / library source runs
+;; in a separate bounded context (host/evaluate-isolated) that has NO
+;; handle to the database, NO handle to the publisher, NO handle to the
+;; approval boundary. The store treats the open principal as the only
+;; identity source and never trusts a request-body "approved=true" or
+;; "actor" field.
+;;
+;; History invariant: bodies written by the old Rust store are read back
+;; byte-for-byte through the codec. The schema field is `1`; an unknown
+;; schema is refused rather than silently re-encoded. The artifact
+;; digest is sha256("grove-artifact-v1\0" || bytes). A reader-open
+;; performs no DDL and never reclaims owner leases; a writer-open may
+;; create the schema on first use.
+(load "codec.zio")
+(load "artifacts.zio")
+(load "contracts.zio")
+
+(def store--schema 1)
+(def store--reader-role "reader")
+
+(def store--tables {
+  "Observation"          "observations"
+  "Prediction"           "predictions"
+  "LearningSignal"       "signals"
+  "DatasetRevision"      "datasets"
+  "Recipe"               "recipes"
+  "Run"                  "runs"
+  "Checkpoint"           "checkpoints"
+  "Branch"               "branches"
+  "Population"           "populations"
+  "EvaluationRecord"     "evaluations"
+  "EvaluationProtocol"   "protocols"
+  "LogicCandidate"       "candidates"
+  "HumanApproval"        "approvals"
+  "ExecutionEvent"       "execution_events"})
+
+(def store--ddl
+  (str
+    "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);\n"
+    "CREATE TABLE IF NOT EXISTS manifests (digest TEXT PRIMARY KEY, kind TEXT NOT NULL, owner TEXT NOT NULL, schema INTEGER NOT NULL, body TEXT NOT NULL);\n"
+    "CREATE TABLE IF NOT EXISTS observations (id TEXT PRIMARY KEY, owner TEXT NOT NULL, task TEXT NOT NULL, schema INTEGER NOT NULL, body TEXT NOT NULL);\n"
+    "CREATE TABLE IF NOT EXISTS predictions (id TEXT PRIMARY KEY, owner TEXT NOT NULL, observation TEXT NOT NULL, snapshot TEXT NOT NULL, schema INTEGER NOT NULL, body TEXT NOT NULL);\n"
+    "CREATE TABLE IF NOT EXISTS signals (id TEXT PRIMARY KEY, producer TEXT NOT NULL, idempotency TEXT NOT NULL, kind TEXT NOT NULL, target TEXT NOT NULL, status TEXT NOT NULL, task TEXT NOT NULL, target_field TEXT, received_at_ms INTEGER NOT NULL, schema INTEGER NOT NULL, body TEXT NOT NULL, UNIQUE (producer, idempotency));\n"
+    "CREATE TABLE IF NOT EXISTS datasets (id TEXT PRIMARY KEY, task TEXT NOT NULL, schema INTEGER NOT NULL, body TEXT NOT NULL);\n"
+    "CREATE TABLE IF NOT EXISTS recipes (id TEXT PRIMARY KEY, task TEXT NOT NULL, schema INTEGER NOT NULL, body TEXT NOT NULL);\n"
+    "CREATE TABLE IF NOT EXISTS runs (id TEXT PRIMARY KEY, task TEXT NOT NULL, state TEXT NOT NULL, schema INTEGER NOT NULL, body TEXT NOT NULL);\n"
+    "CREATE TABLE IF NOT EXISTS checkpoints (id TEXT PRIMARY KEY, owner TEXT NOT NULL, run TEXT NOT NULL, parent TEXT, schema INTEGER NOT NULL, body TEXT NOT NULL);\n"
+    "CREATE TABLE IF NOT EXISTS branches (id TEXT PRIMARY KEY, owner TEXT NOT NULL, head TEXT, version INTEGER NOT NULL, schema INTEGER NOT NULL, body TEXT NOT NULL);\n"
+    "CREATE TABLE IF NOT EXISTS populations (id TEXT PRIMARY KEY, owner TEXT NOT NULL, schema INTEGER NOT NULL, body TEXT NOT NULL);\n"
+    "CREATE TABLE IF NOT EXISTS evaluations (id TEXT PRIMARY KEY, snapshot TEXT NOT NULL, protocol TEXT NOT NULL, repeat_index INTEGER NOT NULL, schema INTEGER NOT NULL, body TEXT NOT NULL);\n"
+    "CREATE TABLE IF NOT EXISTS attempts (id TEXT PRIMARY KEY, branch TEXT NOT NULL, run TEXT NOT NULL, lease_ms INTEGER NOT NULL, active INTEGER NOT NULL, billed INTEGER NOT NULL);\n"
+    "CREATE TABLE IF NOT EXISTS receipts (operation_id TEXT PRIMARY KEY, status INTEGER NOT NULL, body TEXT NOT NULL, created_at_ms INTEGER NOT NULL);\n"
+    "CREATE TABLE IF NOT EXISTS receipt_bindings (operation_id TEXT PRIMARY KEY, principal TEXT NOT NULL, route TEXT NOT NULL, payload_digest TEXT NOT NULL);\n"
+    "CREATE TABLE IF NOT EXISTS queued_work (run TEXT PRIMARY KEY, kind TEXT NOT NULL, payload TEXT NOT NULL, schema INTEGER NOT NULL);\n"
+    "CREATE TABLE IF NOT EXISTS billing (message_id TEXT PRIMARY KEY, steps INTEGER NOT NULL, outcome TEXT NOT NULL, detail TEXT NOT NULL DEFAULT '');\n"
+    "CREATE TABLE IF NOT EXISTS protocols (id TEXT PRIMARY KEY, schema INTEGER NOT NULL, body TEXT NOT NULL);\n"
+    "CREATE TABLE IF NOT EXISTS acceptance_budget (protocol TEXT PRIMARY KEY, remaining INTEGER NOT NULL);\n"
+    "CREATE TABLE IF NOT EXISTS publications (id TEXT PRIMARY KEY, snapshot TEXT NOT NULL, version INTEGER NOT NULL, actor TEXT NOT NULL, state TEXT NOT NULL);\n"
+    "CREATE TABLE IF NOT EXISTS invalidations (snapshot TEXT NOT NULL, signal TEXT NOT NULL, dataset TEXT NOT NULL, PRIMARY KEY (snapshot, signal));\n"
+    "CREATE TABLE IF NOT EXISTS invalidations_datasets (snapshot TEXT NOT NULL, dataset TEXT NOT NULL, PRIMARY KEY (snapshot, dataset));\n"
+    "CREATE TABLE IF NOT EXISTS candidates (id TEXT PRIMARY KEY, owner TEXT NOT NULL, state TEXT NOT NULL, source TEXT NOT NULL, schema INTEGER NOT NULL, body TEXT NOT NULL, updated_at_ms INTEGER NOT NULL);\n"
+    "CREATE TABLE IF NOT EXISTS approvals (id TEXT PRIMARY KEY, subject TEXT NOT NULL, candidate TEXT NOT NULL, actor TEXT NOT NULL, expected_version INTEGER, decision TEXT NOT NULL, schema INTEGER NOT NULL, body TEXT NOT NULL, created_at_ms INTEGER NOT NULL);\n"
+    "CREATE TABLE IF NOT EXISTS approval_evaluations (approval TEXT NOT NULL, candidate TEXT NOT NULL, PRIMARY KEY (approval, candidate));\n"
+    "CREATE TABLE IF NOT EXISTS rejections (subject TEXT PRIMARY KEY, actor TEXT NOT NULL, reason TEXT NOT NULL, at_ms INTEGER NOT NULL);\n"
+    "CREATE TABLE IF NOT EXISTS lineage (child TEXT NOT NULL, parent TEXT NOT NULL, derivation TEXT NOT NULL, at_ms INTEGER NOT NULL, PRIMARY KEY (child, parent, derivation));\n"
+    "CREATE TABLE IF NOT EXISTS named_snapshots (name TEXT PRIMARY KEY, digest TEXT NOT NULL, at_ms INTEGER NOT NULL);\n"
+    "CREATE TABLE IF NOT EXISTS execution_events (run_id TEXT NOT NULL, sequence INTEGER NOT NULL, attempt TEXT NOT NULL, kind TEXT NOT NULL, detail TEXT NOT NULL, source TEXT, at_ms INTEGER NOT NULL, schema INTEGER NOT NULL, PRIMARY KEY (run_id, sequence));\n"
+    "CREATE INDEX IF NOT EXISTS invalidations_by_signal ON invalidations (signal);\n"
+    "CREATE INDEX IF NOT EXISTS invalidations_datasets_by_snapshot ON invalidations_datasets (snapshot);\n"
+    "CREATE INDEX IF NOT EXISTS execution_events_by_run ON execution_events (run_id, sequence);\n"
+    "CREATE INDEX IF NOT EXISTS approval_evaluations_by_approval ON approval_evaluations (approval);"))
+
+(def store--domain-only-kinds
+  ["LearningSignal" "DatasetRevision" "LogicCandidate" "HumanApproval"
+   "EvaluationRecord" "EvaluationProtocol"])
+
+(def store--run-states
+  ["queued" "running" "evaluating" "accepted" "rejected" "paused" "failed" "cancelled"])
+
+(def store--resume-levels
+  ["model-initialization" "learning-continuation" "controlled-replay"])
+
+(def store--ensemble-rules ["vote" "weighted" "all-agree"])
+
+(def store--signal-kinds
+  ["teacher-label" "human-correction" "human-preference" "demonstration"
+   "environment-result" "revision" "retraction"])
+
+(def store--candidate-states
+  ["proposed" "qualified" "active" "rejected" "declined"])
+
+(def store--derivation-kinds
+  ["parameter-training" "code-rewrite" "weight-migration"
+   "module-composition" "distillation"])
+
+(def store--signal-statuses ["accepted" "superseded" "retracted"])
+(def store--publication-states ["staged" "active" "retired"])
+
+(defn store--table [kind]
+  (let [table (get store--tables kind nil)]
+    (grove--require (not (nil? table)) "invalid-input" (str "unknown record table " kind))
+    table))
+
+(defn store--query [store sql params]
+  (host/db-query (get store :db) sql params))
+
+(defn store--execute [store sql params]
+  (host/db-execute (get store :db) sql params))
+
+(defn store--transaction [store callback]
+  (host/db-transaction (get store :db) callback))
+
+(defn store--close [store]
+  (host/db-close (get store :db)))
+
+(defn store--read-only? [store]
+  (= true (get store :read-only)))
+
+(defn store--raw [store kind id]
+  (let [rows (store--query store (str "SELECT body,schema FROM " (store--table kind) " WHERE id=?1") [id])]
+    (grove--require (= (count rows) 1) "artifact-unavailable" (str "missing " kind " " id))
+    (grove--schema! (get (first rows) :schema nil))
+    (get (first rows) :body)))
+
+(defn grove--get [store kind id] (codec--decode (store--raw store kind id) 1))
+
+(defn grove--list [store kind]
+  (map (fn [row] (codec--decode (get row :body) (get row :schema)))
+    (store--query store (str "SELECT body,schema FROM " (store--table kind) " ORDER BY id") [])))
+
+(defn grove--put [store kind record]
+  (grove--schema! (grove--get-key record :schema nil))
+  (grove--authorize store (if (grove--contains ["Observation" "Prediction"] kind) "reader" "operator"))
+  (grove--require (not (grove--contains store--domain-only-kinds kind))
+    "capability-denied" "record requires its domain validation path"))
+
+(defn store--insert [store table columns params]
+  (let* [marks (map (fn [i] (str "?" (+ i 1))) (range (count params)))
+         changed (store--execute store
+                     (str "INSERT OR IGNORE INTO " table "(" (codec--join columns ",") ") VALUES(" (codec--join marks ",") ")")
+                     params)]
+    (grove--require (= changed 1) "conflict" (str "immutable " table " id already exists")) changed))
+
+(defn store--apply-ddl [store]
+  (reduce (fn [_ statement]
+    (if (> (count (str-trim statement)) 0)
+      (store--execute store statement [])
+      nil)) nil (str-split ";" store--ddl)))
+
+(defn store--open [root principal]
+  (grove--require (> (count (grove--get-key principal :id "")) 0) "capability-denied" "authenticated principal required")
+  (grove--require (>= (grove--role-rank (grove--get-key principal :role "")) 0) "capability-denied" "invalid authenticated role")
+  (let* [reader (= (grove--get-key principal :role "") store--reader-role)
+         db (host/db-open (str root "/grove.db") {:read-only reader})
+         store {:db db :root root :principal principal :read-only reader}
+         tables (store--query store "SELECT name FROM sqlite_master WHERE type='table' AND name='meta'" [])
+         empty-store (empty? tables)]
+    (if empty-store
+      (do (grove--require (not reader) "incompatible-state" "reader cannot initialize store")
+          (store--transaction store (fn []
+            (store--apply-ddl store)
+            (store--execute store "INSERT INTO meta(key,value) VALUES('schema','1')" []))))
+      (let [meta (store--query store "SELECT value FROM meta WHERE key='schema'" [])]
+        (grove--require (= (grove--get-key (first meta) :value nil) "1")
+          "incompatible-state" "unknown or missing store schema")
+        (if reader nil (store--transaction store (fn [] (store--apply-ddl store))))))
+    store))
+
+(defn store--require-owner [store digest]
+  (let [hex (grove--ref-hex digest)
+        rows (store--query store "SELECT owner FROM manifests WHERE digest=?1" [hex])]
+    (grove--require (= (count rows) 1) "artifact-unavailable" "uncommitted manifest")
+    (grove--require (= (get (first rows) :owner) (grove--principal-id store))
+      "capability-denied" "foreign-owned manifest")))
+
+(defn store--manifest-body [store digest]
+  (let* [hex (grove--ref-hex digest)
+         rows (store--query store "SELECT body,schema FROM manifests WHERE digest=?1" [hex])]
+    (grove--require (= (count rows) 1) "artifact-unavailable" "manifest not committed")
+    (grove--schema! (get (first rows) :schema nil))
+    (let [body (get (first rows) :body)]
+      (grove--require (= (grove--digest (host/bytes body)) hex) "artifact-unavailable" "manifest body digest mismatch")
+      (artifact--get store hex)
+      body)))
+
+(defn store--load-manifest [store digest]
+  (codec--decode (store--manifest-body store digest) 1))
+
+(defn store--write-manifest-row [store kind digest body]
+  (store--execute store
+    "INSERT OR IGNORE INTO manifests(digest,kind,owner,schema,body) VALUES(?1,?2,?3,1,?4)"
+    [digest kind (grove--principal-id store) body]))
+
+(defn store--commit-manifest [store kind record]
+  (grove--authorize store "operator")
+  (let* [bytes (codec--encode kind record)
+         digest (artifact--put store bytes)
+         body (codec--text kind record)]
+    (store--write-manifest-row store kind digest body)
+    digest))
+
+;; ─── Domain writes ────────────────────────────────────────────
+;; A writer per kind. Each takes the validated record, writes its
+;; immutable body and the index columns the store owns.
+
+(defn store--put-observation [store record]
+  (grove--schema! (grove--get-key record :schema nil))
+  (grove--authorize store "reader")
+  (grove--owned store record)
+  (reduce (fn [_ block] (artifact--get store (grove--get-key block :artifact nil))) nil (grove--get-key record :blocks []))
+  (let [body (codec--text "Observation" record)]
+    (store--transaction store (fn []
+      (store--execute store
+        "INSERT OR IGNORE INTO observations(id,owner,task,schema,body) VALUES(?1,?2,?3,1,?4)"
+        [(grove--get-key record :id nil) (grove--principal-id store) (grove--get-key record :task_id nil) body])))))
+
+(defn store--put-prediction [store record]
+  (grove--schema! (grove--get-key record :schema nil))
+  (grove--authorize store "reader")
+  (store--load-manifest store (grove--get-key record :snapshot_digest nil))
+  (let [body (codec--text "Prediction" record)]
+    (store--transaction store (fn []
+      (store--execute store
+        "INSERT OR IGNORE INTO predictions(id,owner,observation,snapshot,schema,body) VALUES(?1,?2,?3,?4,1,?5)"
+        [(grove--get-key record :id nil) (grove--get-key record :owner nil)
+         (grove--get-key record :observation_id nil)
+         (grove--ref-hex (grove--get-key record :snapshot_digest nil)) body])))))
+
+(defn store--put-checkpoint [store record]
+  (grove--schema! (grove--get-key record :schema nil))
+  (grove--authorize store "operator")
+  (grove--owned store record)
+  (artifact--get store (grove--get-key record :state_artifact nil))
+  (store--require-owner store (grove--get-key record :snapshot nil))
+  (let* [bytes (codec--encode "Checkpoint" record)
+         digest (artifact--put store bytes)
+         body (codec--text "Checkpoint" record)]
+    (store--transaction store (fn []
+      (store--write-manifest-row store "Checkpoint" digest body)
+      (store--execute store
+        "INSERT INTO checkpoints(id,owner,run,parent,schema,body) VALUES(?1,?2,?3,?4,1,?5)"
+        [(grove--get-key record :id nil) (grove--principal-id store)
+         (grove--get-key record :run_id nil) (grove--get-key record :parent nil) body])))))
+
+(defn store--put-branch [store record]
+  (grove--schema! (grove--get-key record :schema nil))
+  (grove--authorize store "operator")
+  (grove--owned store record)
+  (let [body (codec--text "Branch" record)]
+    (store--transaction store (fn []
+      (store--execute store
+        "INSERT INTO branches(id,owner,head,version,schema,body) VALUES(?1,?2,?3,?4,1,?5)"
+        [(grove--get-key record :id nil) (grove--principal-id store)
+         (grove--get-key record :head nil) (grove--get-key record :head_version 0) body])))))
+
+(defn store--put-population [store record]
+  (grove--schema! (grove--get-key record :schema nil))
+  (grove--authorize store "operator")
+  (grove--owned store record)
+  (let [body (codec--text "Population" record)]
+    (store--transaction store (fn []
+      (store--execute store
+        "INSERT OR IGNORE INTO populations(id,owner,schema,body) VALUES(?1,?2,1,?3)"
+        [(grove--get-key record :id nil) (grove--principal-id store) body])))))
+
+(defn store--put-run [store record]
+  (grove--schema! (grove--get-key record :schema nil))
+  (grove--authorize store "operator")
+  (let [body (codec--text "Run" record)]
+    (store--transaction store (fn []
+      (store--execute store
+        "INSERT OR IGNORE INTO runs(id,task,state,schema,body) VALUES(?1,?2,?3,1,?4)"
+        [(grove--get-key record :id nil) (grove--get-key record :task_id nil)
+         (grove--get-key record :state nil) body])))))
+
+(defn store--set-run [store run]
+  (grove--authorize store "operator")
+  (store--execute store "UPDATE runs SET state=?1,body=?2 WHERE id=?3"
+    [(grove--get-key run :state nil) (codec--text "Run" run) (grove--get-key run :id nil)])
+  run)
+
+(defn store--put-recipe [store record]
+  (grove--schema! (grove--get-key record :schema nil))
+  (grove--authorize store "operator")
+  (let [body (codec--text "Recipe" record)]
+    (store--transaction store (fn []
+      (store--execute store
+        "INSERT OR IGNORE INTO recipes(id,task,schema,body) VALUES(?1,?2,1,?3)"
+        [(grove--get-key record :id nil) (grove--get-key record :task_id nil) body])))))
+
+(defn store--consume-steps [store run-id steps]
+  (let [run (grove--get store "Run" run-id)
+        spent (+ (grove--get-key run :steps_consumed 0) steps)]
+    (grove--require (<= spent (grove--get-key run :steps_budget 0))
+      "budget-exhausted"
+      (str "run " run-id " asked for " spent " steps, budget is " (grove--get-key run :steps_budget 0)))
+    (store--set-run store (assoc run :steps_consumed spent))
+    spent))
+
+(defn store--record-consumption [store source-id consumed]
+  (grove--authorize store "operator")
+  (grove--require (vector? consumed) "invalid-input" "consumed must be a vector")
+  (reduce (fn [_ entry]
+    (let* [digest (grove--get-key entry :digest nil)
+           artifact (str "trained-" source-id "-" digest)
+           path (str (get store :root) "/training/" artifact ".json")]
+      (host/write-atomic path (host/json-bytes (assoc entry :source source-id :recorded_at_ms (host/clock-ms))))))
+    nil consumed))
+
+;; ─── Signals and frozen datasets ──────────────────────────────
+
+(defn store--signal-target [signal]
+  ;; The subject a signal is about: the observation it corrects, else the
+  ;; prediction it comments on, else the task it belongs to. Resolved in
+  ;; that order because a signal naming both an observation and a
+  ;; prediction is about the observation.
+  (let [oid (grove--get-key signal :observation_id nil)]
+    (if (not (nil? oid)) oid
+      (let [pid (grove--get-key signal :prediction_id nil)]
+        (if (not (nil? pid)) pid (grove--get-key signal :task_id nil))))))
+
+
+(defn store--submit-signal [store signal]
+  (grove--schema! (grove--get-key signal :schema nil))
+  (let* [kind (grove--get-key signal :kind nil)
+         required (if (= kind "teacher-label") "operator"
+                  (if (or (= kind "human-correction") (= kind "human-preference") (= kind "demonstration"))
+                    "annotator" "reader"))
+         producer (grove--get-key signal :producer nil)
+         body (codec--text "LearningSignal" signal)
+         target (store--signal-target signal)]
+    (grove--authorize store required)
+    (grove--require (grove--contains store--signal-kinds kind) "invalid-input" "unknown signal kind")
+    (grove--require (= producer (grove--principal-id store)) "capability-denied" "signal producer must be authenticated principal")
+    (store--transaction store (fn []
+      (let [existing (store--query store "SELECT body FROM signals WHERE producer=?1 AND idempotency=?2"
+                              [producer (grove--get-key signal :idempotency_key nil)])]
+        (if (not (empty? existing))
+          (do (grove--require (= body (get (first existing) :body nil)) "conflict" "signal idempotency key was used for different content")
+              "duplicate")
+          (do
+            (if (or (= kind "revision") (= kind "retraction"))
+              (let* [referred (grove--get-key signal :revises nil)
+                     rows (store--query store "SELECT 1 FROM signals WHERE id=?1" [referred])]
+                (if (empty? rows)
+                  (grove--raise "incompatible-state"
+                    (str "signal " (grove--get-key signal :id nil) " revises unknown signal " referred))
+                  nil))
+              nil)
+            (store--execute store
+              "INSERT OR IGNORE INTO signals(id,producer,idempotency,kind,target,status,task,target_field,received_at_ms,schema,body) VALUES(?1,?2,?3,?4,?5,'accepted',?6,?7,?8,1,?9)"
+              [(grove--get-key signal :id nil) producer (grove--get-key signal :idempotency_key nil)
+               kind target (grove--get-key signal :task_id nil) (grove--get-key signal :target_field nil)
+               (grove--get-key signal :received_at_ms nil) body])
+            "accepted")))))))
+
+(defn store--active-signals [store target]
+  (map (fn [row] (codec--decode (get row :body) (get row :schema)))
+    (store--query store "SELECT body,schema FROM signals WHERE target=?1 AND status='accepted' ORDER BY received_at_ms,id" [target])))
+
+(defn store--signal-status [store id]
+  (let [rows (store--query store "SELECT status FROM signals WHERE id=?1" [id])]
+    (grove--require (= (count rows) 1) "artifact-unavailable" "signal missing")
+    (get (first rows) :status)))
+
+(defn store--withdraw-signal [store id]
+  (grove--authorize store "annotator")
+  (let [changed (store--execute store "UPDATE signals SET status='retracted' WHERE id=?1 AND status='accepted'" [id])]
+    (grove--require (= changed 1) "incompatible-state" (str "signal " id " is not in force"))
+    "retracted"))
+
+(defn store--resolve-conflict [store keep supersede]
+  (grove--authorize store "annotator")
+  (grove--require (not (= keep supersede)) "invalid-input" "cannot supersede winner")
+  (store--transaction store (fn []
+    (let* [a (grove--get store "LearningSignal" keep)
+           b (grove--get store "LearningSignal" supersede)
+           ta (store--signal-target a)
+           tb (store--signal-target b)]
+      (grove--require (and (= ta tb) (= (grove--get-key a :target_field nil) (grove--get-key b :target_field nil)))
+        "invalid-input" "signals do not share target and field")
+      (grove--require (= "accepted" (store--signal-status store keep)) "incompatible-state" "winner not active")
+      (let [n (store--execute store "UPDATE signals SET status='superseded' WHERE id=?1 AND status='accepted'" [supersede])]
+        (grove--require (= n 1) "incompatible-state" "loser not active"))))))
+
+(defn store--signal-conflicts [store target]
+  (let [humans (filter (fn [s] (grove--contains ["human-correction" "human-preference" "demonstration"] (grove--get-key s :kind nil)))
+                  (store--active-signals store target))]
+    (reduce (fn [out i]
+      (reduce (fn [acc j]
+        (let* [a (get humans i) b (get humans j)]
+          (if (and (= (grove--get-key a :target_field nil) (grove--get-key b :target_field nil))
+                   (not (= (grove--get-key a :content nil) (grove--get-key b :content nil))))
+            (conj acc {:target target
+                       :target_field (grove--get-key a :target_field nil)
+                       :existing (grove--get-key a :id nil)
+                       :incoming (grove--get-key b :id nil)})
+            acc))) out (range (+ i 1) (count humans)))) [] (range (count humans)))))
+
+(defn store--freeze-dataset [store revision]
+  (grove--authorize store "operator")
+  (grove--schema! (grove--get-key revision :schema nil))
+  (store--transaction store (fn []
+    (reduce (fn [_ id]
+      (let [status (store--signal-status store id)]
+        (if (not (= "accepted" status))
+          (grove--raise "incompatible-state" (str "frozen signal " id " is " status))
+          nil))) nil (grove--get-key revision :signal_ids []))
+    (reduce (fn [_ id]
+      (let [obs (grove--get store "Observation" id)]
+        (if (not (= (grove--get-key obs :task_id nil) (grove--get-key revision :task_id nil)))
+          (grove--raise "protocol-violation" "cross-task dataset observation")
+          (if (not (grove--get-key obs :training_permitted false))
+            (grove--raise "capability-denied" "observation licence forbids training")
+            nil)))) nil (grove--get-key revision :observation_ids []))
+    (let [body (codec--text "DatasetRevision" revision)]
+      (store--execute store "INSERT INTO datasets(id,task,schema,body) VALUES(?1,?2,1,?3)"
+        [(grove--get-key revision :id nil) (grove--get-key revision :task_id nil) body])))))
+
+(defn store--pending-signals [store task]
+  (map (fn [row] (get row :id))
+    (store--query store
+      "SELECT s.id FROM signals s WHERE s.status='accepted' AND s.task=?1 AND NOT EXISTS (SELECT 1 FROM datasets d WHERE d.task=?1 AND instr(d.body, '\"' || s.id || '\"') > 0) ORDER BY s.received_at_ms, s.id"
+      [task])))
+
+;; ─── Evaluations, protocols, acceptance budget ───────────────
+
+(defn store--put-protocol [store protocol]
+  (grove--schema! (grove--get-key protocol :schema nil))
+  (grove--authorize store "operator")
+  (let [body (codec--text "EvaluationProtocol" protocol)]
+    (store--transaction store (fn []
+      (store--execute store "INSERT INTO protocols(id,schema,body) VALUES(?1,1,?2) ON CONFLICT(id) DO UPDATE SET body=?2"
+        [(grove--get-key protocol :id nil) body])))))
+
+(defn store--get-protocol [store id]
+  (let [rows (store--query store "SELECT body,schema FROM protocols WHERE id=?1" [id])]
+    (grove--require (= (count rows) 1) "artifact-unavailable" (str "no protocol " id))
+    (grove--schema! (get (first rows) :schema nil))
+    (codec--decode (get (first rows) :body) (get (first rows) :schema))))
+
+(defn store--put-evaluation [store record]
+  (grove--schema! (grove--get-key record :schema nil))
+  (grove--authorize store "operator")
+  (grove--require-finite-metrics (grove--get-key record :metrics []))
+  (let [body (codec--text "EvaluationRecord" record)]
+    (store--transaction store (fn []
+      (store--execute store
+        "INSERT INTO evaluations(id,snapshot,protocol,repeat_index,schema,body) VALUES(?1,?2,?3,?4,1,?5)"
+        [(grove--get-key record :id nil) (grove--ref-hex (grove--get-key record :snapshot nil))
+         (grove--get-key record :protocol_id nil) (grove--get-key record :repeat_index 0) body])))))
+
+(defn store--evaluations-for [store snapshot]
+  (map (fn [row] (codec--decode (get row :body) (get row :schema)))
+    (store--query store "SELECT body,schema FROM evaluations WHERE snapshot=?1 ORDER BY repeat_index,id"
+      [(grove--ref-hex snapshot)])))
+
+(defn store--provision-acceptance-budget [store protocol amount]
+  (grove--authorize store "operator")
+  (store--execute store "INSERT INTO acceptance_budget(protocol,remaining) VALUES(?1,?2) ON CONFLICT(protocol) DO UPDATE SET remaining=?2"
+    [protocol amount]))
+
+(defn store--consume-acceptance-budget [store protocol amount]
+  (store--transaction store (fn []
+    (let [rows (store--query store "SELECT remaining FROM acceptance_budget WHERE protocol=?1" [protocol])]
+      (grove--require (= (count rows) 1) "artifact-unavailable" (str "no acceptance budget for protocol " protocol))
+      (let [remaining (get (first rows) :remaining 0)]
+        (grove--require (>= remaining amount) "budget-exhausted"
+          (str "acceptance budget for " protocol " has " remaining " left, " amount " requested"))
+        (store--execute store "UPDATE acceptance_budget SET remaining=?1 WHERE protocol=?2" [(- remaining amount) protocol])
+        (- remaining amount))))))
+
+;; ─── Publication, candidates, approvals, rejections ──────────
+
+(defn store--active-publication [store]
+  (let [rows (store--query store "SELECT version,snapshot,actor FROM publications WHERE state='active' ORDER BY version DESC LIMIT 1" [])]
+    (if (empty? rows) nil (first rows))))
+
+(defn store--require-deployable [store snapshot]
+  (let [rows (store--query store "SELECT signal,dataset FROM invalidations WHERE snapshot=?1" [(grove--ref-hex snapshot)])]
+    (if (not (empty? rows))
+      (grove--raise "incompatible-state"
+        (str "snapshot " (grove--ref-hex snapshot) " was trained on retracted signal(s) "
+             (map (fn [r] (get r :signal)) rows)
+             " (frozen view(s) "
+             (map (fn [r] (get r :dataset)) rows)
+             "); retrain without them"))
+      nil)))
+
+(defn store--require-resumable [store snapshot]
+  (store--require-deployable store snapshot))
+
+(defn store--publish [store snapshot expected-version]
+  (grove--authorize store "publisher")
+  (store--require-deployable store snapshot)
+  (let [hex (grove--ref-hex snapshot)]
+    (store--transaction store (fn []
+      (let [current (store--query store "SELECT id,version FROM publications WHERE state='active' ORDER BY version DESC LIMIT 1" [])
+            version (if (empty? current)
+                      1
+                      (let [cur-v (get (first current) :version 0)]
+                        (if (nil? expected-version)
+                          (+ cur-v 1)
+                          (if (= expected-version cur-v)
+                            (+ cur-v 1)
+                            (grove--raise "conflict"
+                              (str "publication is at version " cur-v ", caller expected " expected-version))))))]
+        (store--execute store "UPDATE publications SET state='retired' WHERE state='active'" [])
+        (store--execute store "INSERT INTO publications(id,snapshot,version,actor,state) VALUES(?1,?2,?3,?4,'active')"
+          [(str "pub-v" version) hex version (grove--principal-id store)])
+        version)))))
+
+(defn store--insert-candidate [store candidate digest]
+  (grove--authorize store "operator")
+  (let [body (codec--text "LogicCandidate" candidate)
+        changed (store--execute store
+                     "INSERT OR IGNORE INTO candidates(id,owner,state,source,schema,body,updated_at_ms) VALUES(?1,?2,'proposed',?3,1,?4,?5)"
+                     [(grove--get-key candidate :id nil) (grove--principal-id store)
+                      (grove--ref-hex (grove--get-key candidate :source_ref nil))
+                      body (grove--get-key candidate :created_at_ms (host/clock-ms))])]
+    (grove--require (= changed 1) "conflict"
+      (str "candidate " (grove--get-key candidate :id nil) " already exists; a candidate is immutable"))))
+
+(defn store--candidate-state [store id]
+  (let [rows (store--query store "SELECT state FROM candidates WHERE id=?1" [id])]
+    (grove--require (= (count rows) 1) "artifact-unavailable" (str "no logic candidate " id))
+    (get (first rows) :state)))
+
+(defn store--set-candidate-state [store id state]
+  (grove--authorize store "operator")
+  (grove--require (grove--contains store--candidate-states state) "invalid-input" "unknown candidate state")
+  (let [changed (store--execute store "UPDATE candidates SET state=?1, updated_at_ms=?2 WHERE id=?3"
+                  [state (host/clock-ms) id])]
+    (grove--require (= changed 1) "artifact-unavailable" (str "no logic candidate " id))))
+
+(defn store--active-candidate-id [store]
+  (let [rows (store--query store "SELECT id FROM candidates WHERE state='active' AND source=(SELECT snapshot FROM publications WHERE state='active' LIMIT 1) LIMIT 1" [])]
+    (if (empty? rows) nil (get (first rows) :id))))
+
+(defn store--put-approval [store approval]
+  (grove--schema! (grove--get-key approval :schema nil))
+  (grove--authorize store "publisher")
+  (let [body (codec--text "HumanApproval" approval)
+        approval-id (grove--get-key approval :id nil)]
+    (store--transaction store (fn []
+      (let [existing (store--query store "SELECT 1 FROM approvals WHERE id=?1" [approval-id])]
+        (if (not (empty? existing))
+          (grove--raise "conflict"
+            (str "approval " approval-id " already exists; a second decision about the same candidate is a different approval"))
+          nil))
+      (store--execute store
+        "INSERT INTO approvals(id,subject,candidate,actor,expected_version,decision,schema,body,created_at_ms) VALUES(?1,?2,?3,?4,?5,?6,1,?7,?8)"
+        [approval-id (grove--get-key approval :subject_id nil)
+         (grove--ref-hex (grove--get-key approval :candidate_ref nil))
+         (grove--get-key approval :authenticated_actor nil)
+         (grove--get-key approval :expected_publication_version nil)
+         (grove--get-key approval :decision nil) body (grove--get-key approval :created_at_ms nil)])
+      (reduce (fn [_ evaluation]
+        (store--execute store "INSERT OR IGNORE INTO approval_evaluations(approval,candidate) VALUES(?1,?2)"
+          [approval-id (grove--ref-hex evaluation)])) nil (grove--get-key approval :evaluation_refs []))))))
+
+(defn store--get-approval [store id]
+  (let [rows (store--query store "SELECT body FROM approvals WHERE id=?1" [id])]
+    (grove--require (= (count rows) 1) "artifact-unavailable" (str "no approval " id))
+    (codec--decode (get (first rows) :body nil) 1)))
+
+(defn store--approval-evaluation-refs [store id]
+  (map (fn [row] (grove--artifact-ref (get row :candidate)))
+    (store--query store "SELECT candidate FROM approval_evaluations WHERE approval=?1 ORDER BY candidate" [id])))
+
+(defn store--approval-is-current [store approval]
+  (let* [candidate-hex (grove--ref-hex (grove--get-key approval :candidate_ref nil))
+         decision-ok (= "approved" (grove--get-key approval :decision nil))
+         named (store--approval-evaluation-refs store (grove--get-key approval :id nil))
+         evaluations-ok (if (or (not decision-ok) (= 0 (count named))) false
+                        (let [bodies (store--query store "SELECT body FROM evaluations WHERE snapshot=?1" [candidate-hex])
+                              present (map (fn [r] (grove--digest (host/bytes (get r :body)))) bodies)]
+                          (reduce (fn [ok ref] (if ok (grove--contains present ref) false)) true named)))
+         subject-rows (store--query store "SELECT subject FROM approvals WHERE id=?1" [(grove--get-key approval :id nil)])
+         subject-ok (and (= 1 (count subject-rows))
+                         (= (get (first subject-rows) :subject nil) (grove--get-key approval :subject_id nil)))]
+    (and decision-ok evaluations-ok subject-ok)))
+
+(defn store--approval-version-is-current [store approval]
+  (let* [expected (grove--get-key approval :expected_publication_version nil)
+         active (store--active-publication store)]
+    (cond
+      (nil? expected) true
+      (nil? active) false
+      (= expected (get active :version nil)) true
+      true false)))
+
+(defn store--note-rejection [store subject reason now-ms]
+  (grove--authorize store "publisher")
+  (store--execute store "INSERT INTO rejections(subject,actor,reason,at_ms) VALUES(?1,?2,?3,?4)"
+    [subject (grove--principal-id store) reason now-ms]))
+
+(defn store--rejection [store subject]
+  (let [rows (store--query store "SELECT actor,reason,at_ms FROM rejections WHERE subject=?1" [subject])]
+    (if (empty? rows) nil (first rows))))
+
+;; ─── Lineage: composition, distillation, weight migration ───
+
+(defn store--record-derivation [store child-id parents derivation]
+  (grove--authorize store "operator")
+  (grove--require (grove--contains store--derivation-kinds derivation) "invalid-input" "unknown derivation")
+  (reduce (fn [_ parent]
+    (store--execute store
+      "INSERT OR IGNORE INTO lineage(child,parent,derivation,at_ms) VALUES(?1,?2,?3,?4)"
+      [child-id (grove--ref-hex parent) derivation (host/clock-ms)])) nil parents))
+
+(defn store--parents-of [store child-id]
+  (map (fn [row] [(grove--artifact-ref (get row :parent)) (get row :derivation)])
+    (store--query store "SELECT parent,derivation FROM lineage WHERE child=?1 ORDER BY parent" [child-id])))
+
+(defn store--name-snapshot [store name digest]
+  (grove--authorize store "operator")
+  (store--execute store
+    "INSERT INTO named_snapshots(name,digest,at_ms) VALUES(?1,?2,?3) ON CONFLICT(name) DO UPDATE SET digest=?2,at_ms=?3"
+    [name (grove--ref-hex digest) (host/clock-ms)]))
+
+(defn store--named-snapshot [store name]
+  (let [rows (store--query store "SELECT digest,at_ms FROM named_snapshots WHERE name=?1" [name])]
+    (if (empty? rows) nil [(grove--artifact-ref (get (first rows) :digest nil)) (get (first rows) :at_ms nil)])))
+
+(defn store--named-snapshots [store]
+  (map (fn [row] [row (grove--artifact-ref (get row :digest nil)) (get row :at_ms nil)])
+    (store--query store "SELECT name,digest,at_ms FROM named_snapshots ORDER BY at_ms DESC" [])))
+
+;; ─── Run queue, attempts, billing, queued work ───────────────
+
+(defn store--queued-runs [store]
+  (map (fn [row] (get row :id)) (store--query store "SELECT id FROM runs WHERE state='queued' ORDER BY id" [])))
+
+(defn store--epoch-check [store epoch]
+  (let [rows (store--query store "SELECT value FROM meta WHERE key='coordinator.owner'" [])]
+    (if (empty? rows) true
+      (let [owner (json-parse (get (first rows) :value "{}"))]
+        (= epoch (get owner :epoch 0))))))
+
+(defn store--claim-queued-run [store run-id attempt-id reserve-steps lease-ms now-ms]
+  (grove--authorize store "operator")
+  (store--transaction store (fn []
+    (let* [rows (store--query store "SELECT state,body FROM runs WHERE id=?1" [run-id])]
+      (grove--require (= (count rows) 1) "artifact-unavailable" (str "no run " run-id))
+      (let [state (get (first rows) :state nil)
+            run (codec--decode (get (first rows) :body nil) 1)]
+        (grove--require (= "queued" state) "conflict" (str "run " run-id " is " state))
+        (grove--require (<= (+ (grove--get-key run :steps_consumed 0) reserve-steps) (grove--get-key run :steps_budget 0))
+          "budget-exhausted" (str "run " run-id " cannot afford " reserve-steps " more steps"))
+        (let [next (assoc run :state "running" :steps_consumed (+ (grove--get-key run :steps_consumed 0) reserve-steps))
+              n (store--execute store "UPDATE runs SET state='running',body=?1 WHERE id=?2 AND state='queued'"
+                      [(codec--text "Run" next) run-id])]
+          (grove--require (= n 1) "conflict" (str "run " run-id " was claimed by another owner"))
+          (store--execute store
+            "INSERT INTO attempts(id,branch,run,lease_ms,active,billed) VALUES(?1,'',?2,?3,1,?4)"
+            [attempt-id run-id (+ now-ms lease-ms) reserve-steps])
+          {:run_id run-id :attempt_id attempt-id :reserved_steps reserve-steps :lease_expires_ms (+ now-ms lease-ms)}))))))
+
+(defn store--finish-claimed-run [store run-id attempt-id epoch final-state now-ms]
+  (grove--authorize store "operator")
+  (store--transaction store (fn []
+    (let* [rows (store--query store "SELECT lease_ms,active FROM attempts WHERE id=?1" [attempt-id])]
+      (grove--require (= (count rows) 1) "artifact-unavailable" (str "no attempt " attempt-id))
+      (let [lease (get (first rows) :lease_ms 0)
+            active (get (first rows) :active 0)]
+        (grove--require (= active 1) "conflict" (str "attempt " attempt-id " is no longer active"))
+        (grove--require (> lease now-ms) "conflict" (str "attempt " attempt-id " lease expired at " lease))
+        (grove--require (grove--contains ["accepted" "rejected" "failed" "cancelled"] final-state)
+          "invalid-input" "invalid terminal state")
+        (let [rows2 (store--query store "SELECT body FROM runs WHERE id=?1" [run-id])
+              run (codec--decode (get (first rows2) :body nil) 1)
+              next (assoc run :state final-state)]
+          (if (not (store--epoch-check store epoch))
+            (grove--raise "conflict" "the coordinator ownership epoch was superseded")
+            nil)
+          (store--execute store "UPDATE runs SET state=?1,body=?2 WHERE id=?3"
+            [final-state (codec--text "Run" next) run-id])
+          (store--execute store "UPDATE attempts SET active=0 WHERE id=?1" [attempt-id])))))))
+
+(defn store--request-cancel [store run-id]
+  (grove--authorize store "operator")
+  (let [run (grove--get store "Run" run-id)]
+    (grove--require (not (grove--contains ["accepted" "rejected" "failed" "cancelled"] (grove--get-key run :state nil)))
+      "conflict" (str "run " run-id " is already " (grove--get-key run :state nil)))
+    (store--set-run store (assoc run :state "cancelled"))))
+
+(defn store--put-queued-work [store run-id kind payload]
+  (grove--authorize store "operator")
+  (let [existing (store--query store "SELECT payload FROM queued_work WHERE run=?1" [run-id])]
+    (if (empty? existing)
+      (store--execute store "INSERT INTO queued_work(run,kind,payload,schema) VALUES(?1,?2,?3,1)"
+        [run-id kind payload])
+      (if (not (= (get (first existing) :payload nil) payload))
+        (grove--raise "conflict" (str "run " run-id " is already queued for different work"))
+        nil))))
+
+(defn store--queued-work [store run-id]
+  (let [rows (store--query store "SELECT kind,payload FROM queued_work WHERE run=?1" [run-id])]
+    (if (empty? rows) nil [(get (first rows) :kind nil) (get (first rows) :payload nil)])))
+
+(defn store--put-receipt [store operation-id status body]
+  (grove--authorize store "operator")
+  (let [existing (store--query store "SELECT body FROM receipts WHERE operation_id=?1" [operation-id])]
+    (cond
+      (empty? existing)
+      (store--execute store "INSERT INTO receipts(operation_id,status,body,created_at_ms) VALUES(?1,?2,?3,?4)"
+        [operation-id status body (host/clock-ms)])
+      (= (get (first existing) :body nil) body) nil
+      true (grove--raise "conflict"
+             (str "operation " operation-id " already produced a different answer")))))
+
+(defn store--get-receipt [store operation-id]
+  (let [rows (store--query store "SELECT status,body FROM receipts WHERE operation_id=?1" [operation-id])]
+    (if (empty? rows) nil [(get (first rows) :status nil) (get (first rows) :body nil)])))
+
+(defn store--record-billing [store message-id steps outcome detail]
+  (store--execute store
+    "INSERT INTO billing(message_id,steps,outcome,detail) VALUES(?1,?2,?3,?4) ON CONFLICT(message_id) DO UPDATE SET outcome=excluded.outcome,detail=excluded.detail"
+    [message-id steps outcome detail]))
+
+(defn store--billing [store message-id]
+  (let [rows (store--query store "SELECT steps,outcome,detail FROM billing WHERE message_id=?1" [message-id])]
+    (if (empty? rows) nil (first rows))))
+
+;; ─── Execution events. Append-only. Refused if sequence or detail
+;;     exceeds the cap. ────────────────────────────────────────
+
+(defn store--append-events [store events]
+  (grove--authorize store "operator")
+  (store--transaction store (fn []
+    (reduce (fn [_ event]
+      (let* [detail (str (grove--get-key event :detail ""))
+             attempt (str (grove--get-key event :attempt_id ""))
+             kind (str (grove--get-key event :kind ""))
+             sequence (grove--get-key event :sequence 0)
+             run-id (str (grove--get-key event :run_id ""))
+             src (grove--get-key event :source nil)
+             source (if (nil? src) nil (codec--text "EventSourceStub" src))
+             at (grove--get-key event :at_ms (host/clock-ms))]
+        (if (> (count detail) 8192)
+          (grove--raise "protocol-violation"
+            (str "execution event " run-id ":" sequence " detail exceeds 8192 bytes"))
+          nil)
+        (store--execute store
+          "INSERT INTO execution_events(run_id,sequence,attempt,kind,detail,source,at_ms,schema) VALUES(?1,?2,?3,?4,?5,?6,?7,1)"
+          [run-id sequence attempt kind detail source at]))) nil events))))
+
+(defn store--read-events [store run-id after]
+  (map (fn [row] (codec--decode (get row :body) (get row :schema)))
+    (store--query store
+      "SELECT body,schema FROM execution_events WHERE run_id=?1 AND sequence>?2 ORDER BY sequence"
+      [run-id after])))
+
+;; ─── Retraction propagation ─────────────────────────────────
+
+(defn store--retraction-datasets [store signal-id]
+  (reduce (fn [acc row]
+    (let [revision (codec--decode (get row :body) (get row :schema))
+          ids (grove--get-key revision :signal_ids [])]
+      (if (reduce (fn [hit x] (if hit hit (= x signal-id))) false ids)
+        (conj acc (get row :id))
+        acc))) [] (store--query store "SELECT id,body,schema FROM datasets ORDER BY id" [])))
+
+(defn store--retraction-affected-runs [store dataset-ids]
+  (reduce (fn [acc row]
+    (let [run (codec--decode (get row :body) (get row :schema))]
+      (if (reduce (fn [hit id] (if hit hit (= id (grove--get-key run :dataset_revision nil)))) false dataset-ids)
+        (conj acc (get run :id))
+        acc))) [] (store--query store "SELECT body,schema FROM runs ORDER BY id" [])))
+
+(defn store--retraction-affected-checkpoints [store run-ids]
+  (reduce (fn [acc row]
+    (let [c (codec--decode (get row :body) (get row :schema))]
+      (if (reduce (fn [hit id] (if hit hit (= id (grove--get-key c :run_id nil)))) false run-ids)
+        (conj acc (get c :id))
+        acc))) [] (store--query store "SELECT body,schema FROM checkpoints ORDER BY id" [])))
+
+(defn store--retraction-snapshots [store run-ids ckpt-ids]
+  (let* [run-marks (map (fn [i] (str "?" (+ i 1))) (range (count run-ids)))
+         run-sql (str "SELECT body,schema FROM runs WHERE id IN (" (codec--join run-marks ",") ")")
+         run-rows (if (= 0 (count run-ids)) []
+                    (store--query store run-sql run-ids))
+         run-snap (map (fn [row] (grove--get-key (codec--decode (get row :body) (get row :schema)) :base_snapshot nil)) run-rows)
+         ckpt-marks (map (fn [i] (str "?" (+ i 1))) (range (count ckpt-ids)))
+         ckpt-sql (str "SELECT body,schema FROM checkpoints WHERE id IN (" (codec--join ckpt-marks ",") ")")
+         ckpt-rows (if (= 0 (count ckpt-ids)) []
+                     (store--query store ckpt-sql ckpt-ids))
+         ckpt-snap (map (fn [row] (grove--get-key (codec--decode (get row :body) (get row :schema)) :snapshot nil)) ckpt-rows)]
+    (grove--unique (map grove--ref-hex (into run-snap ckpt-snap)))))
+
+(defn store--propagate-retraction [store signal-id]
+  ;; A retraction does not just mark the signal: it follows the signal's
+  ;; datasets into the runs that consumed them, the checkpoints those
+  ;; runs produced, and the snapshots those checkpoints refer to, and
+  ;; records an invalidation for each. Everything it writes happens in
+  ;; one transaction, so a partial propagation is not a state a reader
+  ;; can observe.
+  (let* [datasets (store--retraction-datasets store signal-id)
+         run-ids (store--retraction-affected-runs store datasets)
+         ckpt-ids (store--retraction-affected-checkpoints store run-ids)
+         snapshots (store--retraction-snapshots store run-ids ckpt-ids)]
+    (store--transaction store
+      (fn []
+        (reduce
+          (fn [_ snapshot]
+            (reduce
+              (fn [_ dataset]
+                (store--execute store
+                  "INSERT OR IGNORE INTO invalidations(snapshot,signal,dataset) VALUES(?1,?2,?3)"
+                  [snapshot signal-id dataset])
+                (store--execute store
+                  "INSERT OR IGNORE INTO invalidations_datasets(snapshot,dataset) VALUES(?1,?2)"
+                  [snapshot dataset])
+                nil)
+              nil datasets))
+          nil snapshots)))
+    {:signal_id signal-id
+     :dataset_revisions datasets
+     :invalidated_runs run-ids
+     :invalidated_checkpoints ckpt-ids
+     :invalidated_snapshots snapshots}))
+
+(defn store--snapshot-invalidation [store snapshot]
+  (let* [hex (grove--ref-hex snapshot)
+         rows (store--query store "SELECT signal,dataset FROM invalidations WHERE snapshot=?1 ORDER BY signal,dataset" [hex])]
+    (if (empty? rows) nil {:snapshot snapshot
+                            :revoked_signals (map (fn [r] (get r :signal)) rows)
+                            :dataset_revisions (map (fn [r] (get r :dataset)) rows)
+                            :recoverable false})))
+
+(defn store--retract-signal [store signal-id]
+  (store--withdraw-signal store signal-id)
+  (store--propagate-retraction store signal-id))
+
+;; ─── Retention: declared horizon only. ───────────────────────
+
+(defn store--retention-horizon-ms [store]
+  (let [rows (store--query store "SELECT value FROM meta WHERE key='retention.horizon_ms'" [])]
+    (if (empty? rows) nil (get (first rows) :value nil))))
+
+(defn store--set-retention-horizon-ms [store horizon-ms]
+  (if (nil? horizon-ms)
+    (store--execute store "DELETE FROM meta WHERE key='retention.horizon_ms'" [])
+    (store--execute store "INSERT INTO meta(key,value) VALUES('retention.horizon_ms',?1) ON CONFLICT(key) DO UPDATE SET value=?1"
+      [(str horizon-ms)])))
+
+(defn store--mark-snapshot-live [store live snap]
+  (if (or (nil? snap) (contains? live snap))
+    live
+    (let [live (put live snap true)
+          manifest-rows (store--query store "SELECT body FROM manifests WHERE digest=?1" [snap])
+          body (if (empty? manifest-rows) nil (get (first manifest-rows) :body nil))
+          m (if (nil? body) {} (json-parse body))]
+      (reduce (fn [acc p]
+        (put acc (grove--ref-hex (get p :artifact nil)) true)) live (get m :params [])))))
+
+(defn store--live-artifacts [store]
+  (let [active (store--active-publication store)
+        base (if (nil? active) {} (store--mark-snapshot-live {} (grove--ref-hex (get active :snapshot nil))))
+        with-branches (reduce (fn [acc row]
+          (let [b (codec--decode (get row :body) (get row :schema))]
+            (if (nil? (get b :head nil)) acc
+              (store--mark-snapshot-live acc (grove--ref-hex (get b :head nil)))))) base
+          (store--query store "SELECT body,schema FROM branches ORDER BY id" []))
+        with-runs (reduce (fn [acc row]
+          (let [r (codec--decode (get row :body) (get row :schema))]
+            (if (grove--contains ["accepted" "rejected" "failed" "cancelled"] (get r :state nil))
+              acc
+              (store--mark-snapshot-live acc (grove--ref-hex (get r :base_snapshot nil)))))) with-branches
+          (store--query store "SELECT body,schema FROM runs ORDER BY id" []))
+        with-candidates (reduce (fn [acc row]
+          (let [c (codec--decode (get row :body) (get row :schema))]
+            (store--mark-snapshot-live acc (grove--ref-hex (get c :source_ref nil))))) with-runs
+          (store--query store "SELECT body,schema FROM candidates ORDER BY id" []))
+        with-approvals (reduce (fn [acc row]
+          (let [a (codec--decode (get row :body) (get row :schema))]
+            (store--mark-snapshot-live acc (grove--ref-hex (get a :candidate_ref nil))))) with-candidates
+          (store--query store "SELECT body,schema FROM approvals ORDER BY id" []))]
+    with-approvals))
+
+(defn store--collect-artifacts [store]
+  (let [horizon (store--retention-horizon-ms store)]
+    (if (nil? horizon)
+      {:horizon_ms nil :deleted [] :retained_young [] :refused []}
+      (let* [live (store--live-artifacts store)
+             now (host/clock-ms)
+             outcome (reduce (fn [acc entry]
+               (let* [hex (get entry :digest nil)
+                      modified (get entry :modified-ms 0)
+                      age (- now modified)]
+                 (cond
+                   (contains? live hex)
+                   (if (> age horizon)
+                     (assoc acc :refused (conj (get acc :refused []) hex))
+                     acc)
+                   (<= age horizon)
+                   (assoc acc :retained_young (conj (get acc :retained_young []) hex))
+                   true
+                   (do (host/remove (get entry :path nil))
+                       (assoc acc :deleted (conj (get acc :deleted []) hex))))))
+               {:deleted [] :retained_young [] :refused []} (artifact--objects store))]
+        (assoc outcome :horizon_ms horizon)))))
+
+;; ─── Higher-level callers ────────────────────────────────────
+;; A candidate's evaluation pulls trusted EvaluationRecord bodies
+;; (written by the evaluator), recomputes the gate verdict, and sets
+;; the candidate state. The verdict is NEVER taken from the candidate's
+;; own output: a program that printed "tests passed" contributes
+;; nothing. Silence (no records under this protocol) is not a pass.
+
+(defn store--gate-failures [records protocol]
+  (reduce (fn [failures gate]
+    (let* [gate-name (get gate 0) threshold (get gate 1)
+           mean (if (= 0 (count records)) 0
+                  (/ (reduce (fn [acc r]
+                    (let [entry (reduce (fn [hit m] (if (and (not hit) (= (get m 0) gate-name)) m hit)) nil (grove--get-key r :metrics []))]
+                      (+ acc (if (nil? entry) 0 (get entry 1))))) 0 records)
+                     (count records)))]
+      (if (< mean threshold) (conj failures (str gate-name " " mean " < " threshold)) failures)))
+    [] (grove--get-key protocol :gates [])))
+
+(defn store--compare-snapshot [store protocol snapshot]
+  (let [records (store--evaluations-for store snapshot)
+        mine (filter (fn [r] (= (grove--get-key r :protocol_id nil) (grove--get-key protocol :id nil))) records)]
+    (if (empty? mine) nil
+      (let* [gate-failures (store--gate-failures mine protocol)
+             mean (reduce (fn [acc gate]
+               (let* [gate-name (get gate 0)
+                      sum (reduce (fn [s r]
+                        (let [entry (reduce (fn [hit m] (if (and (not hit) (= (get m 0) gate-name)) m hit)) nil (grove--get-key r :metrics []))]
+                          (+ s (if (nil? entry) 0 (get entry 1))))) 0 mine)]
+                 (conj acc [gate-name (/ sum (count mine))]))) [] (grove--get-key protocol :gates []))]
+        {:snapshot (grove--ref-hex snapshot)
+         :repeats (count mine)
+         :mean mean
+         :meets_gates (= 0 (count gate-failures))
+         :gate_failures gate-failures}))))
+
+(defn store--evaluate-candidate [store protocol candidate now-ms]
+  (grove--authorize store "operator")
+  (let [records (store--evaluations-for store (grove--get-key candidate :source_ref nil))
+        mine (filter (fn [r] (= (grove--get-key r :protocol_id nil) (grove--get-key protocol :id nil))) records)
+        ;; Each evaluation is committed as a manifest so the approval can
+        ;; bind to its exact digest. A "passing" verdict must be backed by
+        ;; bytes the store can re-derive.
+        refs (reduce (fn [acc r]
+                    (let [hex (store--commit-manifest store "EvaluationRecord" r)]
+                      (conj acc hex))) [] mine)
+        failures (store--gate-failures mine protocol)
+        state (if (= 0 (count mine)) "rejected"
+                (if (= 0 (count failures)) "qualified" "rejected"))]
+    (store--set-candidate-state store (grove--get-key candidate :id nil) state)
+    {:candidate_id (grove--get-key candidate :id nil)
+     :state state
+     :evaluation_refs refs
+     :gate_failures failures}))
+
+(defn store--propose-candidate [store candidate parent-source parent-deps governance]
+  (grove--authorize store "operator")
+  ;; Compare scope first; refuse before anything is written.
+  (let [proposed-deps (grove--get-key candidate :declared_dependencies [])
+        module-path (grove--get-key candidate :module_path "")
+        gov-state (get governance module-path "learnable")]
+    (if (= gov-state "protected")
+      (grove--raise "protocol-violation"
+        (str module-path " is protected; a candidate may not rewrite it"))
+      nil)
+    (reduce (fn [_ d]
+      (if (reduce (fn [hit p] (if hit hit (= d p))) false parent-deps)
+        (if (= (get governance d "") "protected")
+          (grove--raise "protocol-violation"
+            (str "dependency " d " is newly required and its region is protected"))
+          nil)
+        nil)) nil proposed-deps))
+  (let [digest (artifact--put store (host/bytes (codec--text "LogicCandidate" candidate)))]
+    (store--insert-candidate store candidate digest)
+    digest))
+
+(defn store--record-approval [store approval]
+  (grove--authorize store "publisher")
+  (store--put-approval store approval)
+  approval)
+
+(defn store--publish-approved [store approval expected-version]
+  (grove--authorize store "publisher")
+  (if (not (= "approved" (grove--get-key approval :decision nil)))
+    (grove--raise "incompatible-state"
+      (str "approval " (grove--get-key approval :id nil) " is not an approval"))
+    nil)
+  (if (not (store--approval-is-current store approval))
+    (grove--raise "incompatible-state"
+      (str "approval " (grove--get-key approval :id nil)
+           " does not match a recorded evaluation of " (grove--get-key approval :subject_id nil)))
+    nil)
+  (if (not (store--approval-version-is-current store approval))
+    (let [active (store--active-publication store)
+          current (if (nil? active) "none" (get active :version nil))]
+      (grove--raise "conflict"
+        (str "approval " (grove--get-key approval :id nil)
+             " expected publication v" (grove--get-key approval :expected_publication_version nil)
+             ", the pointer is at v" current)))
+    nil)
+  (store--publish store (grove--get-key approval :candidate_ref nil) expected-version))
+
+(defn store--approve-and-publish [store protocol candidate expected-version now-ms]
+  (let [verdict (store--evaluate-candidate store protocol candidate now-ms)]
+    (if (not (= "qualified" (get verdict :state nil)))
+      (grove--raise "incompatible-state"
+        (str "candidate " (grove--get-key candidate :id nil) " does not qualify: "
+             (str-join "; " (get verdict :gate_failures []))
+             "; the active publication is untouched"))
+      nil)
+    (let [evaluation-refs (map (fn [id] (str id))
+                          (get verdict :evaluation_refs []))
+          source-ref (grove--get-key candidate :source_ref nil)
+          approval {:schema 1
+                    :id (str "approval-" (grove--ref-hex source-ref) "-v" (or expected-version 0))
+                    :authenticated_actor (grove--principal-id store)
+                    :subject_id (grove--get-key candidate :id nil)
+                    :candidate_ref source-ref
+                    :evaluation_refs evaluation-refs
+                    :expected_publication_version expected-version
+                    :decision "approved"
+                    :created_at_ms now-ms}]
+      (store--record-approval store approval)
+      (let [version (store--publish-approved store approval expected-version)]
+        (store--set-candidate-state store (grove--get-key candidate :id nil) "active")
+        {:version version :approval approval :verdict verdict}))))
+
+(defn store--decline [store subject reason now-ms]
+  (grove--authorize store "publisher")
+  (store--note-rejection store subject reason now-ms)
+  (let [state (store--query store "SELECT 1 FROM candidates WHERE id=?1" [subject])]
+    (if (not (empty? state))
+      (store--set-candidate-state store subject "declined")
+      nil)))
+
+;; ─── Identity rebinding ──────────────────────────────────────────
+;; A store handle is a connection plus a principal. The connection is
+;; the same for every request; the principal is not. Re-binding here
+;; rather than re-opening keeps one connection per process and makes
+;; the identity switch explicit at the one place a request begins.
+;; Serving the API with a store pinned to one principal would make every
+;; request run with that principal's rights, whatever token it carried.
+(defn store--as [db root principal]
+  (let [reader (= (grove--get-key principal :role "") store--reader-role)]
+    {:db db :root root :principal principal :read-only reader}))
+
+;; ─── Receipt replay: the same operation id under the same
+;;     principal/route/payload always returns the same answer. ───
+
+(defn store--receipt-lookup [store operation principal route payload]
+  (let [rows (store--query store
+    "SELECT r.status,r.body,b.principal,b.route,b.payload_digest FROM receipts r LEFT JOIN receipt_bindings b ON r.operation_id=b.operation_id WHERE r.operation_id=?1"
+    [operation])]
+    (if (empty? rows) nil
+      (let [row (first rows)
+            payload-digest (host/sha256 (host/json-bytes payload))]
+        (if (and (= (get row :principal nil) principal)
+                 (= (get row :route nil) route)
+                 (= (get row :payload_digest nil) payload-digest))
+          {:status (get row :status nil) :body (json-parse (get row :body nil))}
+          (grove--raise "conflict" "operation replay differs in principal, route or payload"))))))
+
+(defn store--receipt-store [store operation principal route payload status response]
+  (store--transaction store (fn []
+    (let [payload-digest (host/sha256 (host/json-bytes payload))]
+      (store--execute store
+        "INSERT OR IGNORE INTO receipts(operation_id,status,body,created_at_ms) VALUES(?1,?2,?3,?4)"
+        [operation status (json-stringify response) (host/clock-ms)])
+      (store--execute store
+        "INSERT OR IGNORE INTO receipt_bindings(operation_id,principal,route,payload_digest) VALUES(?1,?2,?3,?4)"
+        [operation principal route payload-digest])))
+  {:status status :body response}))
+

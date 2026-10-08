@@ -1,0 +1,100 @@
+---
+import Base from '../layouts/Base.astro';
+import Repl from '../components/Repl.astro';
+import CodeTabs from '../components/CodeTabs.astro';
+import { theorems, archLayers, roadmap } from '../data/content';
+const base = import.meta.env.BASE_URL.replace(/\/$/, '');
+---
+<Base title="Zio — 现代通用 Lisp（Rust + WASM）" description="了解 Zio 语言与语法，阅读文档，在浏览器 Playground 编辑并运行真实 Zio WASM 程序。">
+  <section class="hero">
+    <div class="container hero-grid">
+      <div class="hero-content">
+        <div class="eyebrow">
+          <span class="eyebrow-dot"></span>
+          General-Purpose Lisp • ZOS • Real WASM Runtime
+        </div>
+        <h1>A Modern General-Purpose Lisp.</h1>
+        <p>
+          Zio 是一门以同像性（Homoiconicity）为基石的现代通用脚本语言：一门语言覆盖从自动化脚本、服务编排到 Agent 应用的完整光谱。
+          当前由 Rust 实现并提供 WebAssembly，具备 CLOS/AMOP 方向的 ZOS 子集、syntax-rules 卫生子集与 JS / DOM 互操作；完整 MOP 为 Planned。
+        </p>
+        <div class="hero-cta">
+          <a href={`${base}/intro/`} class="btn btn-primary">认识 Zio 语言</a>
+          <a href={`${base}/syntax/`} class="btn btn-secondary">语法与文档 →</a>
+          <a href={`${base}/playground/`} class="btn btn-secondary">编辑并运行 Zio →</a>
+        </div>
+      </div>
+      <Repl />
+    </div>
+  </section>
+
+
+  <section class="section" id="philosophy">
+    <div class="container">
+      <div class="section-header">
+        <h2>正交严密的核心设计定理</h2>
+        <p>一门通用语言的设计原则——同样适用于脚本、服务与 Agent 编排</p>
+      </div>
+      <div class="grid-3">
+        {theorems.map((t) => (
+          <div class="card">
+            <div class="card-icon">{t.icon}</div>
+            <h3>{t.n}. {t.title}</h3>
+            <p set:html={t.body} />
+          </div>
+        ))}
+      </div>
+    </div>
+  </section>
+
+  <section class="section" id="architecture" style="background: rgba(0, 0, 0, 0.2);">
+    <div class="container">
+      <div class="section-header">
+        <h2>正交分层系统架构</h2>
+        <p>langs 是语言工具链，libs 是 Zio 库，contribs 是宿主基础设施，apps 是独立应用；Grove 的 Rust legacy 不代表 Zio 应用目标已完成</p>
+      </div>
+      <div class="arch-box">
+        {archLayers.map((l) => (
+          <div class="arch-layer">
+            <div class="arch-title">{l.title}</div>
+            <div class="arch-desc" set:html={l.desc} />
+          </div>
+        ))}
+      </div>
+    </div>
+  </section>
+
+  <section class="section" id="features">
+    <div class="container">
+      <div class="section-header">
+        <h2>核心特性与 JS 互操作演示</h2>
+        <p>体验 Zio 在 WASM 环境下的全量求值与 JavaScript 交互能力</p>
+      </div>
+      <CodeTabs />
+    </div>
+  </section>
+
+  <section class="section" id="roadmap">
+    <div class="container">
+      <div class="section-header">
+        <h2>路线图一览</h2>
+        <p>历史语言交付与 Planned 产品主线分开；编译器自举不等于编辑器或 APP 的 Zio 化</p>
+      </div>
+      <div class="grid-3">
+        {roadmap.map((r) => (
+          <div class="card" style={`border-left: 3px solid var(--accent-${r.accent});`}>
+            <div class="card-icon">{r.icon}</div>
+            <h3>{r.title}</h3>
+            <p>{r.body}</p>
+          </div>
+        ))}
+      </div>
+    </div>
+  </section>
+
+  <script>
+    import { initRepl, initCodeTabs } from '../scripts-repl.js';
+    initCodeTabs();
+    initRepl();
+  </script>
+</Base>

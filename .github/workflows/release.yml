@@ -1,0 +1,211 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to build (e.g. v0.2.0)"
+        required: true
+      dry_run:
+        description: "Build everything but publish nothing"
+        type: boolean
+        default: false
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_MIN_STACK: 134217728
+
+permissions:
+  contents: write
+
+jobs:
+  plan:
+    name: resolve release
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.decide.outputs.tag }}
+      version: ${{ steps.decide.outputs.version }}
+      # GitHub expressions need the `${{ }}` form inside an `if:`; a bare
+      # `inputs.dry_run == true` compares two literals and is always
+      # false, which would make a dry run publish for real.
+      dry_run: ${{ inputs.dry_run == true }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      # A tag that disagrees with the workspace version produces a
+      # release whose binaries announce the wrong version. That is a
+      # silent wrong answer, so it stops the build instead.
+      - name: Check the tag against the workspace version
+        id: decide
+        run: |
+          set -euo pipefail
+          tag="${{ inputs.tag || github.ref_name }}"
+          if [ "${tag#refs/tags/}" != "$tag" ]; then tag="${tag#refs/tags/}"; fi
+          version="$(awk -F'"' '/^version/ {print $2; exit}' Cargo.toml)"
+          echo "tag=$tag version=$version"
+          if [ "$tag" != "v$version" ]; then
+            echo "tag $tag does not match workspace version v$version" >&2
+            exit 1
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  verify:
+    name: verify before publishing
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.plan.outputs.tag }}
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --workspace --all-targets
+      - run: cargo test --workspace
+      - name: Self-hosting contracts
+        run: cargo test -p zio-core --test self_hosting
+      - name: Language server session
+        run: |
+          cargo build -p zio-lsp
+          python3 tools/lsp_probe.py target/debug/zio-lsp
+
+  native:
+    name: ${{ matrix.target }}
+    needs: [plan, verify]
+    if: needs.plan.outputs.dry_run != 'true'
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            archive: zio-linux-x86_64
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-24.04-arm
+            archive: zio-linux-aarch64
+          - target: x86_64-apple-darwin
+            os: macos-latest
+            archive: zio-macos-x86_64
+          - target: aarch64-apple-darwin
+            os: macos-14
+            archive: zio-macos-aarch64
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            archive: zio-windows-x86_64
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.plan.outputs.tag }}
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Build
+        run: cargo build --release -p zio-cli -p zio-lsp --target ${{ matrix.target }}
+
+      - name: Assemble the distribution
+        shell: bash
+        run: ./tools/install.sh "dist/${{ matrix.archive }}"
+        env:
+          ZIO_PROFILE: release
+
+      - name: Package
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd dist
+          case "${{ matrix.os }}" in
+            windows*) zip -r "${{ matrix.archive }}.zip" "${{ matrix.archive }}" ;;
+            *) tar -czf "${{ matrix.archive }}.tar.gz" "${{ matrix.archive }}" ;;
+          esac
+          sha256sum "${{ matrix.archive }}".* > "${{ matrix.archive }}.sha256" \
+            || shasum -a 256 "${{ matrix.archive }}".* > "${{ matrix.archive }}.sha256"
+          ls -la
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zio-${{ matrix.archive }}
+          path: |
+            dist/${{ matrix.archive }}.*
+          if-no-files-found: error
+
+  crates:
+    name: publish crates
+    needs: [plan, verify]
+    if: needs.plan.outputs.dry_run != 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.plan.outputs.tag }}
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions-rs/cargo@v1
+        with:
+          command: publish
+          # zio-host carries SQLite, and zio-core's WASM half is built
+          # for the browser elsewhere in this workflow; neither belongs
+          # in the default native feature set of a library publish.
+          args: >-
+            --package zio-core
+            --package zio-host
+            --package zio-cli
+            --package zio-lsp
+            --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        continue-on-error: true
+        id: publish
+
+      - name: Report unpublished packages
+        if: steps.publish.outcome == 'failure'
+        run: |
+          echo "::warning::one or more crates were not published; they are likely already on crates.io at this version or the token lacks scope"
+
+  github-release:
+    name: github release
+    needs: [plan, verify, native]
+    if: needs.plan.outputs.dry_run != 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.plan.outputs.tag }}
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Assemble the WASM payload
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - name: Install wasm-bindgen
+        run: cargo install wasm-bindgen-cli --version 0.2 --locked
+      - run: ./tools/build-wasm.sh
+      - name: Stage everything
+        run: |
+          set -euo pipefail
+          mkdir -p dist/zio-wasm
+          cp -R apps/site/public/wasm/. dist/zio-wasm/
+          echo "wasm:" > dist/zio-wasm/NOTICE.txt
+          ls dist
+      - name: Publish
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.plan.outputs.tag }}
+          name: Zio ${{ needs.plan.outputs.version }}
+          generate_release_notes: true
+          draft: false
+          prerelease: ${{ contains(needs.plan.outputs.tag, '-') }}
+          files: |
+            dist/*.tar.gz
+            dist/*.zip
+            dist/*.sha256
+            dist/zio-wasm/**

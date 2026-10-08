@@ -1,0 +1,68 @@
+;; Pure numerical policy over coordinate vectors and row-major matrices.
+;; Tensor kernels live behind the separate generic tensor host interface.
+(load "libs/numa/vector.zio")
+
+(defn numa-abs [x]
+  (vector--finite x)
+  (if (< x 0) (- 0.0 x) (+ 0.0 x)))
+
+(defn numa-sum [values]
+  (vector--validate values)
+  (vector--finite (reduce (fn [acc x] (+ acc x)) 0.0 values)))
+
+(defn numa-mean [values]
+  (if (= (count values) 0) (error "shape-error: mean requires at least one value")
+    (/ (numa-sum values) (+ 0.0 (count values)))))
+
+(defn numa-vector-add [a b]
+  (vector--same-shape a b)
+  (apply vector (map (fn [i] (vector--finite (+ (+ 0.0 (get a i)) (get b i)))) (range 0 (count a)))))
+
+(defn numa-vector-sub [a b]
+  (vector--same-shape a b)
+  (apply vector (map (fn [i] (vector--finite (- (+ 0.0 (get a i)) (get b i)))) (range 0 (count a)))))
+
+(defn numa-vector-scale [a scalar]
+  (vector--validate a)
+  (vector--finite scalar)
+  (apply vector (map (fn [x] (vector--finite (* (+ 0.0 x) scalar))) a)))
+
+(defn numa-vector-dot [a b] (vector--dot a b))
+
+(defn numa-vector-length [a]
+  (vector--validate a)
+  (let* [scale (vector--max-abs a)]
+    (if (= scale 0.0) 0.0
+      (let* [scaled (apply vector (map (fn [x] (/ x scale)) a))]
+        (vector--finite (* scale (sqrt (vector--norm scaled))))))))
+
+(defn numa-vector-normalize [a]
+  (vector--validate a)
+  (let* [scale (vector--max-abs a)]
+    (if (= scale 0.0) (numa-vector-scale a 0.0)
+      (let* [scaled (apply vector (map (fn [x] (/ x scale)) a))
+             length (sqrt (vector--norm scaled))]
+        (numa-vector-scale scaled (/ 1.0 length))))))
+
+(defn numa-matrix-shape [matrix]
+  (if (vector? matrix) true (error "shape-error: matrix must be a vector of rows"))
+  (let* [rows (count matrix)
+         cols (if (= rows 0) 0 (count (vector--validate (get matrix 0))))]
+    (map (fn [row]
+           (vector--validate row)
+           (if (= (count row) cols) true (error "shape-error: ragged matrix"))) matrix)
+    [rows cols]))
+
+(defn numa-matrix-transpose [matrix]
+  (let* [shape (numa-matrix-shape matrix)]
+    (apply vector (map (fn [j]
+                         (apply vector (map (fn [i] (get (get matrix i) j)) (range 0 (get shape 0)))))
+                       (range 0 (get shape 1))))))
+
+(defn numa-matmul [a b]
+  (let* [sa (numa-matrix-shape a)
+         sb (numa-matrix-shape b)]
+    (if (= (get sa 1) (get sb 0)) true (error "shape-error: matrix inner dimensions differ"))
+    (let* [columns (numa-matrix-transpose b)]
+      (apply vector (map (fn [row]
+                           (apply vector (map (fn [column] (vector--dot row column)) columns))) a)))))

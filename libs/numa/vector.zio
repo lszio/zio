@@ -1,0 +1,158 @@
+;; ── zio.vector — semantic index over the same experience records ──
+;;
+;; Optional third index. A vector record is:
+;;   {:memory/id "s-1" :memory/encoder "bge-small"
+;;    :memory/space-version 2 :memory/vector [10 20 30]}
+;;
+;; A vector is a *similarity hint*, never proof of equivalence and never
+;; evidence of correctness or permission (design §7). Two rules make it
+;; safe to keep:
+;;   1. A vector is bound to an encoder id and a space version. Comparing
+;;      vectors across space versions is refused — the coordinates mean
+;;      different things, so a cosine between them is noise, not a
+;;      measurement.
+;;   2. A space change invalidates the index. The space cannot be mutated
+;;      under live vectors; either the vectors are dropped, or an explicit
+;;      migration re-encodes them and records what it did.
+;;
+;; Similarity is signed integer basis points (-10000..10000), rounded
+;; to the nearest basis point. Zero vectors have similarity zero.
+
+(def vector--scale 10000)
+
+(defn vector--check-space [records space-version]
+  ;; Refuse a mixed space outright. Silent reinterpretation of old
+  ;; coordinates is exactly the failure this guards.
+  (if (= (count records) 0)
+    true
+    (let* [bad (filter (fn [r] (if (= (get r :memory/space-version -1) space-version)
+                                 false
+                                 true))
+                       records)]
+      (if (= (count bad) 0)
+        true
+        (str "refuse: vector space version is " space-version
+             " but index holds " (json-stringify bad))))))
+
+(defn vector--check-encoder [records encoder]
+  (if (= (count records) 0)
+    true
+    (let* [bad (filter (fn [r] (if (= (get r :memory/encoder) encoder)
+                                 false
+                                 true))
+                       records)]
+      (if (= (count bad) 0)
+        true
+        (str "refuse: encoder " (json-stringify encoder)
+             " does not match indexed records " (json-stringify bad))))))
+
+(defn vector--finite [x]
+  (if (number? x)
+    ;; Ordering rejects NaN/infinity in the shared numeric primitive.
+    (do (<= x x) x)
+    (error "invalid-input: vector coordinates must be finite numbers")))
+
+(defn vector--validate [a]
+  (if (vector? a)
+    (do (map vector--finite a) a)
+    (error "shape-error: expected a coordinate vector")))
+
+(defn vector--same-shape [a b]
+  (vector--validate a)
+  (vector--validate b)
+  (if (= (count a) (count b))
+    true
+    (error "shape-error: coordinate dimensions differ")))
+
+(defn vector--dot [a b]
+  (vector--same-shape a b)
+  (vector--finite
+    (reduce (fn [acc i] (+ acc (* (+ 0.0 (get a i)) (get b i))))
+            0.0 (range 0 (count a)))))
+
+(defn vector--norm [a]
+  ;; Squared norm, preserving the existing public contract.
+  (vector--dot a a))
+
+(defn vector--max-abs [a]
+  (reduce (fn [acc x]
+            (let* [m (if (< x 0) (- 0.0 x) (+ 0.0 x))]
+              (if (> m acc) m acc))) 0.0 a))
+
+(defn vector--round-bp [x]
+  (let* [negative (< x 0)
+         magnitude (if negative (- x) x)
+         rounded
+         (if (>= magnitude vector--scale)
+           vector--scale
+           (loop [lo 0 hi (+ vector--scale 1)]
+             (if (= (- hi lo) 1)
+               lo
+               (let* [mid (/ (+ lo hi) 2)]
+                 (if (<= mid (+ magnitude 0.5))
+                   (recur mid hi)
+                   (recur lo mid))))))]
+    (if negative (- rounded) rounded)))
+
+(defn vector--cosine-bp [a b]
+  (vector--same-shape a b)
+  ;; Rescale before squaring to avoid integer overflow, floating overflow
+  ;; and underflow for finite, tiny or large coordinate magnitudes.
+  (let* [ma (vector--max-abs a)
+         mb (vector--max-abs b)]
+    (if (= ma 0.0)
+      0
+      (if (= mb 0.0)
+        0
+        (let* [x (apply vector (map (fn [v] (/ v ma)) a))
+               y (apply vector (map (fn [v] (/ v mb)) b))
+               cosine (/ (vector--dot x y)
+                         (* (sqrt (vector--norm x)) (sqrt (vector--norm y))))]
+          (vector--round-bp (* cosine vector--scale)))))))
+
+(defn vector--nearest [records query space-version]
+  ;; The semantic search. Two refusals live here, not in the caller:
+  ;; a space-version mismatch and an encoder mismatch. Returns the
+  ;; nearest record plus its basis-point similarity, or nil when empty.
+  (if (= (count records) 0)
+    nil
+    (let* [ok-space (if (= (get query :memory/space-version) space-version)
+                     (vector--check-space records space-version)
+                     "refuse: query vector space version differs")
+           q (vector--validate (get query :memory/vector))]
+      ;; a refusal is a non-empty string, and a non-empty string is
+      ;; truthy — so the gate must test for `true` explicitly, or the
+      ;; refusal would sail straight through.
+      (if (= ok-space true)
+        (let* [encoder (get query :memory/encoder)
+               ok-enc (vector--check-encoder records encoder)]
+          (if (= ok-enc true)
+            (get (sort (fn [x y] (> (get x 0) (get y 0)))
+                       (map (fn [r]
+                              (list (vector--cosine-bp q (get r :memory/vector)) r))
+                            records))
+                 0)
+            ok-enc))
+        ok-space))))
+
+(defn vector--threshold-bp [bp threshold-bp]
+  (if (>= bp threshold-bp) true false))
+
+(defn vector--migrate [record new-space re-encoder]
+  ;; The ONLY sanctioned way across a space change: re-encode explicitly
+  ;; and record both the old and the new space so the index knows what
+  ;; happened. A migration is not implicit reinterpretation.
+  ;; `put` is strictly three arguments, so the fields nest.
+  (let* [encoded (re-encoder record)
+         coordinates (vector--validate (get encoded :memory/vector))]
+    (put (put (put encoded
+                   :memory/space-version (get new-space :version))
+              :memory/encoder (get new-space :encoder))
+         :memory/migrated-from (get record :memory/space-version))))
+
+(defn vector--invalidate [records]
+  ;; Dropping an index is a real option and is always available: the
+  ;; records go, the space id stays, and nothing pretends the old
+  ;; coordinates are still meaningful.
+  '[])
+

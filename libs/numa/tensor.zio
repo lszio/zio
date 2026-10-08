@@ -1,0 +1,104 @@
+;; Generic CPU tensor client. Explicit caller-owned reference names identify
+;; tensors only inside an opaque backend handle; they confer no host authority.
+;; Operations use the zio.tensor.state/1 and RPC v1 backend contract.
+;; No datasets, objectives, teachers or Grove operation is hidden here.
+;; Results from the JSON backend have STRING keys; tensor-ref normalizes them.
+
+(defn tensor-start [config] (host/tensor-start config))
+(defn tensor-close [backend] (host/tensor-close backend))
+
+(defn tensor-call [backend operation]
+  (if (map? operation) (host/tensor-call backend operation)
+    (error "invalid-input: tensor operation must be a map")))
+
+(defn tensor-ref [tensor]
+  (if (string? tensor) tensor
+    (if (map? tensor)
+      (let* [name (get tensor "tensor" (get tensor :tensor))]
+        (if (string? name) name (error "invalid-input: expected tensor descriptor")))
+      (error "invalid-input: expected tensor reference"))))
+
+(defn tensor-create [backend out data shape dtype requires-grad]
+  (tensor-call backend {:op "create" :out out :data data :shape shape
+                        :dtype dtype :requires_grad requires-grad}))
+
+(defn tensor-full [backend out shape value dtype requires-grad]
+  (tensor-call backend {:op "full" :out out :shape shape :value value
+                        :dtype dtype :requires_grad requires-grad}))
+
+(defn tensor-kernel [backend op out inputs attributes]
+  ;; Attributes cannot replace the selected operation, output or inputs.
+  (tensor-call backend (put (put (put attributes :op op) :out out)
+                            :inputs (apply vector (map tensor-ref inputs)))))
+
+(defn tensor-unary [backend op out input]
+  (tensor-kernel backend op out [input] {}))
+
+(defn tensor-binary [backend op out left right]
+  (tensor-kernel backend op out [left right] {}))
+
+(defn tensor-matmul [backend out left right]
+  (tensor-binary backend "matmul" out left right))
+
+(defn tensor-linear [backend out input weight bias]
+  (tensor-kernel backend "linear" out (if (nil? bias) [input weight] [input weight bias]) {}))
+
+(defn tensor-reduce [backend op out input dim keepdim]
+  (tensor-kernel backend op out [input]
+                 (if (nil? dim) {:keepdim keepdim} {:dim dim :keepdim keepdim})))
+
+(defn tensor-reshape [backend out input shape]
+  (tensor-kernel backend "reshape" out [input] {:shape shape}))
+
+(defn tensor-transpose [backend out input dim0 dim1]
+  (tensor-kernel backend "transpose" out [input] {:dim0 dim0 :dim1 dim1}))
+
+(defn tensor-value [backend input]
+  (tensor-call backend {:op "value" :input (tensor-ref input)}))
+
+(defn tensor-info [backend input]
+  (tensor-call backend {:op "info" :input (tensor-ref input)}))
+
+(defn tensor-freeze [backend input frozen]
+  (tensor-call backend {:op "freeze" :input (tensor-ref input) :frozen frozen}))
+
+(defn tensor-assign [backend input data]
+  (tensor-call backend {:op "assign" :input (tensor-ref input) :data data}))
+
+(defn tensor-drop [backend inputs]
+  (tensor-call backend {:op "drop" :inputs (apply vector (map tensor-ref inputs))}))
+
+(defn tensor-backward [backend loss gradient retain-graph]
+  (tensor-call backend
+               (if (nil? gradient)
+                 {:op "backward" :input (tensor-ref loss) :retain_graph retain-graph}
+                 {:op "backward" :input (tensor-ref loss) :gradient (tensor-ref gradient)
+                  :retain_graph retain-graph})))
+
+(defn tensor-grad [backend out input]
+  (tensor-call backend {:op "grad" :out out :input (tensor-ref input)}))
+
+(defn tensor-zero-grad [backend inputs]
+  (tensor-call backend {:op "zero-grad" :inputs (apply vector (map tensor-ref inputs))}))
+
+(defn tensor-adam [backend name parameters config]
+  (tensor-call backend (put (put (put config :op "adam-create") :name name)
+                            :parameters (apply vector (map tensor-ref parameters)))))
+
+(defn tensor-step [backend optimizer]
+  (tensor-call backend {:op "adam-step" :optimizer optimizer}))
+
+(defn tensor-drop-optimizer [backend optimizer]
+  (tensor-call backend {:op "adam-drop" :optimizer optimizer}))
+
+(defn tensor-seed [backend seed]
+  (tensor-call backend {:op "seed" :seed seed}))
+
+(defn tensor-sample [backend operation out attributes]
+  (tensor-call backend (put (put attributes :op operation) :out out)))
+
+(defn tensor-state-export [backend]
+  (tensor-call backend {:op "state-export"}))
+
+(defn tensor-state-import [backend state strict]
+  (tensor-call backend {:op "state-import" :state state :strict strict}))

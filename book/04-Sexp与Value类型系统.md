@@ -1,5 +1,7 @@
 # 04 - Sexp 与 Value：代码域和运行时域
 
+> 2026-10-07 目录更新：本文教学代码与旧阶段/验收描述保留历史语境；源码链接和运行路径已映射到当前位置。现行目标是 `libs/` 的 Zio 库与 `apps/grove/` 的 Zio 业务迁移，Rust Grove 业务尚未整体重写；通用 Rust transport/host adapter 在 `contribs/native/loom/`。当前归属见[架构](../docs/zio-architecture.md)与[批准目录计划](../docs/superpowers/plans/2026-10-07-language-first-layout.md)。
+
 ## 两个世界
 
 Lisp 有一个其他语言少见的特性：**代码即数据**。但这实际上意味着——代码在你写的时候是一种结构，而运行的时候是另一种结构。
@@ -16,7 +18,7 @@ Zio 在实现中把这两个世界分得很清楚：
 
 ## 第一个世界：Sexp（语法树）
 
-打开 `core/src/sexp.rs` 看看：
+打开 `langs/core/src/sexp.rs` 看看：
 
 ```rust
 pub enum Sexp {
@@ -52,7 +54,7 @@ Sexp::List([
 
 ## 第二个世界：Value（运行时值）
 
-打开 `core/src/value.rs`：
+打开 `langs/core/src/value.rs`：
 
 ```rust
 pub enum Value {
@@ -148,6 +150,7 @@ pub fn value_to_sexp(value: &Value) -> Result<Sexp, EvalError> { ... }
 
 宏调用:
   (unless false 42)
+
       │
       ▼
   (list 'if false nil 42)    ← 宏在 Sexp 域操作
@@ -177,10 +180,10 @@ pub fn value_to_sexp(value: &Value) -> Result<Sexp, EvalError> { ... }
 ```
 
 ## 对应源码
-
-- `core/src/sexp.rs` —— Sexp 枚举定义（~150 行）
-- `core/src/value.rs` —— Value 枚举定义（~300 行）
-- `core/src/macros.rs` —— value_to_sexp 转换函数
+- `langs/core/src/sexp.rs` —— Sexp 枚举定义（~150 行）
+- `langs/core/src/value.rs` —— Value 枚举定义（~300 行）
+- `langs/core/src/macros.rs` —— value_to_sexp 转换函数
+- `langs/core/src/macros.rs` —— value_to_sexp 转换函数
 
 ## 核心记忆
 

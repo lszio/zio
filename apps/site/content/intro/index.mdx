@@ -1,0 +1,30 @@
+---
+title: 认识 Zio 语言
+description: Zio 是现代通用 Lisp；从表达式、数据和函数开始，在浏览器运行真实 WASM 求值器。
+order: 0
+---
+
+## 一门语言，不是某个应用的模式
+
+Zio 用 S 表达式统一表示程序与数据。当前解释器由 Rust 实现，提供原生 CLI 与 WebAssembly 会话；可以定义函数、操作集合、展开宏，并在浏览器使用 JS 互操作原语。完整宏卫生性、完整 MOP、编译器自举与异步调度仍是目标，不是现有保证。
+
+```lisp
+(defn square [x] (* x x))
+(square 7) ;; => 49
+```
+
+从[语法入门](/syntax/)开始，在 [Playground](/playground/) 修改并执行代码，或阅读[实现手册](/book/)和[语言文档](/docs/)。浏览器会话保留定义，显示最后一个表达式的值或求值错误；本地 CLI 的文件、网络和宿主能力不等于浏览器能力。
+
+## 语言优先的仓库边界
+
+- `langs/core` 与 `langs/cli`：语言实现和命令行工具；没有 `langs/zio` 包装层。
+- `libs/std`：Zio 核心宏、集合、协议、实体与数据逻辑。
+- `libs/numa`：现有 Zio 向量代码；完整类型化数组、矩阵与数值后端尚未完成。
+- `libs/loom`：现有 Zio Agent／proposer 代码；完整模型、工具、会话、预算、取消和 ACP harness 尚未完成。
+- `libs/learning`：Zio 学习策略、模型表示与配方代码。
+- `contribs/native/loom`：现有 Rust 宿主／LLM 基础设施，不冒充 Zio 库。Rill 当前没有实现，CLI 不等于 Rill。
+- `apps/site` 是本站；[Grove](/grove/) 是独立应用目标。现有 Rust legacy 留在 `apps/grove/native`，目标 Zio 应用没有完成，也不是 Playground 的预设或学习模式。
+
+## 求值和安全边界
+
+`future-call` 当前同步求值并包装结果；`chan / send! / recv!` 是同步队列占位能力，不是并发任务调度器。WASM 上的 `js/eval` 和 DOM 原语可访问当前页面；只执行你信任的代码。浏览器 Playground 不提供超时、进程隔离或对任意代码的安全保证。

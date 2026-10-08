@@ -1,5 +1,7 @@
 # Phase 0 Truth Baseline Implementation Plan
 
+> Historical document: paths, commands and delivery claims below describe their original date. The 2026-10-07 language-first cutover supersedes directory and library ownership targets; see [current architecture](../../zio-architecture.md) and [approved layout plan](../plans/2026-10-07-language-first-layout.md). Rust Grove business migration remains outstanding.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 > **Historical scope, synchronized 2026-10-05:** This Phase 0 plan is retained
@@ -147,6 +149,7 @@ git commit -m "test: add executable example contract"
 ```
 
 ### Task 2: Repair stdlib function tail recursion
+
 
 **Files:**
 - Modify: `core/src/eval.rs` in the existing evaluator test module
@@ -448,6 +451,7 @@ emit_status() {
   printf '| Runnable examples | %s |\n' "$runnable_examples"
 }
 
+
 case "${1:-}" in
   "")
     emit_status
@@ -598,6 +602,7 @@ mkdir -p "$(dirname "$output")"
 printf '{\n'
 printf '  "engine": "ast",\n'
 printf '  "command": "target/release/zio-cli PROGRAM",\n'
+
 printf '  "revision": "%s",\n' "$(git rev-parse HEAD)"
 printf '  "machine": "%s",\n' "$(uname -srm)"
 printf '  "units": "seconds",\n'
@@ -748,6 +753,7 @@ Run:
 cargo clippy --workspace --all-targets
 git diff --check
 git status --short
+
 ```
 
 Expected: Clippy exits zero; any advisory outside the fatal compiler-warning gate is recorded in the review notes, not suppressed in this phase. `git diff --check` exits zero. The status output contains only intended Phase 0 changes and local ignored `.superpowers/` artifacts.

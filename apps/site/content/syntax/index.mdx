@@ -1,0 +1,49 @@
+---
+title: Zio 语法入门
+description: 表达式、数据、绑定、函数与条件；可复制到 Playground 修改并执行。
+order: 1
+---
+
+## 表达式与数据
+
+函数调用写成 `(函数 参数...)`，`;` 开始行注释。数字、字符串、布尔值和关键字可直接求值；符号查找当前环境绑定。
+
+```lisp
+(+ 1 2 3)             ;; => 6
+"hello"
+true
+nil
+:ready
+'(1 2 3)              ;; quote：列表数据，不调用 1
+[1 2 3]               ;; 向量
+{:name "Zio" :n 3}    ;; 映射
+(get {:n 3} :n)        ;; => 3
+```
+
+## 定义、局部绑定与函数
+
+```lisp
+(def greeting "hello")
+(defn square [x] (* x x))
+(let [n 7] (square n)) ;; => 49
+((fn [x] (+ x 1)) 4)   ;; => 5
+```
+
+`def` 的绑定保留在当前会话。`let` 提供局部绑定；`let*` 允许后续绑定引用前面的值。
+
+## 条件与顺序求值
+
+```lisp
+(if (> 5 3) :yes :no) ;; => :yes
+(do
+  (def x 10)
+  (+ x 2))            ;; => 12
+```
+
+多表达式程序按顺序执行，浏览器求值器返回最后一个值；reader 或 evaluator 的错误会显示在输出区域。试着将 `(+ 1 2)` 改成 `(+ 1 missing)`，观察未绑定符号错误。
+
+## 宏、对象与同步队列
+
+当前有 `syntax-rules` 卫生子集和 ZOS 类／通用函数／多分派子集，不宣称完整卫生性或 MOP。`future-call` 立即同步求值并包装结果；`chan` 是同步消息队列，不能据此推断并发、阻塞或取消能力。
+
+继续阅读[语言入门手册](/book/03-Lisp语言入门/)、[宏与代码生成](/book/10-宏系统与代码生成/)、[ZOS 规范](/docs/zos-spec/)与[当前能力矩阵](/docs/feature-matrix/)，或打开 [Playground](/playground/)。

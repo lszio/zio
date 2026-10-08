@@ -1,0 +1,20 @@
+[package]
+name = "zio-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "The Zio language entry point: REPL, script runner, bounded candidate runner, and application launcher"
+readme = "../../README.md"
+
+[dependencies]
+zio-core = { path = "../core" }
+zio-host = { path = "../../contribs/native/host" }
+im = "15.1.0"
+
+# The crate target stays `zio-cli` on purpose. Declaring `[[bin]] name =
+# "zio"` would rename the target, and cargo only sets
+# `CARGO_BIN_EXE_zio-cli` for the name it knows — which every
+# integration test resolves the binary through. The installed name is
+# `zio`; tools/install.sh does the rename.

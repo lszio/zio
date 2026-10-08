@@ -1,0 +1,80 @@
+;; libs/numa/vector.zio contract — the optional semantic index, bound to
+;; an encoder and a space version.
+(load "libs/numa/vector.zio")
+
+(defn check [label actual expected]
+  (if (= actual expected)
+    (println "PASS" label)
+    (error (str "FAIL " label " got: " actual " want: " expected))))
+
+(def v1 {:memory/id "v-1" :memory/encoder "bge-small"
+         :memory/space-version 2 :memory/vector [10 0 0]})
+(def v2 {:memory/id "v-2" :memory/encoder "bge-small"
+         :memory/space-version 2 :memory/vector [0 10 0]})
+(def v3 {:memory/id "v-3" :memory/encoder "bge-small"
+         :memory/space-version 2 :memory/vector [10 10 0]})
+(def records [v1 v2 v3])
+
+;; ── space version is enforced, never assumed ────────────────────
+(check "space-ok" (vector--check-space records 2) true)
+(check "space-mismatch-refused" (string? (vector--check-space records 3)) true)
+(check "space-mismatch-mentions-version"
+       ;; 42 appears nowhere else in the fixtures, so a split on it has
+       ;; two parts exactly when the refusal names the version.
+       (if (string? (vector--check-space records 42))
+         (let [refusal (vector--check-space records 42)]
+           (if (= (count (str-split "42" refusal)) 2)
+             true (error "FAIL refusal does not mention the space version")))
+         (error "FAIL expected a refusal string"))
+       true)
+(check "space-empty-index-ok" (vector--check-space [] 9) true)
+
+;; encoder mismatch is equally refused
+(check "encoder-ok" (vector--check-encoder records "bge-small") true)
+(check "encoder-mismatch-refused" (string? (vector--check-encoder records "gte-base")) true)
+
+;; ── similarity is integer basis points ──────────────────────────
+(check "cosine-identical" (vector--cosine-bp [10 0 0] [20 0 0]) 10000)
+(check "cosine-orthogonal" (vector--cosine-bp [10 0 0] [0 10 0]) 0)
+(check "cosine-zero-vector" (vector--cosine-bp [0 0 0] [0 10 0]) 0)
+(check "cosine-opposed" (vector--cosine-bp [3.0 4.0] [-3.0 -4.0]) -10000)
+(check "cosine-non-axis-collinear" (vector--cosine-bp [1.0 1.0] [2.0 2.0]) 10000)
+(check "cosine-rounding" (vector--cosine-bp [1 0] [1 1]) 7071)
+(check "cosine-tiny-finite" (vector--cosine-bp [1e-200 2e-200] [2e-200 4e-200]) 10000)
+(check "cosine-large-finite" (vector--cosine-bp [1e200 2e200] [2e200 4e200]) 10000)
+(check "shape-refused" (try (vector--cosine-bp [1 2] [1]) false (catch any true)) true)
+(check "nonnumeric-refused" (try (vector--cosine-bp [1 "x"] [1 2]) false (catch any true)) true)
+(check "nonfinite-refused" (try (vector--cosine-bp [(* 1e308 1e308)] [1]) false (catch any true)) true)
+(check "threshold-passes" (vector--threshold-bp 10000 9000) true)
+(check "threshold-fails" (vector--threshold-bp 4000 9000) false)
+
+;; ── the semantic query: a real result, and real refusals ────────
+;; the query points straight at v-3, so the nearest is not a tie
+(def q {:memory/encoder "bge-small" :memory/space-version 2 :memory/vector [10 10 0]})
+(def hit (vector--nearest records q 2))
+(check "nearest-returns-pair" (list? hit) true)
+(check "nearest-picks-collinear" (get (get hit 1) :memory/id) "v-3")
+(check "nearest-empty-index-nil" (vector--nearest [] q 2) nil)
+
+;; a query in another space is refused, not reinterpreted
+(def refusal (vector--nearest records q 7))
+(check "query-space-refused" (string? refusal) true)
+(check "query-space-refusal-not-a-record" (list? refusal) false)
+
+;; a query with a different encoder is refused too
+(def q2 {:memory/encoder "gte-base" :memory/space-version 2 :memory/vector [1 0 0]})
+(check "query-encoder-refused" (string? (vector--nearest records q2 2)) true)
+(check "query-claimed-space-refused"
+       (string? (vector--nearest records (put q :memory/space-version 9) 2)) true)
+
+;; ── changing the space invalidates, or migrates explicitly ─────
+(def migrated (vector--migrate v1 {:version 3 :encoder "bge-large"}
+                                (fn [r] (put r :memory/vector [0 0 7]))))
+(check "migration-sets-space" (get migrated :memory/space-version) 3)
+(check "migration-sets-encoder" (get migrated :memory/encoder) "bge-large")
+(check "migration-records-origin" (get migrated :memory/migrated-from) 2)
+(check "migration-rewrites-vector" (get migrated :memory/vector) [0 0 7])
+;; the old record is untouched: a migration is a new fact, not a rewrite
+(check "migration-leaves-original" (get v1 :memory/space-version) 2)
+;; dropping the index is always available and always honest
+(check "invalidate-empties" (count (vector--invalidate records)) 0)

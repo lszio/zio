@@ -1,5 +1,7 @@
 # 13 - REPL 与 CLI 实现
 
+> 2026-10-07 目录更新：本文教学代码与旧阶段/验收描述保留历史语境；源码链接和运行路径已映射到当前位置。现行目标是 `libs/` 的 Zio 库与 `apps/grove/` 的 Zio 业务迁移，Rust Grove 业务尚未整体重写；通用 Rust transport/host adapter 在 `contribs/native/loom/`。当前归属见[架构](../docs/zio-architecture.md)与[批准目录计划](../docs/superpowers/plans/2026-10-07-language-first-layout.md)。
+
 ## REPL 是什么？
 
 REPL = **R**ead **E**val **P**rint **L**oop。
@@ -19,14 +21,10 @@ Zio 回应: 25
 
 ## CLI 入口
 
-打开 `cli/src/main.rs`。本章保留简化的 REPL 教学实现，不是当前入口的
-完整清单。`zio-cli` 是二进制宿主，未来消费 Rill 官方独立 CLI 组合库；
-Rill 负责参数、子命令、帮助、命令组合、终端 I/O 与退出状态，不承担语言
-求值。它按需安装、独立版本发布，不是 Zio 语言内置特性，Grove 可复用，
-核心无反向依赖。Rill 仍为 Planned，正式短名不是已确认注册包 ID，
-不能用 REPL 可运行代替其验收，也不改名本章源码或运行命令。边界见
-[ADR-019](../docs/adrs.md#adr-019-grove-独立应用与同像性逻辑演化)，
-执行顺序见[统一实现计划](../docs/superpowers/plans/2026-10-05-zio-grove-convergence.md)。
+打开 `langs/cli/src/main.rs`。本章保留简化的 REPL 教学实现，不是当前入口的完整清单。
+`zio-cli` 是普通语言二进制，不提供 `--llm-replay`；模型与 replay 合同在
+`contribs/native/loom/`，由授权宿主或应用装配。Rill 是未来 Zio CLI 组合库方向，
+不是独立 Rust 业务库目标。目录归属见[架构](../docs/zio-architecture.md)。
 
 ### Main 函数
 
@@ -98,7 +96,7 @@ fn run_repl(sm: &Arc<SourceMap>) {
 
 ### 上下文创建
 
-装配不在 CLI 里，也不在 core 的 eval 里：`core/src/bootstrap.rs` 是唯一的装配入口，
+装配不在 CLI 里，也不在 core 的 eval 里：`langs/core/src/bootstrap.rs` 是唯一的装配入口，
 CLI、编译器前端和 Grove 的候选执行都调用同一个 `language_context`。
 
 ```rust
@@ -132,7 +130,7 @@ fn run_script(path: &str) -> Result<Value, EvalError> {
 ```rust
 fn load_stdlib(ctx: &EvalContext, sm: &Arc<SourceMap>) {
     // 从嵌入式标准库加载 core.zio
-    let stdlib = zio_core::stdlib_source();  // include_str!("../stdlib/zio/core.zio")
+    let stdlib = zio_core::stdlib_source();  // 标准库源位于 libs/std/core.zio
     let exprs = parse_all(stdlib);
     for expr in exprs {
         eval::eval(&expr, ctx).unwrap();
@@ -148,6 +146,7 @@ REPL 的一个实用功能：当括号没闭合时，等待更多输入。
 
 ```lisp
 zio> (+ 1
+
   | 2
   | 3)
 6
@@ -187,7 +186,7 @@ zio> (+ 1 2)     ← REPL 仍然活着
 从启动到退出：
 
 ```
-1. cargo run
+1. cargo run -p zio-cli
    ↓
 2. main() 检测参数：< 2 个 → REPL 模式
    ↓
@@ -213,7 +212,7 @@ zio> (+ 1 2)     ← REPL 仍然活着
 
 ```bash
 # 1. 启动 REPL
-cargo run
+cargo run -p zio-cli
 
 # 2. 在 REPL 中
 zio> (+ 1 2 3)
@@ -227,7 +226,7 @@ zio> (fib 10)
 
 # 3. 运行脚本
 echo '(println "Hello from script!")' > hello.zio
-cargo run -- hello.zio
+cargo run -p zio-cli -- hello.zio
 
 # 4. 错误恢复
 zio> (/ 1 0)
@@ -238,11 +237,11 @@ nil
 ```
 
 ## 对应源码
-
-- `cli/src/main.rs` —— REPL + 脚本运行器（~170 行）
-- `core/src/context.rs` —— EvalContext 定义
-- `core/src/builtins/mod.rs:setup_env` —— 内置函数聚合注册
-- `core/src/lib.rs` —— stdlib_source() 嵌入标准库
+- `langs/cli/src/main.rs` —— REPL + 脚本运行器（~170 行）
+- `langs/core/src/context.rs` —— EvalContext 定义
+- `langs/core/src/builtins/mod.rs:setup_env` —— 内置函数聚合注册
+- `langs/core/src/lib.rs` —— stdlib_source() 嵌入标准库
+- `langs/core/src/lib.rs` —— stdlib_source() 嵌入标准库
 
 ## 核心记忆
 

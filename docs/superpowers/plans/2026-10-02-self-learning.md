@@ -1,5 +1,7 @@
 # Grove 历史组件交付记录 — P1–P4 / W00–W17
 
+> Historical document: paths, commands and delivery claims below describe their original date. The 2026-10-07 language-first cutover supersedes directory and library ownership targets; see [current architecture](../../zio-architecture.md) and [approved layout plan](../plans/2026-10-07-language-first-layout.md). Rust Grove business migration remains outstanding.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use `subagent-driven-development` or `executing-plans` to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 > 历史基线：初始计划 2026-10-02；定位与开工顺序由 2026-10-05 的
@@ -147,6 +149,7 @@ W03 与 W04、W11 与 W12、W14 与 W15 在共享合同稳定后可分工并行�
 - [x] 复用现有 HTTP 超时与响应限制。新增教师协议和文本 completion 角色分开；若调整现有导出符号，先查全部引用并一次迁移，不保留过渡别名。
 - [x] 实现本地教师服务装配和请求记录；W04 完成后加载真实训练并冻结的教师权重，不以常量标签假冒模型。无教师凭据时报告缺失能力，不悄悄换成本地教师。
 - [x] 执行 `cargo test -p zio-ai --test teacher_contract --features http`。本地 HTTP 的真实神经教师调用由 W08 端到端验收；外部供应商联调需显式凭据和许可，单独标注是否执行。
+
 
 ## 7. P2：真实学习、恢复与比较
 
@@ -298,6 +301,7 @@ W03 与 W04、W11 与 W12、W14 与 W15 在共享合同稳定后可分工并行�
 | 检查点、暂停/恢复与历史 | W01/W06/W12 | 杀进程后恢复、预算连续、半成品不可见、失效不可恢复 |
 | 历史比较与选择 | W07/W11 | 同协议重评、硬门槛与版本冲突、人工选择准确历史快照 |
 | 分裂与真实多路并行 | W06/W09 | 独立分支、真实进程重叠、故障隔离和统一预算 |
+
 | 群体交流与多样性 | W09/W14/W16 | 专长保留、合法经验迁移、无验收答案泄漏 |
 | 内部模块化与协同演化 | W13/W16 | 共享参数约束、语义兼容、组合后整体验证 |
 | 向量化与语言化经验 | W14 | 空间版本、结构/行为/语义索引及新任务复用测量 |

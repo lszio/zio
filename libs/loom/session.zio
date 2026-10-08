@@ -1,0 +1,316 @@
+;; ── zio.session — ACP/teacher/embed over an atomic budget ledger ────
+;;
+;; A `tx` callback owns the application's atomic spend store; Loom never
+;; opens an application database. The ledger shape is data:
+;;   {:limits {:max-calls N :max-cost-micros M :per-call-ceiling-micros K}
+;;    :calls 0                ; committed reservations
+;;    :spent 0                ; observed cash from settled calls
+;;    :spent-unobserved 0     ; absorbed hold from calls with no reported cost
+;;    :held 0                 ; reservations currently outstanding
+;;    :cancelled false
+;;    :reservations {id {:kind … :held K :status "reserved"|"settled"|"unknown" :actual N}}}
+;;
+;; Reserve/Settle happen inside `tx` so every spend change is committed
+;; exactly once — there is no window in which two reservations see
+;; different ledgers. The 0 cost discipline:
+;;   * `expected=0` is NOT a free-call claim. It means "I have no
+;;     observation" and is treated as such: the per-call ceiling is the
+;;     hold. A budget with no per-call ceiling refuses the reservation
+;;     rather than guessing free.
+;;   * Settle with a number lets the held reservation refund the
+;;     unused portion (spent += actual, held -= hold).
+;;   * Settle with nil absorbs the FULL hold into spent (status
+;;     "unknown"). `spent-unobserved` is incremented by the same amount
+;;     so an audit can read the ledger as: a spent number that
+;;     monotonically grows; an unobserved counter that says "this
+;;     much could not be priced".
+;;
+;; The downstream hooks (harness-execute-zio, harness-complete) get
+;; process lifecycle through `host/process-kill`, and `loom--session-
+;; cancel` runs that hook first so an outstanding model call is reaped
+;; before the budget is marked cancelled.
+(defn loom--key [k] (if (keyword? k) (str (symbol k)) k))
+(defn loom--get [m k fallback] (get m k (get m (if (keyword? k) (loom--key k) (keyword k)) fallback)))
+(defn loom--require [ok message] (if ok true (error (str "loom: " message))))
+(defn loom--contains [xs x] (reduce (fn [found y] (if found true (= x y))) false xs))
+
+;; A fresh ledger; `limits` is the application-supplied ceiling set.
+(defn loom--budget-new [limits]
+  {:limits limits :calls 0 :spent 0 :spent-unobserved 0 :held 0 :cancelled false :reservations {}})
+
+;; ── reserve / settle primitives ─────────────────────────────────
+
+(defn loom--reserve [tx id kind expected]
+  (tx (fn [ledger]
+    (let* [limits (loom--get ledger :limits {}) reservations (loom--get ledger :reservations {})
+           calls (loom--get ledger :calls 0) spent (loom--get ledger :spent 0) held (loom--get ledger :held 0)
+           ceiling (loom--get limits :per-call-ceiling-micros 0)
+           ;; expected=0 means "I have no observation" — fall back to the
+           ;; declared ceiling. If the ceiling is also 0 the call is
+           ;; declared un-priced and the reservation is refused.
+           expected-positive (if (and (number? expected) (> expected 0)) expected 0)
+           hold (if (> expected-positive ceiling) expected-positive ceiling)]
+      (loom--require (not (loom--get ledger :cancelled false)) "cancelled")
+      (loom--require (nil? (get reservations id nil)) "duplicate budget request")
+      (loom--require (> hold 0) "unbounded or unobserved call cost; explicit positive ceiling required")
+      (loom--require (< calls (loom--get limits :max-calls 0)) "call budget exhausted")
+      (loom--require (<= (+ spent held hold) (loom--get limits :max-cost-micros 0)) "shared cost budget exhausted")
+      (let* [reservation {:request-id id :kind kind :held hold :status "reserved"}]
+        {:ledger (assoc ledger :calls (+ calls 1) :held (+ held hold) :reservations (put reservations id reservation))
+         :result reservation})))))
+
+(defn loom--settle [tx id actual]
+  (tx (fn [ledger]
+    (let* [reservations (loom--get ledger :reservations {}) reservation (get reservations id nil)
+           status (loom--get reservation :status nil) hold (loom--get reservation :held 0)
+           spent (loom--get ledger :spent 0) held (loom--get ledger :held 0) unobs (loom--get ledger :spent-unobserved 0)]
+      (loom--require (not (nil? reservation)) "settlement without reservation")
+      (if (= status "settled")
+        (do (loom--require (= actual (loom--get reservation :actual nil)) "conflicting spend replay") {:ledger ledger :result reservation})
+        (do
+          (loom--require (loom--contains ["reserved" "unknown"] status) "reservation is not settleable")
+          (cond
+            ;; Unknown cost: the FULL hold is absorbed into spent (an
+            ;; unobserved cost is not silently free) and the unobserved
+            ;; counter records the unknown portion. held is released
+            ;; so the reservation no longer holds headroom.
+            ((nil? actual)
+             (let* [unknown (assoc reservation :status "unknown")]
+               {:ledger (assoc ledger :held (- held hold)
+                               :spent (+ spent hold)
+                               :spent-unobserved (+ unobs hold)
+                               :reservations (put reservations id unknown))
+                :result unknown}))
+            ;; Observed cost: the actual cost is added to spent, the held
+            ;; reservation is fully released. The cap check during
+            ;; reserve already allowed for `hold`; an actual > hold is
+            ;; a budget breach on the reservation and surfaces as spent
+            ;; exceeding the previously-allowed headroom.
+            ((and (number? actual) (>= actual 0))
+             (let* [settled (assoc reservation :status "settled" :actual actual)]
+               {:ledger (assoc ledger :held (- held hold)
+                               :spent (+ spent actual)
+                               :reservations (put reservations id settled))
+                :result settled}))
+            (else (error "loom: negative observed cost")))))))))
+
+(defn loom--cancel-budget [tx]
+  (tx (fn [ledger] {:ledger (assoc ledger :cancelled true) :result true})))
+
+(defn loom--budget-cancelled? [tx]
+  (tx (fn [ledger] {:ledger ledger :result (loom--get ledger :cancelled false)})))
+
+(defn loom--budget-spent [tx]
+  ;; Read-only accessor: total committed spend (real + absorbed unknowns).
+  (tx (fn [ledger] {:ledger ledger :result (loom--get ledger :spent 0)})))
+(defn loom--budget-held [tx]
+  (tx (fn [ledger] {:ledger ledger :result (loom--get ledger :held 0)})))
+(defn loom--budget-unobserved [tx]
+  (tx (fn [ledger] {:ledger ledger :result (loom--get ledger :spent-unobserved 0)})))
+
+;; ── message / response validation ────────────────────────────────
+
+(defn loom--validate-messages [messages]
+  (reduce (fn [state m]
+    (let* [role (loom--get m :role nil) calls (loom--get m :tool_calls []) id (loom--get m :tool_call_id nil)
+           pending (get state :pending {}) seen (get state :seen {})]
+      (loom--require (loom--contains ["user" "assistant" "tool"] role) "caller cannot supply system role")
+      (if (= role "tool")
+        (do (loom--require (not (nil? (get pending id nil))) "unattributed or repeated tool result")
+            (loom--require (not (= false (get pending id))) "duplicate tool result")) nil)
+      (loom--require (or (= role "assistant") (= 0 (count calls))) "only assistant may request tools")
+      (let* [next (reduce (fn [a call]
+                            (let* [cid (loom--get call :id "") name (loom--get call :name "") args (loom--get call :arguments nil)]
+                              (loom--require (and (not (= cid "")) (not (= name "")) (map? args)) "invalid tool call")
+                              (loom--require (nil? (get (get a :seen) cid nil)) "duplicate tool call id")
+                              (assoc a :seen (put (get a :seen) cid true) :pending (put (get a :pending) cid true)))) state calls)]
+        (if (= role "tool") (assoc next :pending (put (get next :pending) id false)) next))))
+    {:pending {} :seen {}} messages))
+(defn loom--validate-response [response id]
+  (loom--require (= id (loom--get response :request_id nil)) "foreign response correlation")
+  (let* [reason (loom--get response :finish_reason nil) message (loom--get response :message nil) calls (loom--get message :tool_calls [])]
+    (loom--require (= "assistant" (loom--get message :role nil)) "provider must answer as assistant")
+    (loom--require (loom--contains ["stop" "length" "tool_calls" "content_filter"] reason) "unknown finish reason")
+    (loom--require (if (> (count calls) 0) (= reason "tool_calls") (not (= reason "tool_calls"))) "inconsistent tool finish reason")
+    (loom--validate-messages [message]) response))
+(defn loom--wire-message [message]
+  (let* [base {:role (loom--get message :role nil) :content (loom--get message :content nil)}
+         calls (loom--get message :tool_calls []) id (loom--get message :tool_call_id nil)
+         with-calls (if (= 0 (count calls)) base
+                      (assoc base :tool_calls (map (fn [c] {:id (loom--get c :id nil) :type "function"
+                                                           :function {:name (loom--get c :name nil) :arguments (json-stringify (loom--get c :arguments {}))}}) calls)))]
+    (if (nil? id) with-calls (assoc with-calls :tool_call_id id))))
+
+;; ── upstream secret authority ────────────────────────────────────
+;;
+;; The upstream model API key is the user's authority and never travels
+;; in a candidate context. The host binds a secret-env KEY; the actual
+;; secret value is read here from the process environment only when the
+;; caller has elected to authorize it (loom--http-json never embeds the
+;; value in the candidate — only the env reference travels). An
+;; unauthorized secret reference is a refusal.
+(defn loom--http-json [config path body]
+  (let* [headers {"Content-Type" "application/json"} secret-ref (loom--get config :secret-env nil)
+         _declared (loom--require (string? secret-ref) "upstream secret-env reference must be declared")
+         secret (host/getenv secret-ref)
+         _authority (loom--require (and (string? secret) (not (= secret ""))) "explicit upstream secret is unavailable")
+         authorization (put headers "Authorization" (str "Bearer " secret))
+         response (host/http-request {:url (str (loom--get config :base-url "") "/" path) :method "POST"
+                                      :headers authorization :body (json-stringify body)
+                                      :timeout-ms (loom--get config :timeout-ms 30000)
+                                      :max-body-bytes (loom--get config :max-response-bytes 1048576)})]
+    (loom--require (and (>= (loom--get response :status 0) 200) (< (loom--get response :status 0) 300)) "upstream HTTP failure")
+    (host/json-read (loom--get response :body nil))))
+(defn loom--model-respond [config request system]
+  (let* [id (loom--get request :request_id "") messages (loom--get request :messages []) max-output (loom--get request :max_output_tokens 0)]
+    (loom--require (not (= id "")) "request id missing")
+    (loom--require (> max-output 0) "output budget missing")
+    (loom--require (not (= "" (loom--get config :model ""))) "explicit upstream model missing")
+    (loom--validate-messages messages)
+    (let* [body {:model (loom--get config :model nil)
+                :messages (into [{:role "system" :content system}] (map loom--wire-message messages)) :max_tokens max-output}
+           body-tools (if (nil? (loom--get request :tools nil)) body (assoc body :tools (loom--get request :tools nil)))
+           body-options (reduce (fn [a k] (let* [v (loom--get request k nil)] (if (nil? v) a (put a k v)))) body-tools [:temperature :stop])
+           raw (loom--http-json config "chat/completions" body-options)
+           choice (first (loom--get raw :choices [])) message (loom--get choice :message nil)
+           calls (loom--get message :tool_calls []) usage (loom--get raw :usage {})
+           response {:request_id id :finish_reason (loom--get choice :finish_reason nil)
+                     :message {:role (loom--get message :role nil) :content (loom--get message :content nil)
+                               :tool_calls (map (fn [c] (let* [f (loom--get c :function {}) args (loom--get f :arguments nil)]
+                                                      {:id (loom--get c :id "") :name (loom--get f :name "")
+                                                       :arguments (if (string? args) (json-parse args) args)})) calls)}
+                     :usage {:input_tokens (loom--get usage :prompt_tokens 0) :output_tokens (loom--get usage :completion_tokens 0)
+                             :cost_micros (loom--get usage :cost_micros nil)}}]
+      (loom--validate-response response id))))
+
+;; ── session lifecycle ────────────────────────────────────────────
+;;
+;; The session owns its own next-request counter. A session-cancel kills
+;; the underlying process (host/process-kill is granted by the host on
+;; process-attached budgets only) and flips the budget ledger to
+;; cancelled so outstanding reservations refuse to be admitted.
+(defn loom--session [config system budget-tx tools]
+  {:config config :system system :budget-tx budget-tx :tools tools :messages [] :next-request 1 :cancelled false :process nil})
+
+(defn loom--attach-process [session process]
+  ;; Bind an upstream process handle (e.g. an ACP subprocess) so a
+  ;; session-cancel can reap it. Pass nil to detach. Cancelling a
+  ;; session with no process attached is still safe; it only stops the
+  ;; budget from admitting new reservations.
+  (assoc session :process process))
+
+(defn loom--session-call [session content options]
+  (loom--require (not (get session :cancelled)) "cancelled session")
+  (let* [id (str "req-" (get session :next-request)) messages (vector-conj (get session :messages) {:role "user" :content content})
+         request (assoc options :request_id id :messages messages :tools (get session :tools)
+                                :max_output_tokens (loom--get options :max_output_tokens 4096))
+         tx (get session :budget-tx)]
+    ;; expected=0 is "I have no observation": the per-call ceiling is
+    ;; the hold. If the budget has no ceiling the reservation will be
+    ;; refused — that is the honest answer, not a free pass.
+    (loom--reserve tx id "model" 0)
+    (try
+      (let* [response (loom--model-respond (get session :config) request (get session :system))
+             cost (loom--get (loom--get response :usage {}) :cost_micros nil)
+             settlement (loom--settle tx id cost)]
+        {:session (assoc session :messages (vector-conj messages (loom--get response :message nil)) :next-request (+ 1 (get session :next-request)))
+         :response response :settlement settlement})
+      (catch any (loom--settle tx id nil) (error (str *error*))))))
+
+(defn loom--tool-result [session call-id content options]
+  (let* [messages (vector-conj (get session :messages) {:role "tool" :tool_call_id call-id :content content})
+         _valid (loom--validate-messages messages)
+         id (str "req-" (get session :next-request)) tx (get session :budget-tx)
+         request (assoc options :request_id id :messages messages :tools (get session :tools)
+                                :max_output_tokens (loom--get options :max_output_tokens 4096))]
+    (loom--reserve tx id "model" 0)
+    (try (let* [response (loom--model-respond (get session :config) request (get session :system))]
+           {:session (assoc session :messages (vector-conj messages (loom--get response :message nil)) :next-request (+ 1 (get session :next-request)))
+            :response response :settlement (loom--settle tx id (loom--get (loom--get response :usage {}) :cost_micros nil))})
+         (catch any (loom--settle tx id nil) (error (str *error*))))))
+
+(defn loom--session-cancel [session]
+  ;; Order: cancel the budget FIRST so the next reserve refused. THEN
+  ;; reap the process. Reversing the order can let a reservation slip
+  ;; in while the process is dying.
+  (loom--cancel-budget (get session :budget-tx))
+  (if (nil? (get session :process nil)) nil (host/process-kill (get session :process)))
+  (assoc session :cancelled true))
+
+;; ── teacher ────────────────────────────────────────────────────
+
+(defn loom--teacher-validate [request external-authority]
+  (let* [cap (loom--get request :capability {}) parts (loom--get request :parts []) licence (loom--get request :licence nil)
+         wants (loom--get request :wants []) modalities (loom--get cap :input_modalities [])]
+    (loom--require (not (= "" (loom--get request :request_id ""))) "teacher request id missing")
+    (loom--require (> (count parts) 0) "teacher content missing")
+    (loom--require (loom--contains ["train-student" "display-only"] licence) "forbidden teacher licence")
+    (if (= licence "train-student") (loom--require (loom--get cap :permits_training_use false) "teacher disallows training") nil)
+    (loom--require (> (loom--get request :max_response_bytes 0) 0) "teacher response bound missing")
+    (map (fn [part]
+      (let* [kind (loom--get part :kind nil) media (loom--get part :media_type "")
+             modality (cond ((= kind "numbers") "numeric") ((str-starts-with? media "image/") "image")
+                            ((str-starts-with? media "audio/") "audio") (else "text"))]
+        (loom--require (loom--contains modalities modality) "teacher input modality unavailable")
+        (loom--require (external-authority part) "source is not licensed for externalization"))) parts)
+    (map (fn [want] (loom--require (loom--contains (loom--get cap :output_kinds []) want) "teacher output capability unavailable")) wants)
+    request))
+(defn loom--teacher-response [request response]
+  (let* [cap (loom--get request :capability {}) scores (loom--get response :soft_scores nil) vocab (loom--get cap :vocabulary nil)]
+    (loom--require (= (loom--get request :request_id nil) (loom--get response :request_id nil)) "foreign teacher response")
+    (loom--require (= (loom--get cap :teacher_id nil) (loom--get response :teacher_id nil)) "foreign teacher identity")
+    (loom--require (nil? (loom--get response :error nil)) (str "teacher failed: " (loom--get response :error nil)))
+    (if (nil? scores) nil (do (loom--require (not (nil? vocab)) "soft output lacks vocabulary")
+                              (loom--require (= (count scores) (count vocab)) "teacher distribution width mismatch")
+                              (host/json-bytes scores)))
+    ;; Proposed programs remain data and never gain publisher authority.
+    response))
+(defn loom--teacher-http [config request external-authority budget-tx]
+  (loom--teacher-validate request external-authority)
+  (let* [id (loom--get request :request_id nil)]
+    (loom--reserve budget-tx id "teacher" 0)
+    (try (let* [reply (loom--http-json config (loom--get config :teacher-path "query") request)
+                validated (loom--teacher-response request reply)]
+           (loom--settle budget-tx id (loom--get (loom--get reply :usage {}) :cost_micros nil)) validated)
+         (catch any (loom--settle budget-tx id nil) (error (str *error*))))))
+(defn loom--embed [config texts space budget-tx request-id]
+  (loom--require (and (not (= "" (loom--get space :encoder ""))) (> (loom--get space :dimension 0) 0)
+                     (not (nil? (loom--get space :version nil)))) "embedding semantic-space declaration missing")
+  (loom--reserve budget-tx request-id "embedding" 0)
+  (try (let* [reply (loom--http-json config "embeddings" {:model (loom--get space :encoder nil) :input texts})
+              data (loom--get reply :data []) vectors (map (fn [row] (loom--get row :embedding [])) data)]
+         (loom--require (= (count texts) (count vectors)) "embedding row count mismatch")
+         (map (fn [v] (loom--require (= (count v) (loom--get space :dimension 0)) "embedding dimension mismatch")) vectors)
+         (loom--settle budget-tx request-id (loom--get (loom--get reply :usage {}) :cost_micros nil))
+         {:space space :vectors vectors :model_version (loom--get reply :model nil)})
+       (catch any (loom--settle budget-tx request-id nil) (error (str *error*)))))
+
+;; ── feature-space metadata (encoder / dimension / space version) ─
+;;
+;; The semantic space declaration is the contract for vector comparisons
+;; and is preserved across export/import. The encoder id is a string
+;; (e.g. an OpenAI model id); the dimension is the row width; the
+;; version is a monotonically-bumped identifier. Comparing vectors
+;; from different versions is refused upstream (loom--embed refuses to
+;; even construct mismatched-dimension rows).
+(defn loom--space-declare [encoder dimension version]
+  (loom--require (string? encoder) "encoder id must be string")
+  (loom--require (and (number? dimension) (> dimension 0)) "dimension must be positive")
+  (loom--require (and (not (nil? version)) (not (= version ""))) "space version must be declared")
+  {:encoder encoder :dimension dimension :version version})
+
+(defn loom--spaces-equal? [a b]
+  ;; Two spaces are comparable only when they name the same encoder at
+  ;; the same dimension and version. A near-match is not a match.
+  (if (or (nil? a) (nil? b)) false
+    (let* [enc-a (loom--get a :encoder "") enc-b (loom--get b :encoder "")
+           dim-a (loom--get a :dimension 0) dim-b (loom--get b :dimension 0)
+           ver-a (loom--get a :version nil) ver-b (loom--get b :version nil)]
+      (and (= enc-a enc-b) (= dim-a dim-b) (= ver-a ver-b)))))
+
+(export loom--budget-new loom--reserve loom--settle loom--cancel-budget loom--budget-cancelled?
+         loom--budget-spent loom--budget-held loom--budget-unobserved
+         loom--session loom--session-call loom--tool-result loom--session-cancel loom--attach-process
+         loom--model-respond loom--teacher-http loom--teacher-validate loom--teacher-response loom--embed
+         loom--space-declare loom--spaces-equal?
+         loom--get)

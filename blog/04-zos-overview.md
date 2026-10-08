@@ -1,5 +1,7 @@
 # 11: ZOS — 统一运行时对象模型
 
+> 2026-10-07 目录更新：本文教学代码与旧阶段/验收描述保留历史语境；源码链接和运行路径已映射到当前位置。现行目标是 `libs/` 的 Zio 库与 `apps/grove/` 的 Zio 业务迁移，Rust Grove 业务尚未整体重写；通用 Rust transport/host adapter 在 `contribs/native/loom/`。当前归属见[架构](../docs/zio-architecture.md)与[批准目录计划](../docs/superpowers/plans/2026-10-07-language-first-layout.md)。
+
 > 从 `defclass` 到 MOP——历史 ZOS 设计稿，不是完整 AMOP 已交付声明。
 
 ---
@@ -12,7 +14,7 @@
 > harness）是按需安装、独立版本发布的官方库，不是 Zio/ZOS 内置特性。
 > Grove 是消费语言与三库的独立应用，持学习目标、实验、反馈、检查点、
 > 独立评价、人工批准、逻辑演化与 Web；核心无反向依赖。三库新增能力仍 Planned。
-> 当前 `zio-ai` 是 Loom 的起点，`zio-cli` 是未来消费 Rill 的可执行宿主；
+> 当前 Rust `loom` adapter 位于 `contribs/native/loom/`，`zio-cli` 是未来消费 Rill 的可执行宿主；
 > 下文历史包名、代码与阶段记录不改名。正式短名不指定注册包 ID，
 > 未来目录/逻辑命名空间见[术语表](../docs/glossary.md)，边界见
 > [ADR-019](../docs/adrs.md#adr-019-grove-独立应用与同像性逻辑演化)。

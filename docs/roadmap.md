@@ -24,30 +24,27 @@ Experimental；可验证数量见[项目状态](status.md)。
 
 三条原则驱动路线图：
 
-1. **核心收敛，保留 ZOS** — 对象/类/泛型函数/方法/MOP 属于语言核心方向；官方独立库 Numa（计算）、Rill（CLI 组合）、Loom（Agent harness）与独立 Grove 应用不反向进入语言语义。
+1. **核心收敛，保留 ZOS** — 对象/类/泛型函数/方法/MOP 属于语言核心方向；官方 Zio 库 Numa（计算）、Rill（CLI 组合）、Loom（Agent harness）与独立 Grove 应用不反向进入语言语义。
 2. **先做对再做快** — AST 解释器先验证语义；JIT/ZIR/bytecode VM 当前均为 [Planned](feature-matrix.md)，不同时作为第一轮自举前提。
 3. **工具链自举与应用演化分开** — Zio 编写展开/分析/编译器，Rust 持最小运行时和宿主；Grove 先验证可编码 agent、生成执行和人工审查升级。两条线互不阻塞，见 [ADR-019](adrs.md#adr-019-grove-独立应用与同像性逻辑演化)。
 
-## 当前实现顺序（2026-10-05）
+## 当前目录切换与后续实现（2026-10-07）
 
-唯一开工清单是[统一实现计划](superpowers/plans/2026-10-05-zio-grove-convergence.md)，
-共 18 个工作包；下面旧 Phase 1–7 保留为功能目录，不是必须重新按顺序执行。
+本轮结构切换：语言平铺在 `langs/core/`、`langs/cli/`，Zio 库归 `libs/`，
+通用 Rust 传输/宿主适配归 `contribs/native/loom/`，应用归 `apps/`。
+`apps/site/` 是语言介绍/文档/playground；`apps/grove/` 是独立产品。
+批准合同与验收见[目录计划](superpowers/plans/2026-10-07-language-first-layout.md)。
+此项记录结构重构，不新增或重算测试数量，不把历史实跑作为迁移后的证据。
 
-| 主线 | 工作包 | 完成门槛 |
-|------|--------|----------|
-| 共享语言起点 | T00 | 数值、来源与复用装配合同；ZOS 保留核心，宿主默认拒绝 |
-| 首条 Grove 产品 | G00 → G01/H00 → G02 → G03 → G04 → G05 | 先强制保护与恢复，真实 Zio agent/模型生成执行，再独立评价、人工发布与真实站点证据 |
-| 工具链自举 | T01 → T02 → T03 | Zio 完整展开/分析/编译器、最小字节码后端、自编译与重复构建，独立于 Grove 完成 |
-| Numa 与 Rill 官方独立库 | C00 → C01 → C02；I00 | 实际消费者驱动抽取，Numa 提供连续数组/矩阵/向量及后端接口与性能证据；Rill 提供参数/子命令/帮助、命令组合、终端 I/O 与退出状态，不承担语言求值 |
-| 后续 Grove 扩展 | G06 → G07；G08 | ACP 客户端/教师后服务端，逐类模型能力，离开源码树的安装与权限验收 |
+下一步的业务方向是 Zio 库与 Zio Grove 业务，**不是继续把独立 Rust 业务库作为目标**。
+现有 `apps/grove/native/` 仍含 Rust 存储、调度、评价、治理及产品入口，尚未整体迁为 Zio。
+通用 native/transport、可信安全与后端边界保留必要 Rust 实现。
+Rill 未实现，不建立空占位目录。编译器自举、Tree-sitter 与 LSP 仍待各自验收。
 
-Numa、Rill、Loom 按需安装、独立版本发布，Grove 消费语言与三库；
-Loom 的模型、工具、会话、预算、取消、provider 与 ACP 不持学习目标、
-独立评价或发布治理。三库不先建空框架，Grove 也不复制解释器或 agent loop。
-当前 `zio-ai`/`ai/` 是 Loom 的复用起点，`zio-cli`/`cli/` 是未来消费
-Rill 的可执行宿主；当前 crate、目录、命令和已有函数名不变。
-正式短名不是已确定的注册包 ID，未来规范目录与命名空间见[术语表](glossary.md)。
-这张依赖表与三库新增能力都是 Planned，不是本次实现结果。
+旧[统一实现计划](superpowers/plans/2026-10-05-zio-grove-convergence.md)的 T/C/I/H/G
+编号和下面 Phase 1–7 是历史功能/证据索引，物理落点与库实现归属由当前
+[架构](zio-architecture.md)及 2026-10-07 计划取代；不得继续按旧目录建 Rust 库。
+
 
 ---
 
@@ -230,9 +227,9 @@ cargo clippy → warning-free target
 
 | # | 任务 | 文件 | 估算 LOC | 前提 |
 |---|------|------|----------|------|
-| 5.1 | `zio-persistent`: 持久化 Vector/Map/Set | `lib/zio/persistent.zio` | +300 | 3.4 |
-| 5.2 | `zio-entity`: Entity 模型 | `lib/zio/entity.zio` | +200 | 2.7, 3.6 |
-| 5.3 | `zio-protocol`: Protocol 系统 | `lib/zio/protocol.zio` | +250 | 3.5, 3.6 |
+| 5.1 | `zio-persistent`: 持久化 Vector/Map/Set | `libs/std/persistent.zio` | +300 | 3.4 |
+| 5.2 | `zio-entity`: Entity 模型 | `libs/std/entity.zio` | +200 | 2.7, 3.6 |
+| 5.3 | `zio-protocol`: Protocol 系统 | `libs/std/protocol.zio` | +250 | 3.5, 3.6 |
 | 5.4 | Zio 编辑器原型（应用自托管） | [new] `tools/zide/` | +1000 Zio | 无 |
 
 ### 交付标准
@@ -267,9 +264,9 @@ cargo clippy → warning-free target
 
 | # | 任务 | 文件 | 估算 LOC | 前提 |
 |---|------|------|----------|------|
-| 6.1 | `zio-datalog` MVP | `lib/zio/datalog.zio` | +600 | 5.1 |
-| 6.2 | `zio-agent` 原型 | `lib/zio/agent/*.zio` | +300 | 4.1, 4.8 |
-| 6.3 | `zio-llm` API 封装 | `lib/zio/llm.zio` | +300 | 4.1 |
+| 6.1 | `zio-datalog` MVP | `libs/std/datalog.zio` | +600 | 5.1 |
+| 6.2 | `zio-agent` 原型 | `libs/loom/agent/*.zio` | +300 | 4.1, 4.8 |
+| 6.3 | `zio-llm` API 封装 | `libs/loom/llm.zio` | +300 | 4.1 |
 | 6.4 | JIT 可行性验证（Cranelift） | `tools/` feature | +300 | 无 |
 | 6.5 | 向量原语 + 嵌入 | `builtins/` + dep | +200 | 4.1 |
 
@@ -298,6 +295,7 @@ cargo clippy → warning-free target
 
 ## Phase 6-C: 程序合成模块（L1-L3 已实现，L4 Planned）
 
+
 **目标**：把同象性学习器 MVP 升级为自学习闭环——学习机器为提议器
 （LLM 主线，遗传算子/RL/神经网络各有明确扩展位）、eval 为裁判、
 语言化记忆做经验检索（结构/行为指纹/可选向量三索引）。独立模块演进，
@@ -310,9 +308,9 @@ cargo clippy → warning-free target
 | 阶段 | 内容 | 交付物 | 前提 |
 |------|------|--------|------|
 | L1 ✅ | `LlmHost` / `EmbedHost` 宿主协议（外部 attach）+ Mock 录制/回放 | 新 crate `zio-ai` + 合同测试 | ADR-011/016 |
-| L2 ✅ | `lib/zio/proposer.zio`（纯 Zio）：提示模板/解析/重试 | Mock 下端到端提议器 | L1 |
-| L3 ✅ | 学习循环泛化：proposer 协议 + 代际/预算 + 闭世界白名单 + 错误隔离（遗传提议器可选） | 深度 3 求解 demo（枚举不可行 = 500 eval 预算内不可解，LLM 3 eval 解决） | L2；`lib/zio/learn.zio` |
-| L4 | `lib/zio/memory.zio` 三索引经验库 + 反统一蒸馏 + 环境吸收 + 自修复（vector.zio 语义桥、bandit、玩具 NN 可选） | 调用递减曲线 + 首个蒸馏宏 + DSL 收缩报表 | L3 |
+| L2 ✅ | `libs/loom/proposer.zio`（纯 Zio）：提示模板/解析/重试 | Mock 下端到端提议器 | L1 |
+| L3 ✅ | 学习循环泛化：proposer 协议 + 代际/预算 + 闭世界白名单 + 错误隔离（遗传提议器可选） | 深度 3 求解 demo（枚举不可行 = 500 eval 预算内不可解，LLM 3 eval 解决） | L2；`libs/learning/learn.zio` |
+| L4 | `libs/learning/memory.zio` 三索引经验库 + 反统一蒸馏 + 环境吸收 + 自修复（vector.zio 语义桥、bandit、玩具 NN 可选） | 调用递减曲线 + 首个蒸馏宏 + DSL 收缩报表 | L3 |
 
 **论文/汇报**：工作坊论文（L3 后）→ 完整论文（L4 后）；内部里程碑
 汇报 ×4 + 外部技术分享。规划见 synthesis-plan 第 5/6/7 节。
@@ -339,7 +337,7 @@ cargo clippy → warning-free target
 L1–L4，也不替代 G1–G3；demo 真实训练不代表服务队列或 agent 产品主线完成。
 
 下表中的 `zio-ai`、`zio-cli`、`lib/zio/*` 和历史 crate/测试命令保留为
-当时及当前源码事实，不批量替换为未实现的 Numa、Rill 或 Loom 包命令。
+当时源码事实（路径已映射到新位置），不批量替换为未实现的 Numa、Rill 或 Loom 包命令。
 
 | 阶段 | 状态 | 已验证能力 | 验证命令 |
 |---|---|---|---|
@@ -348,20 +346,20 @@ L1–L4，也不替代 G1–G3；demo 真实训练不代表服务队列或 agent
 | P1 W02 反馈生命周期 | ✅ | 纯 Zio 反馈政策（字段作用域、人工优先于教师、冲突隔离、abstain 一等、冻结数据视图）+ 宿主侧信号生命周期 | `cargo test -p grove --test feedback_contract`（12） |
 | P1 W03 教师接口 | ✅ | 教师能力声明（模态/软输出词表对齐/许可/数据保留）、提议程序仅作候选、HTTP 适配器与传输限制 | `cargo test -p zio-ai --test teacher_contract --features http`（16） |
 | 本地教师（torch CPU） | ✅ | 真实反向传播（loss 0.696 → 0.0003，val 准确率 1.000），HTTP 服务并经 Rust 教师宿主查询 | `GROVE_TEACHER_WEIGHTS=… cargo test -p grove --test teacher_local` |
-| P2 W04 worker 与隔离 | ✅ | 许可算子图（执行前结构校验）+ NDJSON 控制协议 + `unshare -Urn` 命名空间隔离（网络探测：外部可达/内部阻断）、rlimits、进程组回收、不支持隔离时 fail closed | `cargo test -p grove --test worker_contract`（10）；`python -m unittest discover -s workers/torch/tests -p test_worker.py`（13） |
+| P2 W04 worker 与隔离 | ✅ | 许可算子图（执行前结构校验）+ NDJSON 控制协议 + `unshare -Urn` 命名空间隔离（网络探测：外部可达/内部阻断）、rlimits、进程组回收、不支持隔离时 fail closed | `cargo test -p grove --test worker_contract`（10）；`python -m unittest discover -s apps/grove/workers/torch/tests -p test_worker.py`（13） |
 | P2 W05 联合学习 driver | ✅ | 模型描述即 Zio 数据、结构候选即改写（线性→非线性融合）；W00 任务实测：线性基线 val 准确率 0.531（XOR 卡死），联合候选 1.000，提升 +46.9pp（冻结门槛 +15pp） | `cargo test -p grove --test dual_learning_contract`（9） |
 | P2 W06 检查点/暂停/恢复/分裂 | ✅ | worker 状态制品为非执行 JSON（参数+Adam 矩+CPU RNG，原子写）；宿主校验 schema 与 run 谱系（跨 run 状态拼接拒绝），resume 落新 run 且账本继承，ControlledReplay 需声明确定性宿主，Paused 仅在保存成功后标记，fork 不触父；决定性契约：第 300 步杀进程、新进程续训至 600 步，参数与不中断运行逐字节一致 | `cargo test -p grove --test checkpoint_contract`（10） |
 | P2 W07 历史重评与发布资格 | ✅ | 版本化评价协议；重评只追加不改写，跨协议混排拒绝（宽松协议通过不能发布到严格协议）；超时/崩溃以 0 分留在分母；硬门槛先于发布（均值再高也买不回崩溃的 repeat）；发布是带 expected-version 的指针切换；质量/成本非支配选择；独立验收预算共享、fork 不可翻倍 | `cargo test -p grove --test evaluation_contract`（11） |
 | P2 W08 grove CLI 端到端 | ✅ | `grove` 二进制（新 grove-app crate）：demo/inspect/checkpoint/fork/resume/compare/select/**approve/decline** 全部映射库合同；协议为持久化记录，CLI 加载而非重建（flag 丢门槛无法发布——e2e 抓住的真漏洞）；`demo --case dual` 实测：基线 0.539 → 经真实暂停/续接的非线性候选 0.996（+45.7pp）。**G04 起 demo 不再自行发布**：只产出待审候选并打印确切的 `grove approve` 命令，e2e 随后人工批准；欠拟合候选被点名拒绝 | `cargo test -p grove-app`（6） |
 | P3 W09 多 worker 群体协调 | ✅ | attempt 租约（过期/取消的 attempt 无法覆盖新进度）、提交携带 attempt id + head 期望版本、账单按消息 id 幂等、外部未知结果保持 unknown；分配政策为纯 Zio（基线+领先+多样性配额、共享账本、安全点暂停）；**并行是实测的**：两条 worker 进程窗口重叠 >500ms，A 在检查点被杀后 B 继续且 A 可续接，fork 共用一条账本 | `cargo test -p grove --test population_contract`（8）；`grove demo --case population --workers 2`（重叠 940ms，两支各 0.996） |
-| P3 W10 产品 API 与授权发布 | ✅（历史任务范围） | 可选 HTTP、同源 JSON API、角色校验与 expected-version 发布；非 loopback 无令牌被拒。**G03 起 `serve` 会真正消费队列**：owner loop 领取 `Queued`、在独立进程执行、并持久化每个真实 Progress/Done/Failed（见 `app/src/runner.rs`）；`GET /api/events?run=&after_sequence=` 读持久日志；HTTP 操作回执落 `receipts` 表（重启后重放仍幂等，实测 `kill -9` 后同一 `operation_id` 返回同一 branch）；`resume` 从检查点**实际启动执行**（实测从 step 4 续接、父 run 不被覆盖）。**G04 起发布是 `POST /api/approve`**（令牌即认证，响应带审批 id，无 `approved: true` 字段）。**仍未闭合**：run 仍停在 `evaluating`——G04 交付了评价与人工批准能力，但 owner loop 尚无调用方自动走 `Evaluating → Accepted` | `cargo test -p grove-app --features http --test api_contract --test runner_contract`（14 + 历史 6）；`grove serve` |
+| P3 W10 产品 API 与授权发布 | ✅（历史任务范围） | 可选 HTTP、同源 JSON API、角色校验与 expected-version 发布；非 loopback 无令牌被拒。**G03 起 `serve` 会真正消费队列**：owner loop 领取 `Queued`、在独立进程执行、并持久化每个真实 Progress/Done/Failed（见 `apps/grove/native/app/src/runner.rs`）；`GET /api/events?run=&after_sequence=` 读持久日志；HTTP 操作回执落 `receipts` 表（重启后重放仍幂等，实测 `kill -9` 后同一 `operation_id` 返回同一 branch）；`resume` 从检查点**实际启动执行**（实测从 step 4 续接、父 run 不被覆盖）。**G04 起发布是 `POST /api/approve`**（令牌即认证，响应带审批 id，无 `approved: true` 字段）。**仍未闭合**：run 仍停在 `evaluating`——G04 交付了评价与人工批准能力，但 owner loop 尚无调用方自动走 `Evaluating → Accepted` | `cargo test -p grove-app --features http --test api_contract --test runner_contract`（14 + 历史 6）；`grove serve` |
 | P3 W11 产品界面 | ✅（历史任务范围） | 同源 HTML、快照绑定预测、检查点谱系、模块合同与确认发布；实际推理走 torch worker。当前“已学习”字段实际上报告冻结数据集成员，不证明训练消费；事件不是持久 loss/progress 流；逻辑审查与升级仍 Planned | `cargo test -p grove-app --features http --test ui_contract`（历史 5）；原 UI 流程记录见交付计划 |
 | P3 W12 撤回、保留与恢复 | ✅ | 从"必须存活"的根（活跃发布、分支 head、非终态 run、冻结视图）做可达性分析；保留期是**声明**的（store meta `retention.horizon_ms`），未声明即**一个都不删**；撤回信号沿冻结视图→run→检查点→快照传播并标记不可部署，发布与续接双双被拒而冻结成员不变；制品被删/被改字节返回 `artifact-unavailable`；重启回收过期租约并重取协调者所有权，旧 epoch 回执被拒 | `cargo test -p grove --test lifecycle_contract`（10） |
 | P4 W13 模块组合 | ✅ | 模块声明消费/产出语义空间，组合按空间而非宽度校验（同宽不同义被拒）；共享参数组为一个演化单元；权限闭包取最大值（组合可要求更多不可更少）；组合产生新身份与多父谱系且父快照不变；联合计划强制整体评价。`demo --case modular` 分离演化两个模块、异构组合被拒并给出原因、合成体联合训练至 1.000 并以整体分数发布；非分类器模块报 `n/a` 而非伪造 0.0 | `cargo test -p grove --test composition_contract`（9）；`grove demo --case modular` |
 | P4 W14 三索引经验 | ✅ | 结构/行为/语义三索引建立在**已有**信号与观察记录上，不另建事实库；行为指纹带探针集名，跨探针集不比较；语义向量带编码器与空间版本，版本不符且未显式迁移则拒绝。四项硬拒绝均有测试（语义近邻不并入不同 AST、探针集不混比、不越许可、被撤回来源的能力拒绝加载）；抽象晋升需原任务回归 + 新任务评价 | `cargo test -p grove --test memory_contract`（12）；`cargo test -p zio-cli --test lib_contract`（10）。**复用测量为负并如实记录**：未参与发现的任务上总描述长度 18→22，3 叶规模下抽象不划算 |
-| P4 W15 扩展 recipe | ✅ | 软蒸馏、偏好排序、合法动作集内的演示克隆、自监督、延迟环境反馈、受限离散策略梯度；宿主强制声明（未声明信号、越预算、未知 recipe 均拒绝）。实测：软蒸馏 KL 0.6918→0.1264；偏好 0.5469→0.9531 且弃答不进目标；演示 0.9297，25% 非法动作被 mask 后 0.8932；自监督移动表征而任务指标单列 0.5117 仍不过门槛；延迟奖励 64/64 结算、未结算时参数变化恰为 0.0；策略梯度 −1.0000→0.7500 | `python -m unittest discover -s workers/torch/tests`（72）；`cargo test -p grove --test recipe_contract`（15）。**外部供应商未提供软输出，仅本地教师硬蒸馏已联调** |
+| P4 W15 扩展 recipe | ✅ | 软蒸馏、偏好排序、合法动作集内的演示克隆、自监督、延迟环境反馈、受限离散策略梯度；宿主强制声明（未声明信号、越预算、未知 recipe 均拒绝）。实测：软蒸馏 KL 0.6918→0.1264；偏好 0.5469→0.9531 且弃答不进目标；演示 0.9297，25% 非法动作被 mask 后 0.8932；自监督移动表征而任务指标单列 0.5117 仍不过门槛；延迟奖励 64/64 结算、未结算时参数变化恰为 0.0；策略梯度 −1.0000→0.7500 | `python -m unittest discover -s apps/grove/workers/torch/tests`（72）；`cargo test -p grove --test recipe_contract`（15）。**外部供应商未提供软输出，仅本地教师硬蒸馏已联调** |
 | P4 W16 专家集成 | ✅ | 路由、专家版本、输出空间、组合规则与每调用预算共同构成一个快照身份；异构空间拒绝绑定，无可用专家 abstain，投票平局无胜者，`all-agree` 缺一专家即 abstain，单次调用按全部被调专家计费；群体一致只是带一致度的蒸馏目标，仍须走任务验收 | `cargo test -p grove --test ensemble_contract`（12）；`demo --case modular` 现场对比 vote 与 all-agree |
-| P4 W17 全链路交付 | ✅ | `cargo test --workspace --all-features` 364 通过 / 0 失败；`python -m unittest discover -s workers/torch/tests` 72 通过；dual / population / modular 三个实际场景全部可运行 | 见交付计划第 12 节 |
+| P4 W17 全链路交付 | ✅ | `cargo test --workspace --all-features` 364 通过 / 0 失败；`python -m unittest discover -s apps/grove/workers/torch/tests` 72 通过；dual / population / modular 三个实际场景全部可运行 | 见交付计划第 12 节 |
 
 P1 证明的是工程闭环（真实存储、真实信号生命周期、真实教师调用），
 不含任何业务收益声明。P2 起需要真实张量训练、检查点恢复与多进程证据，
@@ -409,9 +407,9 @@ P1 证明的是工程闭环（真实存储、真实信号生命周期、真实�
 
 旧 `zio-agent` 框架蓝图由 H00/G01/G02 收敛：公共 harness 持有模型与工具
 会话、预算/取消，Zio agent 逻辑实际驱动步骤，Grove 持有学习和版本治理。
-`lib/zio/agent.zio` 的 canned echo 已由真实 `agent-run` 循环替换：它决定重试
+`libs/loom/agent.zio` 的 canned echo 已由真实 `agent-run` 循环替换：它决定重试
 与停止，宿主通过 `harness-complete`/`harness-execute-zio` 提供模型调用与受限
-执行（见 `app/src/agent.rs`、`learning/src/execution.rs`）。G02 已用 `omp acp` +
+执行（见 `apps/grove/native/app/src/agent.rs`、`apps/grove/native/learning/src/execution.rs`）。G02 已用 `omp acp` +
 `minimax-code-cn/Minimax-m3` 完成 live 验收：首轮生成即产出真实计算的程序
 （换输入可证），失败的首轮经诊断后在第二轮修订为 candidate；wire 上没有调用方
 提供的 `system` 角色。

@@ -1,11 +1,14 @@
 # Zio
 
-> A Modern Lisp for the Agent Era.
+> A General-Purpose Lisp.
 
-Zio 是一门面向未来的通用 Lisp 语言，用 Rust 实现。当前 workspace
-包含 `zio-core`、`zio-cli`、`loom`（官方独立 harness 库：结构化模型/工具合同、会话、预算、取消与传输，[ADR-019](docs/adrs.md)；原 `ai/` 已按 H00 迁移）、`grove`（学习宿主）与 `grove-app`。实时生成的测试、语法和内置
-绑定数量见 [项目状态](docs/status.md)；能力成熟度以
-[特性矩阵](docs/feature-matrix.md)为准。
+Zio 是一门用 Rust 引导实现的通用 Lisp 语言。当前采用 language-first 平铺目录：
+语言在 `langs/core/`、`langs/cli/`，Zio 库在 `libs/`，通用 Rust 基础设施在
+`contribs/native/loom/`，语言站点与 Grove 分别在 `apps/site/`、`apps/grove/`。
+本轮完成结构切换，**不是 Grove Rust 业务已整体改写为 Zio**，也不是编译器自举完成。
+目标是领域库与应用业务用 Zio 表达，必要运行时、可信宿主和 transport adapter 保留原生实现。
+当前能力以[特性矩阵](docs/feature-matrix.md)为准，目录合同见
+[系统架构](docs/zio-architecture.md)与[批准计划](docs/superpowers/plans/2026-10-07-language-first-layout.md)。
 
 仓库数量不在 README 中手工维护；运行 `tools/project-status.sh` 可重新生成
 [项目状态](docs/status.md)。
@@ -17,15 +20,15 @@ Zio 是一门以同像性（homoiconicity）为基石的 Lisp 语言。代码即
 
 ```text
 Zio = Lisp 核心（同像性 + eval/apply + 宏）
-    + Rust 宿主（FFI + 嵌入 + 零开销）
-    + 统一运行时对象模型（ZOS：AMOP + MOP）
-    + 规划中的扩展库生态（Datalog · Agent · 自学习）
+    + Rust 宿主（FFI + 嵌入，能力按实际合同验收）
+    + Experimental ZOS 子集（完整 AMOP / MOP 为规划）
+    + Zio 扩展库（Datalog · Agent · 自学习，各自成熟度不同）
 ```
 
-核心原则：**核心最小，其余是库**。扩展库位于 `lib/zio/`，能力成熟度
+核心原则：**核心最小，其余是库**。Zio 扩展库位于 `libs/`，能力成熟度
 各异并以[特性矩阵](docs/feature-matrix.md)为准：persistent 集合与
-Datalog 存储为 Experimental（部分函数待核心支持），Datalog 查询求值、
-Agent 真实编排（LLM 调用 / 工具执行）与自学习模型框架仍为 Planned。
+Datalog 存储为 Experimental，Datalog 查询求值仍为 Planned。
+已有 Zio agent 生成/执行与学习合同见特性矩阵，不等于 Grove 业务整体迁移完成。
 core 内置的并发原语（`future-call` / `chan`）当前是同步占位语义，
 见 [ADR-012](docs/adrs.md)。
 
@@ -35,7 +38,7 @@ core 内置的并发原语（`future-call` / `chan`）当前是同步占位语�
 
 ```bash
 cd zio
-cargo run
+cargo run -p zio-cli
 ```
 
 ```text
@@ -55,32 +58,74 @@ zio> (load "program.zio")
 zio> (require :my.module)
 ```
 
-## 落地页
-
-站点是 Astro 静态构建，产物由 nginx 在域名根路径提供：`/` 即落地页，`/grove`、`/agent` 是真实路由。
+## 安装与发布
 
 ```bash
-cd site
-bun install
-bun run dev        # 本地开发
-bun run build      # 产出 site/dist
+# 从源码构建独立发行版（不依赖 checkout）
+tools/install.sh /tmp/zio          # 调试构建
+ZIO_PROFILE=release tools/install.sh /opt/zio
+
+source /tmp/zio/bin/zio-env.sh    # PATH 与 ZIO_PATH
+/tmp/zio/bin/zio program.zio      # 语言
+/tmp/zio/bin/grove --help         # 产品
 ```
 
-- 页面：`src/pages/index.astro`（落地页 + 真实 WASM REPL）、
-  `src/pages/agent/index.astro`（Agent & LLM）、`content/**/*.mdx`（子页面内容源）。
-  **新增子页面只需在 `site/content/` 放一个 `.mdx` 文件**，无需改组件。
-- 引擎：`site/public/wasm/` 是提交的 WASM 产物。改过 `core/src` 后必须先跑
-  `./tools/build-wasm.sh`（脚本会写入 `site/public/wasm/`），否则页面会静默运行旧引擎。
-- 路径前缀来自 `astro.config.mjs` 的 `base`；wasm 通过 `src/lib/engine.ts` 用
-  `BASE_URL` 拼接，不要写相对路径。`BASE_URL` 在根路径是 `/`、在子路径是 `/site`
-  （无结尾斜杠），两处都先 `.replace(/\/$/, '')` 再显式拼 `/`，不要直接相加。
+`docs/release.md` 记录打标签、GitHub Actions 发布流水线与 crates.io 发布流程。
+`push v*` 标签触发 `.github/workflows/release.yml`：先校验标签与 workspace
+版本一致，再跑完整测试与自举契约，通过后构建五个平台目标、发布四个 crate、
+并附带校验和与 WASM 产物创建 GitHub Release。
+
+## 落地页
+
+`apps/site/` 是语言介绍、文档和 WASM playground，采用 Astro 静态构建；站点中的 Grove 介绍路由不等于独立 `apps/grove/` 产品。
+
+```bash
+cd apps/site
+bun install
+bun run dev        # 本地开发
+bun run build      # 产出 apps/site/dist
+```
+
+- 主要入口：`/intro/`（语言介绍）、`/syntax/`（语法文档）、`/playground/`（可编辑多行源码、真实 WASM 执行）。
+- 文档：`/docs/`、`/book/`、`/blog/` 从仓库 Markdown 构建；Grove 介绍在独立的 `/grove/` 路由，应用源码在 `apps/grove/`。
+- 引擎：`apps/site/public/wasm/` 是提交的 WASM 产物。改过 `langs/core/src/` 或
+  `libs/std/core.zio` 后先跑 `./tools/build-wasm.sh`，再构建站点，避免运行旧引擎。
+- 路径前缀来自 `astro.config.mjs` 的 `base`；WASM 加载沿用 `src/lib/engine.ts` 的
+  `BASE_URL` 拼接，避免相对资源路径随页面层级变化。
 - 镜像：`Dockerfile` 是「bun 构建 → nginx 托管」两阶段，`docker-compose.dokploy.yml`
   用它部署。
 
 ## grove 自学习产品
 
-grove 是一个独立的 crate 组（`learning/` = 宿主库，`app/` = 产品壳），
-**不改变上面的普通 Zio CLI**：`cargo run` 启动的 REPL 不依赖任何学习组件。
+Grove 是 `apps/grove/` 的独立应用。`apps/grove/main.zio` 是实际 Zio 入口，
+由宿主按 keyword 授权预算后显式调用；CLI 分发走 `libs/rill/cli.zio`，
+HTTP 路由在 `apps/grove/api.zio`。
+
+```bash
+# 用语言 CLI 直接运行（开发）
+./target/debug/zio --app apps/grove/main.zio \
+    --app-root apps/grove --app-share . \
+    --app-root-dir /tmp/grove --args --help
+
+# 用安装后的发行版（无 checkout 依赖）
+tools/install.sh /tmp/zio
+GROVE_ROOT=/tmp/grove /tmp/zio/bin/grove --help
+```
+
+产品命令：`demo`（dual/population/modular）、`inspect`、`checkpoint`、`fork`、
+`resume`、`compare`、`select`、`approve`、`decline`、`run`、`serve`。
+
+能力边界由 `tools/install.sh` 生成的 `bin/grove` 启动器显式授予，
+并作为一张 keyword map 交给 Zio 入口；启动器不会从它即将运行的源码里
+读取任何授权信息——否则候选程序指定自己的张量后端会让隔离形同虚设。
+
+### 迁移状态
+
+存储、审批、记录与 HTTP 路由已在 Zio 中实现（`apps/grove/{store,codec,
+contracts,artifacts,feedback,api}.zio`），宿主能力经
+`contribs/native/host` 通用机制提供。历史 Rust crate
+`apps/grove/native/{learning,app}` 仍在，测试覆盖其既有契约，
+待新路径完全替代后删除。
 
 三种运行形态，各自的能力边界是显式的：
 
@@ -90,7 +135,7 @@ cargo test --workspace
 
 # 2. 完整产品（CPU torch 后端）
 python3 -m venv .venv
-.venv/bin/pip install -r workers/torch/requirements.txt
+.venv/bin/pip install -r apps/grove/workers/torch/requirements.txt
 .venv/bin/pip install --index-url https://download.pytorch.org/whl/cpu torch
 cargo build -p grove-app --bin grove --features http
 
@@ -104,7 +149,7 @@ export GROVE_TOKEN_OPERATOR=… GROVE_TOKEN_PUBLISHER=…
 一个令牌对应**一个角色**：reader 不能标注、annotator 不能训练、operator
 不能发布，localhost 也不例外。无令牌的非 loopback 绑定会被直接拒绝。
 
-三个可运行的真实场景：
+历史验收覆盖以下真实场景；这些数字不是本轮目录迁移重新实跑的结果。当前 demo 停在待批准候选，按输出的 `grove approve` 命令人工批准后才能发布：
 
 ```bash
 ./target/debug/grove demo --case dual       --root /tmp/grove-dual      --device cpu
@@ -113,11 +158,11 @@ export GROVE_TOKEN_OPERATOR=… GROVE_TOKEN_PUBLISHER=…
 ```
 
 - **dual**：线性基线 0.539 → 经真实暂停/续接的非线性候选 0.996（+45.7pp），
-  发布的是**真实训练权重**而非占位快照；
+  批准后发布的是**真实训练权重**而非占位快照；
 - **population**：两个真实隔离 worker 进程并行训练（实测窗口重叠 966ms），
   共用一条预算账本，僵尸回执被拒；
 - **modular**：两个模块分离演化 → 异构空间组合被拒 → 合成体联合训练至
-  1.000 并以整体分数发布。
+  1.000 并以整体分数获得待批准资格。
 
 隔离要求 `unshare -Urn --pid --mount --fork` 可用；不可用时 worker **拒绝
 运行**，不降级为无隔离执行。缺少 torch 后端时相关能力明确失败或跳过，
@@ -154,7 +199,7 @@ CLI 运行，并受可执行示例合同测试保护。`datalog-concept.zio` 只
 | # | 定理 | 状态 |
 |---|------|------|
 | 1 | **所有 mutable 状态必须显式** — 无 thread-local 全局变量 | ✅ 已达成 |
-| 2 | **Rust 是合同边界，Lisp 是组合层** — 性能关键路径用 NativeFn | ✅ 已达成 |
+| 2 | **语言先行，库与应用用 Zio 实现** — Rust 承担引导运行时与必要通用原语 | 架构已确定；现有 Grove Rust 业务尚待迁移 |
 | 3 | **宏是用户扩展 eval 的方式** — 没有特殊形式不可用宏替代 | ✅ 已达成 |
 | 4 | **核心最小，其余是库** — 领域能力不进入 Core | ✅ ZOS 规范中 |
 | 5 | **协议比实现重要** — EvalEngine/MOP 是扩展契约 | ✅ 规范中 |

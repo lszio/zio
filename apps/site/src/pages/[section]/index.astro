@@ -1,0 +1,31 @@
+---
+import { getCollection } from 'astro:content';
+import Base from '../../layouts/Base.astro';
+
+export async function getStaticPaths() {
+  return [{ params: { section: 'docs' } }, { params: { section: 'book' } }, { params: { section: 'blog' } }];
+}
+
+const section = Astro.params.section as 'docs' | 'book' | 'blog';
+const titles = { docs: 'Zio 文档', book: 'Zio 语言与实现手册', blog: 'Zio 开发札记' };
+const entries = (await getCollection(section)).sort((a, b) => a.id.localeCompare(b.id));
+const base = import.meta.env.BASE_URL.replace(/\/$/, '');
+---
+<Base title={`${titles[section]} — Zio`} description="从语言介绍和语法开始，阅读仓库中的语言设计、实现手册与开发记录。">
+  <section class="hero hero-page-head">
+    <div class="container">
+      <h1>{titles[section]}</h1>
+      <p>文档直接来自仓库根目录。历史设计与阶段记录不等于当前实现承诺；当前边界见能力矩阵。</p>
+      <div class="hero-cta">
+        <a href={`${base}/intro/`} class="btn btn-primary">语言介绍</a>
+        <a href={`${base}/syntax/`} class="btn btn-secondary">语法入门</a>
+        <a href={`${base}/book/`} class="btn btn-secondary">手册</a>
+        <a href={`${base}/blog/`} class="btn btn-secondary">札记</a>
+        <a href={`${base}/playground/`} class="btn btn-secondary">Playground</a>
+      </div>
+    </div>
+  </section>
+  <article class="section prose container">
+    <ul>{entries.map((entry) => <li><a href={`${base}/${section}/${entry.id}/`}>{entry.body?.match(/^#\s+(.+)$/m)?.[1] ?? entry.id}</a></li>)}</ul>
+  </article>
+</Base>

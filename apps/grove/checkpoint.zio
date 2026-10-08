@@ -1,0 +1,70 @@
+;; Validation always precedes artifact durability, which precedes the ledger row.
+(defn checkpoint--manifest [body expected-run level]
+  (let [state (codec--normalize (json-parse (host/bytes-utf8 body)))]
+    (grove--require (= (get state :protocol) "grove.worker.state/1") "incompatible-state" "unknown worker state protocol")
+    (grove--require (grove--contains [1 2] (get state :schema)) "incompatible-state" "unknown worker state schema")
+    (grove--require (= expected-run (get state :run_id)) "incompatible-state" "checkpoint belongs to another run")
+    (if level
+      (do
+        (grove--require (= 2 (get state :schema)) "incompatible-state" "schema 1 is history-only: no declared optimizer trainable set")
+        (grove--require (not (empty? (get state :params))) "incompatible-state" "checkpoint contains no parameters")
+        (if (= level "model-initialization") nil
+          (let* [optimizer (get state :optimizer {})
+                 adam (get optimizer :adam {})
+                 names (keys adam)]
+            (grove--require (not (empty? names)) "incompatible-state" "continuation requires Adam parameter membership")
+            (grove--require (not (empty? (filter (fn [name] (str-ends-with? (str name) ".bias")) names))) "incompatible-state" "continuation requires bias optimizer state")
+            (grove--require (not (nil? (get state :rng))) "incompatible-state" "continuation requires RNG state")))) nil)
+    state))
+
+(defn checkpoint--commit [store run-id parent level body]
+  (grove--authorize store "operator")
+  (let* [run (grove--get store "Run" run-id)
+         state (checkpoint--manifest body run-id level)
+         object (artifact--put store body)
+         checkpoint {:schema 1 :id (str "ckpt-" run-id "-" (get state :step))
+           :owner (get (get store :principal) :id) :run_id run-id
+           :snapshot (get run :base_snapshot) :parent parent :resume_level level
+           :state_artifact (grove--artifact-ref object)
+           :budget_spent_steps (get run :steps_consumed) :created_at_ms (host/clock-ms)}]
+    (grove--require (= (get state :step) (get run :steps_consumed)) "incompatible-state" "checkpoint step does not match the observed budget ledger")
+    (grove--put store "Checkpoint" checkpoint)
+    checkpoint))
+
+(defn checkpoint--pause [store run-id body]
+  (store--transaction store (fn []
+    (let* [run (grove--get store "Run" run-id)
+           cp (checkpoint--commit store run-id nil "learning-continuation" body)]
+      (runner--transition! (get run :state) "paused")
+      (runner--write-run store (assoc run :state "paused"))
+      (store--execute store "UPDATE attempts SET active=0 WHERE run=?1" [run-id])
+      (store--execute store "DELETE FROM grove_reservations WHERE attempt IN (SELECT id FROM attempts WHERE run=?1)" [run-id])
+      cp))))
+
+(defn checkpoint--fork [store checkpoint-id branch-id policy quota]
+  (grove--authorize store "operator")
+  (grove--require (>= quota 0) "invalid-input" "branch quota must not be negative")
+  (let* [cp (grove--get store "Checkpoint" checkpoint-id)
+         branch {:schema 1 :id branch-id :owner (get (get store :principal) :id)
+                 :head (get cp :id) :head_version 0 :policy policy :budget_quota quota}]
+    (artifact--get store (grove--ref-hex (get cp :state_artifact)))
+    (grove--put store "Branch" branch)
+    branch))
+
+(defn checkpoint--resume [store checkpoint-id level deterministic new-run budget training]
+  (grove--authorize store "operator")
+  (grove--require (grove--contains ["model-initialization" "learning-continuation" "controlled-replay"] level) "invalid-input" "unknown resume level")
+  (grove--require (map? training) "invalid-input" "resume requires a training request")
+  (if (= level "controlled-replay")
+    (grove--require deterministic "incompatible-state" "controlled replay requires a deterministic host") nil)
+  (let* [cp (grove--get store "Checkpoint" checkpoint-id)
+         parent (grove--get store "Run" (get cp :run_id))
+         bytes (artifact--get store (grove--ref-hex (get cp :state_artifact)))
+         state (checkpoint--manifest bytes (get cp :run_id) level)
+         inherited (if (= level "learning-continuation") (get cp :budget_spent_steps) 0)
+         run (assoc parent :id new-run :state "queued" :steps_consumed inherited :steps_budget budget :resumed_from (get parent :id))
+         work (assoc training :resume (grove--ref-hex (get cp :state_artifact)) :resume_level level :resume_run (get cp :run_id))]
+    (store--require-resumable store (get cp :snapshot))
+    (grove--require (<= inherited budget) "budget-exhausted" "checkpoint lineage already exceeded the new grant")
+    (runner--enqueue store run "training" work)
+    {:run run :checkpoint_id checkpoint-id :state_step (get state :step)}))

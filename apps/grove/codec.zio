@@ -1,0 +1,103 @@
+;; Field order below is the historical serde struct order, not key sorting.
+(def codec--fields {
+  "Error" ["kind" "context"]
+  "Actor" ["id" "role"]
+  "ArtifactRef" ["digest"]
+  "ParamRef" ["module" "shape" "dtype" "artifact"]
+  "ModuleSpec" ["name" "input_space" "output_space" "layers" "depends_on" "shared_group" "frozen" "requires"]
+  "ExpertSpec" ["name" "module" "snapshot" "output_space" "weight"]
+  "EnsembleSpec" ["router_input_space" "output_space" "rule" "experts" "budget_per_call"]
+  "ModelSnapshot" ["schema" "owner" "entrypoint" "params" "libraries" "preprocessing_version" "modules" "ensemble" "graph"]
+  "ContentBlock" ["media_type" "artifact"]
+  "Observation" ["schema" "id" "owner" "task_id" "session_id" "source" "occurred_at_ms" "blocks" "modality_mask" "training_permitted"]
+  "Prediction" ["schema" "id" "owner" "observation_id" "snapshot_digest" "snapshot_schema" "output" "abstained" "created_at_ms"]
+  "LearningSignal" ["schema" "id" "idempotency_key" "producer" "kind" "task_id" "observation_id" "prediction_id" "target_field" "content" "usage_permitted" "occurred_at_ms" "received_at_ms" "revises"]
+  "DatasetRevision" ["schema" "id" "task_id" "policy_version" "signal_ids" "observation_ids" "split" "frozen_at_ms"]
+  "Recipe" ["schema" "id" "task_id" "consumes" "trainable_modules" "budget_steps"]
+  "Run" ["schema" "id" "task_id" "base_snapshot" "dataset_revision" "recipe" "state" "steps_consumed" "steps_budget" "resumed_from"]
+  "Checkpoint" ["schema" "id" "owner" "run_id" "snapshot" "parent" "resume_level" "state_artifact" "budget_spent_steps" "created_at_ms"]
+  "Branch" ["schema" "id" "owner" "head" "head_version" "policy" "budget_quota"]
+  "Population" ["schema" "id" "owner" "members" "total_budget_steps" "spent_steps" "policy"]
+  "EvaluationRecord" ["schema" "id" "snapshot" "protocol_id" "dataset_revision" "metrics" "repeat_index" "device" "completed_at_ms"]
+  "GovernanceMap" ["schema" "regions"]
+  "LogicCandidate" ["schema" "id" "parent_logic_ref" "module_path" "source_ref" "declared_dependencies" "diff_ref" "evidence_refs" "created_at_ms"]
+  "ScopeVerdict" ["changed" "refusals" "new_dependencies"]
+  "HumanApproval" ["schema" "id" "authenticated_actor" "subject_id" "candidate_ref" "evaluation_refs" "expected_publication_version" "decision" "created_at_ms"]
+  "CandidateVerdict" ["candidate_id" "state" "evaluation_refs" "gate_failures"]
+  "ActiveLogic" ["version" "snapshot" "candidate_id"]
+  "EvaluationProtocol" ["schema" "id" "task_id" "dataset_revision" "seeds" "gates" "timeout_counts_as_failure" "device"]
+  "Comparison" ["snapshot" "repeats" "mean" "meets_gates" "gate_failures"]
+  "EventSource" ["source_id" "name" "line" "col"]
+  "ExecutionEvent" ["schema" "sequence" "run_id" "attempt_id" "kind" "detail" "source" "at_ms"]
+  "EventSourceStub" ["source_id" "name" "line" "col"]
+  "EventLog" ["run_id"]
+})
+
+(load "contracts.zio")
+(defn codec--join [parts separator]
+  (loop [i 0 out ""]
+    (if (= i (count parts)) out
+      (recur (+ i 1) (str out (if (= i 0) "" separator) (get parts i))))))
+(def codec--nested {"params" "ParamRef" "modules" "ModuleSpec" "experts" "ExpertSpec" "blocks" "ContentBlock"})
+(def codec--refs ["artifact" "snapshot" "snapshot_digest" "base_snapshot" "state_artifact" "parent_logic_ref" "source_ref" "diff_ref" "candidate_ref" "evaluation" "evidence"])
+(defn codec--field [field value]
+  (if (nil? value) "null"
+    (if (grove--contains codec--refs field)
+      (codec--text "ArtifactRef" (grove--artifact-ref value))
+      (if (grove--contains ["evidence_refs" "evaluation_refs"] field)
+        (str "[" (codec--join (map (fn [v] (codec--text "ArtifactRef" (grove--artifact-ref v))) value) ",") "]")
+        (if (get codec--nested field nil)
+          (str "[" (codec--join (map (fn [v] (codec--text (get codec--nested field) v)) value) ",") "]")
+          (if (= field "ensemble") (codec--text "EnsembleSpec" value)
+            (if (= field "source")
+              (if (map? value) (codec--text "EventSourceStub" value) (json-stringify value))
+              (json-stringify value))))))))
+(defn codec--text [kind record]
+  (let [fields (get codec--fields kind nil)]
+    (grove--require (not (nil? fields)) "invalid-input" (str "unknown record kind " kind))
+    (str "{" (codec--join (map (fn [field]
+      (str (json-stringify field) ":" (codec--field field (grove--get-key record (keyword field) nil)))) fields) ",") "}")))
+(defn codec--encode [kind record]
+  (if (grove--get-key record :schema nil) (grove--schema! (grove--get-key record :schema nil)) nil)
+  (host/bytes (codec--text kind record)))
+(defn codec--bytes [kind record] (host/bytes (codec--text kind record)))
+(defn codec--text-of [kind record] (codec--text kind record))
+(defn codec--decode-bytes [bytes schema]
+  (grove--decode-bytes bytes schema))
+(defn codec--normalize [value]
+  (if (map? value)
+    (reduce (fn [out key] (put out (if (string? key) (keyword key) key) (codec--normalize (get value key)))) {} (keys value))
+    (if (vector? value) (map codec--normalize value) value)))
+(defn codec--decode [body schema]
+  (grove--schema! schema)
+  (let [record (codec--normalize (json-parse body))]
+    (if (grove--get-key record :schema nil) (grove--schema! (grove--get-key record :schema nil)) nil)
+    record))
+(defn codec--decode-bytes [bytes schema]
+  (grove--schema! schema)
+  (let [record (codec--normalize (host/json-read bytes))]
+    (if (grove--get-key record :schema nil) (grove--schema! (grove--get-key record :schema nil)) nil)
+    record))
+
+;; Sort a vector of [k v] pairs by k ascending. Used by compare() so two
+;; snapshots that differ only in the order of metric pairs hash to the
+;; same comparison. Matches the Rust BTreeMap aggregation.
+(defn codec--sort-pairs [pairs]
+  (reduce (fn [out pair]
+    (let* [key (get pair 0) value (get pair 1)
+           i (loop [j 0] (if (= j (count out)) j
+                         (let [existing (get out j)]
+                           (cond
+                             (< (get existing 0) key) (recur (+ j 1))
+                             (= (get existing 0) key) j
+                             true j))))]
+      (if (and (< i (count out)) (= (get (get out i) 0) key))
+        (assoc out i [key value])
+        (into (slice out 0 i) (conj (slice out i (count out)) [key value]))))) [] pairs))
+
+;; Parse an enum that arrived as a kebab-case string. Strings only.
+(defn codec--enum-str [value allowed]
+  (grove--require (string? value) "invalid-input" "enum value must be a string")
+  (grove--require (grove--contains allowed value) "invalid-input" (str "enum value " value " is not one of " (str-join allowed ",")))
+  value)
+

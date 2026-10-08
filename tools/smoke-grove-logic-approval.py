@@ -91,7 +91,7 @@ def main():
         # ── A. governance refusals ────────────────────────────────
         protected = call("POST", "/api/logic/propose", operator, {
             "id": "smoke-protected",
-            "module_path": "learning/src/evaluation.rs",
+            "module_path": "apps/grove/native/learning/src/evaluation.rs",
             "source": "(defn agent-run [t n] {:status \"candidate\"})\n",
             "diff": "try to rewrite the evaluator",
         })
@@ -100,12 +100,12 @@ def main():
         print("A1. a proposal naming a protected region is refused:",
               protected[1]["detail"][:88])
 
-        source = ("(defn agent-run [task max-turns]\n"
-                  "  (if (> max-turns 0) {:status \"candidate\"} {:status \"exhausted\"}))\n\n"
+        source = ("(defn agent-entry [task budget]\n"
+                  "  (if (> (get budget :max_turns 0) 0) {:status \"candidate\"} {:status \"exhausted\"}))\n\n"
                   "(defn validate-entry [s] (= \"agent-entry\" s))\n")
         proposed = call("POST", "/api/logic/propose", operator, {
             "id": "smoke-candidate",
-            "module_path": "lib/zio/agent.zio",
+            "module_path": "apps/grove/main.zio",
             "source": source,
             "diff": "+validate-entry\n",
         })
