@@ -124,7 +124,7 @@ jobs:
       # binary from the compiler. Without it the step fails with a
       # "command not found" that says nothing about the toolchain.
       - name: Install wasm-bindgen
-        run: cargo install wasm-bindgen-cli --version 0.2 --locked
+        run: cargo install wasm-bindgen-cli --version 0.2.126 --locked
 
       - name: Build the browser engine
         run: ./tools/build-wasm.sh
