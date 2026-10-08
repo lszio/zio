@@ -97,6 +97,8 @@ bun run build      # 产出 apps/site/dist
 
 ## grove 自学习产品
 
+运行与预览环境见 [docs/deployment.md](docs/deployment.md)。
+
 Grove 是 `apps/grove/` 的独立应用。`apps/grove/main.zio` 是实际 Zio 入口，
 由宿主按 keyword 授权预算后显式调用；CLI 分发走 `libs/rill/cli.zio`，
 HTTP 路由在 `apps/grove/api.zio`。

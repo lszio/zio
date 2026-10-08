@@ -1,6 +1,6 @@
 # Zio 站点与 Grove 统一运行、dev 和 MR 预览设计
 
-**状态：** 用户已选择“一个 Dokploy Compose 栈、两个服务”；本文档等待用户审阅。本文是设计，不代表功能已实现或获准部署生产。
+**状态：** 用户已选择“一个 Dokploy Compose 栈、两个服务”，并于 2026-10-09 批准本设计；实现计划 `docs/superpowers/plans/2026-10-08-unified-zio-grove-deployment.md`（任务 1–10）已执行完毕。部署现状见 [docs/deployment.md](../deployment.md)。
 
 ## 1. 目标与边界
 
