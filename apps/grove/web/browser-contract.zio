@@ -9,6 +9,10 @@
 
 (defn browser-check [ok message]
   (if ok true (error (str "CONTRACT FAIL: " message))))
+;; The contract runs as a plain script, so it uses `slurp` — the script-level
+;; reader — rather than a host capability the script context deliberately lacks.
+(defn grove--read-web-file [name]
+  (slurp (str "web/" name)))
 (defn commands-with-http-path [result path]
   (> (count (filter (fn [c] (= (get c :path nil) path)) (get result :commands))) 0))
 (defn has-op [result op]
@@ -18,6 +22,20 @@
     (if (= (get c :op) "replace")
       (into a (mapcat (fn [child] (flatten-commands {:commands [child]})) (get c :children)))
       (conj a c))) [] (get result :commands)))
+
+;; The control plane is served under /grove/app/ by the site's proxy: a
+;; relative stylesheet resolves there, while the module script must carry the
+;; prefix explicitly because the document, not the module graph, resolves src.
+(let [index (grove--read-web-file "index.html")]
+  (browser-check (str-contains? index "href=\"styles.css\"")
+    "stylesheet must stay relative to resolve under /grove/app/")
+  (browser-check (str-contains? index "src=\"/grove/app/bridge.js\"")
+    "bridge module must use the /grove/app/ prefix"))
+(let [bridge (grove--read-web-file "bridge.js")]
+  (browser-check (str-contains? bridge "'/wasm/zio_core.js'")
+    "WASM loader must be fetched from the site at /wasm/")
+  (browser-check (str-contains? bridge "wasmInit('/wasm/zio_core_bg.wasm')")
+    "WASM binary must be fetched from the site at /wasm/"))
 
 (let [boot (grove--browser-step {} {:kind "boot" :fields {}})]
   (browser-check (and (= (get (first (get boot :commands)) :target) "#runtime-status")

@@ -11,6 +11,8 @@ import GroveDemos from '../../src/components/GroveDemos.astro';
 
 `Grove` 的目标是 **基于 Zio 的独立 APP**：第一产品主线是可执行 Zio Agent 逻辑、真实 LLM 生成代码、可见执行证据和受控修订，不以学习宿主库或产品壳作为产品边界。这个 Zio 应用目标尚未完成，不能把当前 Rust 应用称为已经由 Zio 实现。
 
+运行中的控制面在 [`/grove/app/`](/grove/app/)：同一个 origin 上的 Zio/WASM 控制器、队列执行、检查点与人工批准都在那里完成。
+
 当前 `apps/grove/main.zio` 是实际 Zio 应用入口，通过有根的 `require` 组合 `libs/loom/agent.zio` 通用循环，并读取宿主的 `:max_turns` 授权；库不再定义 Grove 的入口或默认轮数。存储、调度、评价、CLI/HTTP 等 Rust 业务仍在 `apps/grove/native/learning`（crate `grove`）与 `apps/grove/native/app`（crate `grove-app`，二进制 `grove`）；`apps/grove/workers/torch` 提供 CPU 后端。通用 Rust 模型适配在 `contribs/native/loom`（crate `loom`），不是 Zio 库的替代实现。Grove 尚未整体迁为 Zio，Rill 尚未实现。
 
 候选筛选已进一步迁到 `apps/grove/selection.zio`：由 Zio 决定 accuracy 指标与质量／成本比较，先排除未通过硬门槛的候选；CLI 和 HTTP 共用 native 数据适配器，不再保留 Rust 筛选算法。策略构建时嵌入，尚不能热替换；当前成本仍统一为 1，同质同价互相排除的旧比较口径不变。筛选只是建议，评估记录与人工发布守卫仍在 native。
