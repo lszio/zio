@@ -1052,6 +1052,44 @@
 ;; ─── Receipt replay: the same operation id under the same
 ;;     principal/route/payload always returns the same answer. ───
 
+(defn store--receipt [store operation route payload]
+  ;; The lookup half, for a handler that is about to do the work: nil
+  ;; means "not seen yet", and the caller proceeds. The principal comes
+  ;; from the request-bound handle, so a receipt recorded by one token
+  ;; is not replayed to another.
+  (store--receipt-lookup store operation (grove--principal-id store) route payload))
+
+(defn store--receipt-put [store operation route payload status response]
+  ;; The record half. `INSERT`, never `INSERT OR REPLACE`: an id that
+  ;; already exists is a replay, and the second writer must be *told* so
+  ;; rather than silently overwriting the first answer. Same answer twice
+  ;; is idempotent; a different answer under the same id, or a lost race
+  ;; for it, is a conflict. The Rust oracle is `put_receipt`
+  ;; (apps/grove/native/learning/src/store.rs:1451).
+  (do (grove--authorize store "operator")
+      (let [principal (grove--principal-id store)
+        existing (store--receipt-lookup store operation principal route payload)
+        claimed (if (nil? existing)
+                  ;; A unique violation means another writer claimed the
+                  ;; id between this read and this write; its answer
+                  ;; stands and this caller gets told.
+                  (try (store--receipt-store store operation principal route payload status response)
+                       (catch any
+                         (grove--require (not (nil? (store--receipt-lookup store operation principal route payload)))
+                           "conflict"
+                           (str "operation " operation " was claimed by another writer"))
+                         nil))
+                  nil)
+        answer (if (nil? claimed) (store--receipt-lookup store operation principal route payload) claimed)]
+    ;; The recorded body comes back through json-parse, so both sides are
+    ;; normalized before the comparison: comparing a round-tripped map to
+    ;; the caller's keyword-keyed map would call every replay a conflict.
+    (grove--require (and (= (get answer :status nil) status)
+                         (= (codec--normalize (get answer :body nil)) (codec--normalize response)))
+      "conflict"
+      (str "operation " operation " already produced a different answer; one id cannot mean two things"))
+    answer)))
+
 (defn store--receipt-lookup [store operation principal route payload]
   (let [rows (store--query store
     "SELECT r.status,r.body,b.principal,b.route,b.payload_digest FROM receipts r LEFT JOIN receipt_bindings b ON r.operation_id=b.operation_id WHERE r.operation_id=?1"
@@ -1063,16 +1101,17 @@
                  (= (get row :route nil) route)
                  (= (get row :payload_digest nil) payload-digest))
           {:status (get row :status nil) :body (json-parse (get row :body nil))}
-          (grove--raise "conflict" "operation replay differs in principal, route or payload"))))))
+          (grove--fail "conflict" "operation replay differs in principal, route or payload"))))))
 
 (defn store--receipt-store [store operation principal route payload status response]
-  (store--transaction store (fn []
-    (let [payload-digest (host/sha256 (host/json-bytes payload))]
-      (store--execute store
-        "INSERT OR IGNORE INTO receipts(operation_id,status,body,created_at_ms) VALUES(?1,?2,?3,?4)"
-        [operation status (json-stringify response) (host/clock-ms)])
-      (store--execute store
-        "INSERT OR IGNORE INTO receipt_bindings(operation_id,principal,route,payload_digest) VALUES(?1,?2,?3,?4)"
-        [operation principal route payload-digest])))
-  {:status status :body response}))
+  (do
+    (store--transaction store (fn []
+      (let [payload-digest (host/sha256 (host/json-bytes payload))]
+        (store--execute store
+          "INSERT OR IGNORE INTO receipts(operation_id,status,body,created_at_ms) VALUES(?1,?2,?3,?4)"
+          [operation status (json-stringify response) (host/clock-ms)])
+        (store--execute store
+          "INSERT OR IGNORE INTO receipt_bindings(operation_id,principal,route,payload_digest) VALUES(?1,?2,?3,?4)"
+          [operation principal route payload-digest]))))
+    {:status status :body response}))
 

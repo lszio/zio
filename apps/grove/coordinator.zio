@@ -18,8 +18,10 @@
 
 (defn coordinator--claim-owner [store]
   (store--transaction store (fn []
+    ;; The epoch is the ownership token; the host exposes no process id,
+    ;; and `api--handle-health` defaults the pid to 0.
     (let* [previous (coordinator--owner store)
-           owner {:epoch (+ 1 (grove--get-key previous :epoch 0)) :pid (host/process-id)}]
+           owner {:epoch (+ 1 (grove--get-key previous :epoch 0)) :pid 0}]
       (store--execute store "UPDATE attempts SET active=0 WHERE active=1" [])
       (store--execute store "DELETE FROM grove_reservations" [])
       (store--execute store "INSERT INTO meta(key,value) VALUES('coordinator.owner',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value" [(json-stringify owner)])

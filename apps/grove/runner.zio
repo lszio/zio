@@ -1,4 +1,7 @@
 ;; One owner loop, one database, independent bounded worker processes.
+(load "events.zio")
+(load "training.zio")
+(require :libs.learning.runner :refer [learn--runner-read-gvd1])
 (defn grove--raise [class detail] (grove--fail class detail))
 (def runner--edges {"queued" ["running" "cancelled" "failed"]
                    "running" ["evaluating" "paused" "failed" "cancelled"]
@@ -9,7 +12,9 @@
   (store--execute store "UPDATE runs SET state=?1,body=?2 WHERE id=?3" [(get run :state) (codec--text "Run" run) (get run :id)])
   run)
 (defn runner--event [store claim kind detail]
-  (events--append store [{:schema 1 :sequence 0 :run_id (get claim :run_id) :attempt_id (get claim :attempt_id "") :kind kind :detail detail :source nil :at_ms (host/clock-ms)}]))
+  ;; `events--append` allocates the per-run sequence; the store refuses a
+  ;; detail over its cap and inserts append-only.
+  (events--append store {:schema 1 :run_id (get claim :run_id) :attempt_id (get claim :attempt_id "") :kind kind :detail detail :source nil :at_ms (host/clock-ms)}))
 (defn runner--enqueue [store run kind work]
   (grove--authorize store "operator")
   (grove--require (= "queued" (get run :state)) "invalid-input" "only queued work can be submitted")
@@ -19,7 +24,7 @@
     (grove--require (> (grove--get-key work :steps 0) 0) "invalid-input" "training needs a positive step count")
     (grove--require (string? (grove--get-key work :source nil)) "invalid-input" "queued Zio needs source"))
   (store--transaction store (fn []
-    (grove--put store "Run" run)
+    (store--put-run store run)
     (store--execute store "INSERT INTO queued_work(run,kind,payload,schema) VALUES(?1,?2,?3,1)" [(get run :id) kind (json-stringify work)])
     (store--execute store "INSERT INTO grove_queue_identity(run,owner) VALUES(?1,?2)" [(get run :id) (get (get store :principal) :id)])
     run)))
@@ -90,13 +95,20 @@
 (defn runner--error-detail [message]
   ;; `error` formats a string argument with Debug, so a message that
   ;; already carries quotes arrives quoted. Strip one outer pair rather
-  ;; than reporting the class as `"budget-exhausted`.
-  (let [parts (str-split "" message)]
-    (if (> (count parts) 1)
-      (let [head (first parts) tail (last parts)]
-        (if (and (str-starts-with? head "\"") (str-starts-with? tail "\""))
-          (str-join "" (rest (reverse (rest (str-split "" tail)))))
-          message))
+  ;; than reporting the class as `"budget-exhausted`. `str-split ""`
+  ;; yields empty leading and trailing elements, so the opening quote is
+  ;; at index 1 and the closing one second-to-last.
+  (let* [parts (str-split "" message)
+         n (count parts)
+         quote (get (str-split "" "\"") 1 "")
+         wrapped (and (> n 3)
+                      (= (get parts 1 "") quote)
+                      (= (get parts (- n 2) "") quote)
+                      (= (get parts (- n 1) "") ""))]
+    (if wrapped
+      (loop [i 2 out ""]
+        (if (>= i (- n 2)) out
+          (recur (+ i 1) (str out (get parts i)))))
       message)))
 
 (defn runner--queued-head [store]
@@ -121,11 +133,16 @@
              nil)
            nil))))
 
-(defn runner--input-path [runner raw]
-  (grove--require (string? raw) "invalid-input" "input must name a permitted file")
-  (host/fs-resolve (get (get runner :config) :input-root (get (get runner :store) :root)) raw))
 (defn runner--read-input [runner raw]
-  (host/fs-read (runner--input-path runner raw)))
+  ;; `host/read-bytes` is the granted filesystem primitive and it resolves
+  ;; relative paths against the granted roots, so the input root is a
+  ;; capability boundary, not a string prefix this code has to enforce.
+  (grove--require (string? raw) "invalid-input" "input must name a permitted file")
+  (host/read-bytes raw))
+
+(defn runner--trained-path [runner claim]
+  (str (get (get (get runner :config) :worker-config) :scratch "")
+       "/" (get claim :run_id) "/trained.json"))
 
 (defn runner--prepare [runner claim]
   (let* [store (get runner :store) config (get runner :config) work (get claim :work)
@@ -133,9 +150,9 @@
     (if (= (get claim :kind) "zio")
       (assoc claim :config config :budget (get claim :reserved_steps))
       (let* [rows (if (get work :rows nil) (get work :rows)
-                    (learn--decode-gvd1 (runner--read-input runner (get work :data))))
+                    (learn--runner-read-gvd1 (get work :data "")))
              validation (if (get work :val_rows nil) (get work :val_rows)
-                          (if (get work :val_data nil) (learn--decode-gvd1 (runner--read-input runner (get work :val_data))) []))
+                          (if (get work :val_data nil) (learn--runner-read-gvd1 (get work :val_data "")) []))
              weights (if (get work :params nil) {:params (get work :params)}
                        (if (get work :weights nil) (codec--normalize (json-parse (host/bytes-utf8 (runner--read-input runner (get work :weights))))) {}))
              resume (if (get work :resume nil) (codec--normalize (json-parse (host/bytes-utf8 (artifact--get store (get work :resume))))) nil)
@@ -203,14 +220,27 @@
           (if (get f :paused false) (runner--finish runner worker "paused" (get cp :id)) worker))
         (if (= type "done")
           (do
+            ;; The worker ends with the path of the weights it wrote plus
+            ;; loss/accuracy fields, not a model value and a metrics map.
             (if (= (get claim :kind) "training")
-              (let [digest (inference--commit-trained store (get claim :run_id) (get f :model) (get (get claim :work) :graph) (get f :metrics {}))]
+              (let* [result (codec--normalize (json-parse (training--commit-snapshot
+                               store (get claim :run_id)
+                               (host/read-bytes (runner--trained-path runner claim))
+                               (get (get claim :work) :graph {})
+                               {:final_loss (get f :loss nil)
+                                :first_loss (get f :first_loss nil)
+                                :val_accuracy (get f :val_accuracy nil)})))
+                     digest (get result :snapshot nil)]
                 (store--execute store "UPDATE grove_progress SET result=?1 WHERE attempt=?2" [digest (get claim :attempt_id)])
-                (store--record-consumption store digest (get f :consumed [])))
+                (runner--event store claim "trained" (json-stringify (get result :metrics {}))))
               (do
                 (coordinator--bill store claim (str (get claim :attempt_id) "-execution") (get f :steps 0))
                 (runner--event store claim "execution" (json-stringify (get f :execution {})))))
-            (runner--finish runner worker "evaluating" (json-stringify (get f :metrics {}))))
+            ;; The run stops at `evaluating`: publication is a separate,
+            ;; human-gated API call, so the owner must not advance the run
+            ;; past evaluation on the worker's say-so.
+            (runner--finish runner worker "evaluating"
+              (json-stringify {:final_loss (get f :loss nil) :val_accuracy (get f :val_accuracy nil)})))
           (if (= type "failed") (runner--finish runner worker "failed" (get f :error "worker failed"))
             (grove--raise "protocol-violation" (str "unexpected worker frame " type))))))))
 
@@ -253,5 +283,5 @@
 (defn runner--drain [runner]
   (loop [owner (runner--tick runner)]
     (if (empty? (get owner :workers)) owner
-      (do (host/poll (map (fn [w] (get w :process)) (get owner :workers)) 20)
+      (do (host/sleep-ms 20)
           (recur (runner--tick owner))))))

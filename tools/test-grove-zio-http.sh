@@ -121,6 +121,33 @@ fetch -X POST "http://$bind/api/learning/queue" \
   --data '{"run_id":"run-1","task_id":"task-1","steps_budget":1,"steps":1,"kind":"training","work":{"steps":1,"graph":{}}}'
 [[ "$http_status" == 201 ]] || fail "queue POST: expected HTTP 201; got HTTP $http_status: $http_body"
 
+# Authority comes from the token that made the request, not from the
+# operator handle the service holds: under a writer handle a reader token
+# would otherwise be an operator.
+expect "reader cannot enqueue" 403 '"class":"capability-denied"' -X POST \
+  -H 'Authorization: Bearer reader-test' -H 'Content-Type: application/json' \
+  --data '{"run_id":"run-reader","task_id":"task-1","steps_budget":1,"operation_id":"op-reader-queue"}' \
+  "http://$bind/api/learning/queue"
+
+# An operation id means one thing. The identical replay returns the first
+# answer verbatim; a replay that differs under the same id is refused
+# rather than quietly producing a second answer.
+replay_body='{"run_id":"run-2","task_id":"task-1","steps_budget":1,"kind":"training","work":{"steps":1,"graph":{}},"operation_id":"op-replay-queue"}'
+fetch -X POST "http://$bind/api/learning/queue" \
+  -H 'Authorization: Bearer operator-test' -H 'Content-Type: application/json' --data "$replay_body"
+first_status="$http_status"
+first_body="$http_body"
+[[ "$first_status" == 201 ]] || fail "replay queue POST: expected HTTP 201; got HTTP $first_status: $first_body"
+fetch -X POST "http://$bind/api/learning/queue" \
+  -H 'Authorization: Bearer operator-test' -H 'Content-Type: application/json' --data "$replay_body"
+[[ "$http_status" == "$first_status" && "$http_body" == "$first_body" ]] \
+  || fail "identical replay changed the answer: first HTTP $first_status $first_body, replay HTTP $http_status $http_body"
+fetch -X POST "http://$bind/api/learning/queue" \
+  -H 'Authorization: Bearer operator-test' -H 'Content-Type: application/json' \
+  --data '{"run_id":"run-2-other","task_id":"task-1","steps_budget":9,"kind":"training","work":{"steps":1,"graph":{}},"operation_id":"op-replay-queue"}'
+[[ "$http_status" == 409 && "$http_body" == *'"class":"conflict"'* ]] \
+  || fail "conflicting replay under one operation id: expected HTTP 409 conflict; got HTTP $http_status: $http_body"
+
 # Give the owner loop real time to claim, start and settle the run.
 state=""
 for _ in {1..60}; do
@@ -152,5 +179,13 @@ done
 
 # The drain must not wedge the service: health still answers.
 expect "server healthy after a drained run" 200 '"status":"ok"' "http://$bind/api/health"
+
+# The owner writes the run's execution events with a per-run sequence of
+# its own; a settled run must leave a readable trail.
+expect "run events recorded by the owner" 200 '"events"' -H 'Authorization: Bearer reader-test' \
+  "http://$bind/api/events?run_id=run-1&limit=100"
+fetch "http://$bind/api/events?run_id=run-1&limit=100" -H 'Authorization: Bearer reader-test'
+[[ "$http_body" == *'"sequence":'* ]] \
+  || fail "owner recorded no sequenced event for run-1: $http_body"
 
 printf 'PASS Grove Zio HTTP health, auth, query, routing and request lifecycle\n'

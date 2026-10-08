@@ -47,6 +47,27 @@
 (defn api--accepted [request body] (api--reply request "accepted" body))
 (defn api--no-content [request] (host/http-reply (get request :listener) (get request :id) {:status 204 :headers {} :body ""}))
 
+(def api--refusals ["unauthorized" "bad-request" "not_found" "method-not-allowed"
+                    "invalid-input" "capability-denied" "conflict" "incompatible-state"
+                    "budget-exhausted" "artifact-unavailable" "timeout" "cancelled"
+                    "backend-failed" "protocol-violation"])
+
+(defn api--refusal [message]
+  ;; `grove--fail` raises "class: detail", and `*error*` carries that
+  ;; string wrapped in one pair of quotes, so the class would read as
+  ;; `"capability-denied` unless the pair is dropped. Collapsing every
+  ;; raised error to 502 would report a reader's forbidden queue POST as
+  ;; a backend outage. A message naming no known class is a backend
+  ;; failure.
+  (let* [parts (str-split ": " (runner--error-detail message))
+         class (get parts 0 "")
+         detail (loop [i 1 out ""]
+                   (if (= i (count parts)) out
+                     (recur (+ i 1) (str out (if (= i 1) "" ": ") (get parts i)))))]
+    (if (grove--contains api--refusals class)
+      {:class class :detail detail}
+      {:class "backend-failed" :detail message})))
+
 (defn api--error [request class detail extra]
   (let [payload (reduce (fn [out key] (assoc out key (get extra key)))
                         {"class" class "detail" detail}
@@ -60,20 +81,37 @@
       (get parts 1 nil)
       nil)))
 
+(defn api--require-role [request required]
+  ;; The store handle belongs to the service; the authority for one
+  ;; request belongs to the token that made it. Under the service's
+  ;; operator handle every token would pass `grove--authorize`.
+  (let [role (grove--get-key (get request :principal) :role "")]
+    (grove--require (>= (grove--role-rank role) (grove--role-rank required))
+      "capability-denied" (str required " role required"))
+    true))
+
 
 ;; ---------- Idempotency ----------
 (defn api--operation-id [request]
   (let [body (get request :body {})]
     (grove--get-key body :operation_id nil)))
 
+(def api--replayed "grove.replayed")
+
 (defn api--replay [request route]
+  ;; A replay has already been answered, so the handler must stop here:
+  ;; replying a second time would be answering the same request id twice,
+  ;; and re-running the work would be re-deciding a decision the receipt
+  ;; already stands for. The sentinel unwinds to the dispatcher, which
+  ;; sees the reply is out and answers nothing further.
   (let* [store (get request :store)
          op (api--operation-id request)
          payload (get request :body {})]
     (if (and store op)
       (let [existing (store--receipt store op route payload)]
         (if existing
-          (api--reply request (get existing :status "ok") (get existing :body {}))
+          (do (api--reply request (get existing :status "ok") (get existing :body {}))
+              (error api--replayed))
           nil))
       nil)))
 
@@ -272,6 +310,7 @@
 (defn api--handle-post-signal [request]
   (let* [store (get request :store)
          body (get request :body)
+         _ (api--require-role request "annotator")
          _ (api--replay request "POST /api/signals")
          rec (assoc body :producer (grove--principal-id store))
          kind (grove--get-key rec :kind nil)
@@ -334,6 +373,7 @@
   (let* [store (get request :store)
          body (get request :body)
          _ (grove--authorize store "operator")
+         _ (api--require-role request "operator")
          _ (api--replay request "POST /api/logic/propose")
          rec body
          op (grove--get-key body :operation_id
@@ -384,6 +424,7 @@
   (let* [store (get request :store)
          body (get request :body)
          _ (grove--authorize store "operator")
+         _ (api--require-role request "operator")
          _ (api--replay request "POST /api/learning/queue")
          run {:schema 1 :id (grove--get-key body :run_id "")
               :task_id (grove--get-key body :task_id "")
@@ -410,6 +451,7 @@
   (let* [store (get request :store)
          body (get request :body)
          _ (grove--authorize store "operator")
+         _ (api--require-role request "operator")
          id (api--path-params request :id)
          _ (api--replay request "POST /api/learning/runs/{id}/cancel")
          next (runner--intent store id "cancel")
@@ -428,6 +470,7 @@
   (let* [store (get request :store)
          body (get request :body)
          _ (grove--authorize store "operator")
+         _ (api--require-role request "operator")
          _ (api--replay request "POST /api/learning/pause")
          op (grove--get-key body :operation_id
                 (str "op-"
@@ -447,6 +490,7 @@
   (let* [store (get request :store)
          body (get request :body)
          _ (grove--authorize store "operator")
+         _ (api--require-role request "operator")
          _ (api--replay request "POST /api/learning/resume")
          op (grove--get-key body :operation_id
                 (str "op-"
@@ -469,6 +513,7 @@
   (let* [store (get request :store)
          body (get request :body)
          _ (grove--authorize store "operator")
+         _ (api--require-role request "operator")
          _ (api--replay request "POST /api/learning/fork")
          op (grove--get-key body :operation_id
                 (str "op-"
@@ -490,6 +535,7 @@
          body (get request :body)
          decision (grove--get-key body :decision "reject")
          _ (if (= decision "accept") (grove--authorize store "publisher") (grove--authorize store "operator"))
+         _ (api--require-role request (if (= decision "accept") "publisher" "operator"))
          _ (api--replay request "POST /api/learning/select")
          op (grove--get-key body :operation_id
                 (str "op-"
@@ -509,6 +555,7 @@
   (let* [store (get request :store)
          body (get request :body)
          _ (grove--authorize store "publisher")
+         _ (api--require-role request "publisher")
          active (store--active-publication store)
          _ (api--replay request "POST /api/approve")
          op (grove--get-key body :operation_id
@@ -703,7 +750,13 @@
                 (try
                   (api--route request)
                   (catch any
-                    (api--error request "backend-failed" (str *error*) nil))))
+                    ;; The replay sentinel means the handler already
+                    ;; replied; answering again would answer one request
+                    ;; id twice.
+                    (if (= (runner--error-detail (str *error*)) api--replayed)
+                      nil
+                      (let [refusal (api--refusal *error*)]
+                        (api--error request (get refusal :class "backend-failed") (get refusal :detail "") nil))))))
               (recur next))))))))
 
 (defn api--check-bind [bind token-count]
