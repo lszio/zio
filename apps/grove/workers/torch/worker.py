@@ -442,11 +442,16 @@ def do_train(frame: dict) -> None:
             # checkpoint boundary: the state lands atomically BEFORE the run
             # may be declared paused
             if save_at is not None and step >= int(save_at):
-                save_state(Path(frame["state_out"]), run_id, attempt_id, step,
+                # One immutable file per saved step: the owner commits
+                # exactly the path this frame names, so a frame read while
+                # a later save is in flight can never pair step N's billing
+                # with step M's bytes.
+                state_path = Path(frame["state_out"]).with_name(f"state-{step}.json")
+                save_state(state_path, run_id, attempt_id, step,
                            linears, optimiser, named, first_loss)
                 emit({"v": PROTOCOL_VERSION, "type": "progress", "run_id": run_id,
                       "attempt_id": attempt_id, "step": step, "loss": last_loss,
-                      "saved": str(frame["state_out"])})
+                      "saved": str(state_path)})
                 if stop_after_save:
                     done = True
 

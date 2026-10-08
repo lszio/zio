@@ -217,6 +217,32 @@ def until(process: subprocess.Popen, run_id: str, terminal=("done", "failed"), t
             return frame
 
 
+def drain_frames(process: subprocess.Popen, run_id: str, timeout: float = 90.0) -> list[dict]:
+    """Every frame a run emitted, terminal last. Bounded like `until`."""
+    import selectors
+    import time as _time
+
+    frames: list[dict] = []
+    sel = selectors.DefaultSelector()
+    sel.register(process.stdout, selectors.EVENT_READ)
+    deadline = _time.monotonic() + timeout
+    try:
+        while True:
+            if _time.monotonic() > deadline:
+                process.kill()
+                raise AssertionError(f"worker never finished {run_id}")
+            if not sel.select(timeout=1.0):
+                continue
+            frame = json.loads(process.stdout.readline())
+            if frame.get("run_id") != run_id:
+                continue
+            frames.append(frame)
+            if frame.get("type") in ("done", "failed"):
+                return frames
+    finally:
+        stop(process)
+
+
 class GraphValidationTests(unittest.TestCase):
     def test_an_unpermitted_operator_is_rejected(self):
         graph = Graph(
@@ -417,7 +443,8 @@ class WorkerProtocolTests(unittest.TestCase):
                 "save_at": 10, "state_out": str(state),
             })
             until(process, "run-ck")
-            saved = json.loads(state.read_text())
+            # per-step names: save_at=10 lands in state-10.json
+            saved = json.loads(state.with_name("state-10.json").read_text())
             self.assertEqual(saved["schema"], 2)
             keys = set(saved["optimizer"]["adam"])
             # only the trainable layer, both of its parameters
@@ -538,6 +565,96 @@ class WorkerProtocolTests(unittest.TestCase):
                            "the nonlinear structure should fit it")
 
 
+class CheckpointSaveTests(unittest.TestCase):
+    """Each save lands in its own immutable per-step file, and the frame's
+    `saved` path names exactly the file holding the step it reports — the
+    owner commits what it bills, never a later step's bytes."""
+
+    DATA = str(TASK / "data" / "train.bin")
+
+    def _run(self, tmp: Path, run_id: str, **extra) -> list[dict]:
+        weights = tmp / f"{run_id}-w.json"
+        weights.write_text(json.dumps(
+            {"frozen": seeded_layer(32, 258, 7), "active": seeded_layer(2, 32, 3)}))
+        frame = {
+            "v": 1, "type": "train", "run_id": run_id,
+            "attempt_id": f"att-{run_id}",
+            "graph": two_layer_graph_payload(),
+            "weights": str(weights), "data": self.DATA,
+            "out": str(tmp / f"{run_id}-out.json"),
+            "steps": 12, "seed": 1, "save_at": 10,
+            "state_out": str(tmp / f"{run_id}-state.json"),
+        }
+        frame.update(extra)
+        process = start_worker()
+        send(process, frame)
+        return drain_frames(process, run_id)
+
+    def test_each_step_gets_its_own_state_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            frames = self._run(tmp, "run-save")
+            self.assertEqual(frames[-1]["type"], "done", frames)
+            saved = [f for f in frames if "saved" in f]
+            self.assertEqual([f["step"] for f in saved], [10, 11, 12])
+            for frame in saved:
+                path = Path(frame["saved"])
+                self.assertTrue(path.exists(), frame["saved"])
+                state = json.loads(path.read_text())
+                self.assertEqual(state["step"], frame["step"])
+                self.assertEqual(state["run_id"], "run-save")
+            # no shared mutable name: a plain state file never exists
+            self.assertFalse((tmp / "run-save-state.json").exists())
+            names = sorted(p.name for p in tmp.glob("state-*.json"))
+            self.assertEqual(names, ["state-10.json", "state-11.json",
+                                     "state-12.json"])
+
+    def test_stop_after_save_writes_exactly_one_state_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            frames = self._run(tmp, "run-stop", stop_after_save=True)
+            self.assertEqual(frames[-1]["type"], "done", frames)
+            saved = [f for f in frames if "saved" in f]
+            self.assertEqual([f["step"] for f in saved], [10])
+            names = sorted(p.name for p in tmp.glob("state-*.json"))
+            self.assertEqual(names, ["state-10.json"])
+
+    def test_resume_run_identity_is_enforced_on_the_save_path(self):
+        """resume_run validation is unchanged: a stop_after_save run that
+        resumes a foreign state still refuses before any save happens."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            parent = self._make_parent(tmp)
+            frames = self._run(tmp, "run-child", steps=1, save_at=11,
+                               stop_after_save=True, resume=str(parent),
+                               resume_level="learning-continuation",
+                               resume_run="run-someone-else")
+            self.assertEqual(frames[-1]["type"], "failed", frames)
+            self.assertIn("belongs to run", frames[-1].get("error", ""))
+            self.assertFalse(any("saved" in f for f in frames))
+            # the child never wrote its own per-step state file
+            self.assertFalse((tmp / "state-11.json").exists())
+
+    def _make_parent(self, tmp: Path) -> Path:
+        process = start_worker()
+        weights = tmp / "parent-w.json"
+        weights.write_text(json.dumps(
+            {"frozen": seeded_layer(32, 258, 7), "active": seeded_layer(2, 32, 3)}))
+        state_out = tmp / "parent-state.json"
+        send(process, {
+            "v": 1, "type": "train", "run_id": "run-parent",
+            "attempt_id": "att-parent",
+            "graph": two_layer_graph_payload(),
+            "weights": str(weights), "data": self.DATA,
+            "out": str(tmp / "parent-out.json"),
+            "steps": 10, "seed": 1, "save_at": 10,
+            "state_out": str(state_out), "stop_after_save": True,
+        })
+        until(process, "run-parent")
+        stop(process)
+        return state_out.with_name("state-10.json")
+
+
 class ResumeContractTests(unittest.TestCase):
     """checkpoint--resume enqueues a NEW run id together with the parent's
     identity (`resume_run`) and a level; the worker must accept the parent
@@ -554,7 +671,7 @@ class ResumeContractTests(unittest.TestCase):
     def _checkpoint(self, tmp: Path, run_id: str = "run-a") -> Path:
         """Ten real steps, then stop exactly at the checkpoint boundary."""
         process = start_worker()
-        state = tmp / f"{run_id}-state.json"
+        state_out = tmp / f"{run_id}-state.json"
         send(process, {
             "v": 1, "type": "train",
             "run_id": run_id, "attempt_id": "att-parent",
@@ -562,38 +679,19 @@ class ResumeContractTests(unittest.TestCase):
             "weights": str(self._write_weights(tmp)),
             "data": self.DATA, "out": str(tmp / f"{run_id}-out.json"),
             "steps": 10, "seed": 1,
-            "save_at": 10, "state_out": str(state), "stop_after_save": True,
+            "save_at": 10, "state_out": str(state_out), "stop_after_save": True,
         })
         done = until(process, run_id)
         self.assertEqual(done["type"], "done", done)
         stop(process)
-        return state
+        # per-step names: the saved file is the frame's `state-10.json`
+        return state_out.with_name("state-10.json")
 
     def _run(self, tmp: Path, frame: dict) -> list[dict]:
         """One train frame; every frame the run emitted, terminal last."""
-        import selectors
-        import time
         process = start_worker()
         send(process, frame)
-        frames: list[dict] = []
-        sel = selectors.DefaultSelector()
-        sel.register(process.stdout, selectors.EVENT_READ)
-        deadline = time.monotonic() + 90.0
-        try:
-            while True:
-                if time.monotonic() > deadline:
-                    process.kill()
-                    raise AssertionError(f"worker never finished {frame['run_id']}")
-                if not sel.select(timeout=1.0):
-                    continue
-                emitted = json.loads(process.stdout.readline())
-                if emitted.get("run_id") != frame["run_id"]:
-                    continue
-                frames.append(emitted)
-                if emitted.get("type") in ("done", "failed"):
-                    return frames
-        finally:
-            stop(process)
+        return drain_frames(process, frame["run_id"])
 
     def test_resume_learning_continuation_accepts_the_parent_state(self):
         """A resumed run (new id by design) continues the parent's Adam
