@@ -101,4 +101,28 @@ expect "query plus decodes to space" 200 '"root":"snapshot 1"' -H 'Authorization
 expect "unknown route" 404 '"class":"not_found"' -H 'Authorization: Bearer reader-test' "http://$bind/api/not-a-route"
 expect "server remains available after requests" 200 '"status":"ok"' "http://$bind/api/health"
 
+# The service must own one writable epoch and execute queued work itself.
+# A 201 queue receipt is not evidence that anything ran.
+health="$(curl -sS --max-time 3 "http://$bind/api/health")"
+epoch="$(printf '%s' "$health" | sed -n 's/.*"owner_epoch":\([0-9]*\).*/\1/p')"
+[[ -n "$epoch" && "$epoch" -ge 1 ]] || fail "service did not claim a coordinator epoch: $health"
+
+fetch -X POST "http://$bind/api/learning/queue" \
+  -H 'Authorization: Bearer operator-test' \
+  -H 'Content-Type: application/json' \
+  --data '{"run_id":"run-1","task_id":"task-1","steps_budget":1,"steps":1,"kind":"training","work":{"steps":1,"graph":{}}}'
+[[ "$http_status" == 201 ]] || fail "queue POST: expected HTTP 201; got HTTP $http_status: $http_body"
+
+# Give the owner loop real time to claim, start and settle the run.
+state=""
+for _ in {1..60}; do
+  fetch "http://$bind/api/runs/run-1" -H 'Authorization: Bearer reader-test'
+  state="$(printf '%s' "$http_body" | sed -n 's/.*"state":"\([^"]*\)".*/\1/p')"
+  case "$state" in
+    running|evaluating|accepted|rejected|failed|paused|cancelled) break ;;
+  esac
+  sleep 0.5
+done
+[[ -n "$state" && "$state" != queued ]] || fail "queued run never left the queue: $http_body"
+
 printf 'PASS Grove Zio HTTP health, auth, query, routing and request lifecycle\n'

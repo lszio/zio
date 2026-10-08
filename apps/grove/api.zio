@@ -626,37 +626,66 @@
       (= path "/favicon.ico")))
 
 ;; ---------- Static assets ----------
-(defn api--serve [bind root]
+(defn api--service-config [config]
+  ;; Everything the owner needs comes from the launcher's keyword map, so
+  ;; the service reads no environment and no argv to decide its own
+  ;; authority. Missing values fall back to the smallest workable loop.
+  {:worker-count (get config :workers 2)
+   :lease-ms 30000
+   :deadline-ms 300000
+   :max-frame-bytes 16777216
+   :input-root (get config :root "")
+   :web-root (get config :web-root "")
+   :worker-config (get config :worker-config {})})
+
+(defn api--tick [runner]
+  ;; One owner, one attempt at failure. A tick that raises must not take
+  ;; the HTTP surface down with it: the run is already recorded as
+  ;; running, and a dead service reports nothing at all.
+  (try (runner--tick runner)
+       (catch any
+         (do (host/sleep-ms 50) runner))))
+
+(defn api--serve [bind root config]
   (let* [tokens (api--load-tokens)
          listener (host/http-listen {:address bind :timeout-ms 30000})
-         store (store--open root {:id "service" :role "reader"})]
-    (loop [owner {:listener listener :store store :tokens tokens}]
-      (let* [raw (host/http-next (get owner :listener) 60000)]
-        (if (nil? raw)
-          (recur owner)
-          (let* [method (get raw :method "GET")
-                 path (get raw :path "/")
-                 token (api--bearer (get raw :headers {}))
-                 role (if token (get tokens token) nil)
-                 principal (if role {:id (str "token:" (host/sha256 (host/bytes token))) :role role} nil)
-                 body-bytes (get raw :body (host/bytes "{}"))
-                 request {:method method
-                          :path path
-                          :headers (get raw :headers {})
-                          :body_bytes body-bytes
-                          :query_raw (get raw :query "")
-                          :store (store--as (get store :db) (get store :root) principal)
-                          :tokens (get owner :tokens)
-                          :principal principal
-                          :listener (get owner :listener)
-                          :id (get raw :id)}]
-            (if (and (nil? role) (not (api--public-path path)))
-              (api--error request "unauthorized" "missing or unknown bearer token" nil)
-              (try
-                (api--route request)
-                (catch any
-                  (api--error request "backend-failed" (str *error*) nil))))
-            (recur owner)))))))
+         ;; One connection, one principal. The service writes: a reader
+         ;; handle cannot create the schema, cannot claim an epoch and
+         ;; cannot accept a queue POST.
+         store (store--open root {:id "service" :role "operator"})
+         runner (runner--open store (api--service-config config))]
+    (loop [owner {:listener listener :store store :tokens tokens
+                  :runner runner :config config}]
+      ;; Poll before blocking so queued work advances while no request is
+      ;; in flight, and while one is: a single tick per loop iteration is
+      ;; the whole scheduler, and HTTP wait must not starve it.
+      (let [next (assoc owner :runner (api--tick (get owner :runner)))]
+        (let [raw (host/http-next (get owner :listener) 200)]
+          (if (nil? raw)
+            (recur next)
+            (let* [method (get raw :method "GET")
+                   path (get raw :path "/")
+                   token (api--bearer (get raw :headers {}))
+                   role (if token (get (get next :tokens) token) nil)
+                   principal (if role {:id (str "token:" (host/sha256 (host/bytes token))) :role role} nil)
+                   body-bytes (get raw :body (host/bytes "{}"))
+                   request {:method method
+                            :path path
+                            :headers (get raw :headers {})
+                            :body_bytes body-bytes
+                            :query_raw (get raw :query "")
+                            :store (store--as (get (get next :store) :db) (get (get next :store) :root) principal)
+                            :tokens (get next :tokens)
+                            :principal principal
+                            :listener (get next :listener)
+                            :id (get raw :id)}]
+              (if (and (nil? role) (not (api--public-path path)))
+                (api--error request "unauthorized" "missing or unknown bearer token" nil)
+                (try
+                  (api--route request)
+                  (catch any
+                    (api--error request "backend-failed" (str *error*) nil))))
+              (recur next))))))))
 
 (defn api--check-bind [bind token-count]
   ;; Refusing to serve an unauthenticated API on a routable address is

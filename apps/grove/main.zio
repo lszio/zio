@@ -178,10 +178,14 @@
 (defn grove--serve-handler [parsed]
   (let [opts (get parsed :options)
         bind (get opts :bind "127.0.0.1:8787")
-        root (get opts :root "")]
+        config (get parsed :launcher {})
+        ;; `--root` wins over the launcher's `--app-root-dir` because it is
+        ;; the operator's per-invocation decision; the launcher value stays
+        ;; the default for the installed service.
+        serve-root (if (= (get opts :root "") "") (get config :root "") (get opts :root))]
     (load "api.zio")
     (api--check-bind bind (count (api--load-tokens)))
-    (api--serve bind root)))
+    (api--serve bind serve-root config)))
 
 (defn grove--cli-handlers []
   {"demo" grove--demo-handler
@@ -215,6 +219,7 @@
                       (get parsed :options {})
                       (keys config))
          parsed (assoc parsed :options opts)
+         parsed (assoc parsed :launcher config)
          result (if (get parsed :help)
                   (rill-help grove--cli-spec (get parsed :command))
                   (rill-dispatch parsed (grove--cli-handlers)))]
