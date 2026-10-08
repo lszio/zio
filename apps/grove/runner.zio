@@ -143,10 +143,17 @@
   (str (get (get (get runner :config) :worker-config) :scratch "")
        "/" (get claim :run_id) "/trained.json"))
 
-;; Host-side mirror of the jail path the worker reports in `progress.saved`.
-(defn runner--state-path [runner claim]
+;; The worker saves one immutable file per checkpointed step and reports
+;; its jail path in `progress.saved`; committing exactly the file the frame
+;; names is what keeps the committed bytes identical to the billed step
+;; when frames and later saves interleave asynchronously. The path is
+;; checked against this attempt's per-step name before the host mirror is
+;; read, so a foreign or stale path can never be committed.
+(defn runner--saved-state-path [runner claim saved step]
+  (grove--require (= saved (str "/scratch/" (get claim :run_id) "/state-" step ".json"))
+                  "protocol-violation" "saved frame does not name this attempt's per-step state file")
   (str (get (get (get runner :config) :worker-config) :scratch "")
-       "/" (get claim :run_id) "/state.json"))
+       "/" (get claim :run_id) "/state-" step ".json"))
 
 (defn runner--prepare [runner claim]
   ;; The bounded agent runner consumes the claim itself; training inputs
@@ -162,7 +169,20 @@
          store (get runner :store)
          scratch (get (get config :worker-config) :scratch "")
          host-scratch (str scratch "/" (get claim :run_id))
-         jail (str "/scratch/" (get claim :run_id))]
+         jail (str "/scratch/" (get claim :run_id))
+         resume-bytes (if (get work :resume nil)
+                        (artifact--get store (grove--ref-hex (get work :resume)))
+                        nil)
+         ;; The worker restores the checkpoint's step for every level
+         ;; except model-initialization (weights only, step restarts at 0),
+         ;; so the owner's billing baseline is the restored step, not the
+         ;; run ledger's origin: a controlled-replay attempt is billed what
+         ;; it executes (consumed = frame.step - start_step) while
+         ;; learning-continuation inherits a ledger whose origin is that
+         ;; same checkpoint step.
+         start-step (if (and resume-bytes (not (= (get work :resume_level nil) "model-initialization")))
+                      (get (codec--normalize (json-parse (host/bytes-utf8 resume-bytes))) :step 0)
+                      0)]
     (try (host/mkdir scratch) (catch any nil))
     (host/mkdir host-scratch)
     (host/write-atomic (str host-scratch "/data.gvd1") (runner--read-input runner (get work :data nil)))
@@ -177,9 +197,8 @@
     ;; artifact; the worker loads optimizer/RNG/step state from a jail
     ;; path, so the bytes are staged into scratch and the frame carries
     ;; the continuation fields the worker reads.
-    (if (get work :resume nil)
-      (host/write-atomic (str host-scratch "/state.json")
-        (artifact--get store (grove--ref-hex (get work :resume))))
+    (if resume-bytes
+      (host/write-atomic (str host-scratch "/state.json") resume-bytes)
       nil)
     {:v 1
      :type "train"
@@ -195,8 +214,12 @@
      :resume (if (get work :resume nil) (str jail "/state.json") nil)
      :resume_level (get work :resume_level nil)
      :resume_run (get work :resume_run nil)
-     ;; Checkpoint-on-the-way fields; `state_out` names a jail path, and
-     ;; `runner--receive` reads the host mirror when the worker reports it.
+     ;; The worker's restored starting step; `runner--start` bills deltas
+     ;; over it. Informational to the worker, which derives its own copy.
+     :start_step start-step
+     ;; Checkpoint-on-the-way fields; `state_out` anchors the directory the
+     ;; worker writes per-step `state-<step>.json` files into, and
+     ;; `runner--receive` reads the host mirror of the path the frame names.
      :save_at (get work :save_at nil)
      :state_out (if (get work :save_at nil) (str jail "/state.json") nil)
      :stop_after_save (get work :stop_after_save nil)}))
@@ -221,9 +244,10 @@
       (catch any (do (host/process-kill proc) (error (str *error*)))))
     (runner--event (get runner :store) claim "worker-started" "isolated worker process admitted")
     ;; Billing is by cumulative step deltas, so the handle remembers the
-    ;; run's ledger baseline when the attempt starts.
+    ;; worker's restored starting step: the delta over it is this
+    ;; attempt's consumption, whatever origin the run ledger inherited.
     {:claim claim :process proc :started_ms (host/clock-ms) :last_seen (host/clock-ms)
-     :billed_step (get (grove--get (get runner :store) "Run" (get claim :run_id)) :steps_consumed 0)}))
+     :billed_step (get frame :start_step 0)}))
 
 (defn runner--finish [runner worker state detail]
   (let* [store (get runner :store) claim (get worker :claim)]
@@ -276,18 +300,29 @@
                delta (- step billed)]
           (if (> delta 0) (coordinator--bill store claim (str (get claim :attempt_id) "-steps-" step) delta) nil)
           (store--execute store "UPDATE grove_progress SET step=?1 WHERE attempt=?2" [step (get claim :attempt_id)])
-          ;; A checkpoint save is reported on a progress frame; the state
-          ;; file lives in the worker scratch and is committed here.
-          (if (get f :saved nil)
-            (let* [cp (checkpoint--commit store (get claim :run_id) nil "learning-continuation"
-                                          (host/read-bytes (runner--state-path runner claim)))]
-              (store--execute store "UPDATE grove_progress SET checkpoint=?1 WHERE attempt=?2" [(get cp :id) (get claim :attempt_id)])
-              (runner--event store claim "checkpoint" (get cp :id)))
-            nil)
-          (runner--event store claim "progress" (json-stringify {:step (get f :step nil) :loss (get f :loss nil)}))
-          (if (get f :consumed nil) (store--record-consumption store (get claim :run_id) (get f :consumed)) nil)
-          (coordinator--renew store claim (get (get runner :config) :lease-ms 30000))
-          (assoc worker :last_seen (host/clock-ms) :billed_step (if (> step billed) step billed))))
+          ;; A checkpoint save is reported on a progress frame; the frame
+          ;; names the exact per-step file, so the committed bytes are
+          ;; always the billed step's.
+          (let [continued (if (get f :saved nil)
+                            (let* [cp (checkpoint--commit store (get claim :run_id) nil "learning-continuation"
+                                                          (host/read-bytes (runner--saved-state-path runner claim (get f :saved nil) step)))]
+                              (store--execute store "UPDATE grove_progress SET checkpoint=?1 WHERE attempt=?2" [(get cp :id) (get claim :attempt_id)])
+                              (runner--event store claim "checkpoint" (get cp :id))
+                              ;; A stop_after_save claim ends here: the run
+                              ;; settles paused on the committed checkpoint
+                              ;; and the worker is removed, so its trailing
+                              ;; done frame (a trained snapshot and an
+                              ;; evaluating transition) is never processed.
+                              (if (grove--get-key (get claim :work) :stop_after_save false)
+                                (runner--finish runner worker "paused" (get cp :id))
+                                worker))
+                            worker)]
+            (if (nil? continued) nil
+              (do
+                (runner--event store claim "progress" (json-stringify {:step (get f :step nil) :loss (get f :loss nil)}))
+                (if (get f :consumed nil) (store--record-consumption store (get claim :run_id) (get f :consumed)) nil)
+                (coordinator--renew store claim (get (get runner :config) :lease-ms 30000))
+                (assoc worker :last_seen (host/clock-ms) :billed_step (if (> step billed) step billed)))))))
       (if (= type "checkpoint")
         (let* [body (host/bytes (json-stringify (get f :state)))
                cp (checkpoint--commit store (get claim :run_id) nil "learning-continuation" body)]
