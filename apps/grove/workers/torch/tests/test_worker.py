@@ -142,20 +142,31 @@ def fingerprint(values) -> str:
 
 
 def max_abs_diff(a, b) -> float:
-    """Largest absolute difference between two nested numeric structures."""
-    flat_a: list[float] = []
-    flat_b: list[float] = []
+    """Largest absolute difference between two nested numeric structures.
+    Dicts are walked by matching keys; any shape mismatch is infinite so
+    an assertion can never mistake a different structure for equality."""
+    diffs: list[float] = []
 
-    def walk(node, out) -> None:
-        if isinstance(node, (list, tuple)):
-            for item in node:
-                walk(item, out)
-        elif isinstance(node, (int, float)):
-            out.append(float(node))
+    def walk(x, y) -> None:
+        if isinstance(x, dict) and isinstance(y, dict):
+            if set(x) != set(y):
+                diffs.append(float("inf"))
+                return
+            for key in x:
+                walk(x[key], y[key])
+        elif isinstance(x, (list, tuple)) and isinstance(y, (list, tuple)):
+            if len(x) != len(y):
+                diffs.append(float("inf"))
+                return
+            for xi, yi in zip(x, y):
+                walk(xi, yi)
+        elif isinstance(x, (int, float)) and isinstance(y, (int, float)):
+            diffs.append(abs(float(x) - float(y)))
+        else:
+            diffs.append(float("inf"))
 
-    walk(a, flat_a)
-    walk(b, flat_b)
-    return max((abs(x - y) for x, y in zip(flat_a, flat_b)), default=0.0)
+    walk(a, b)
+    return max(diffs, default=0.0)
 
 
 def stop(process: subprocess.Popen) -> None:
