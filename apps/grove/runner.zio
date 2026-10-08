@@ -43,7 +43,26 @@
     (runner--recover store)
     {:store store :config config :epoch (grove--get-key owner :epoch 0) :workers []}))
 
-(defn runner--claim-next [runner]
+(defn runner--drain-claim [runner id reason]
+  ;; A queued run that cannot be claimed would otherwise be selected again
+  ;; on every tick (`ORDER BY r.rowid LIMIT 1`) and block every later run
+  ;; forever, so an unclaimable run is failed and the queue moves on. The
+  ;; event is best-effort: `runner--event` still depends on a symbol that
+  ;; does not exist, and losing the event must not leave the run queued.
+  (let [store (get runner :store)
+        run (grove--get store "Run" id)]
+    (runner--transition! (get run :state) "failed")
+    (store--transaction store (fn []
+      (runner--write-run store (assoc run :state "failed"))
+      (try (runner--event store {:run_id id} "claim-rejected" reason)
+           (catch any nil))))
+    nil))
+
+(defn runner--claim-transaction [runner]
+  ;; The claim transaction only. A failure propagates out of it so the
+  ;; transaction rolls back whole; the caller drains the unclaimable run
+  ;; afterwards, outside this transaction, because a drain performed
+  ;; inside it would be rolled back with the failure it records.
   (let* [store (get runner :store) config (get runner :config)]
     (store--transaction store (fn []
       (coordinator--check-epoch store (get runner :epoch))
@@ -67,6 +86,40 @@
             (store--execute store "INSERT INTO grove_claims(run,attempt,epoch,reserved,cancel,pause,population,branch,expected_version) VALUES(?1,?2,?3,?4,0,0,?5,?6,?7) ON CONFLICT(run) DO UPDATE SET attempt=excluded.attempt,epoch=excluded.epoch,reserved=excluded.reserved,cancel=0,pause=0,population=excluded.population,branch=excluded.branch,expected_version=excluded.expected_version" [id attempt (get runner :epoch) steps (get work :population nil) (get work :branch nil) (get work :expected_version nil)])
             (store--execute store "INSERT INTO grove_progress(attempt,step) VALUES(?1,?2)" [attempt (get run :steps_consumed)])
             claim)))))))
+
+(defn runner--error-detail [message]
+  ;; `error` formats a string argument with Debug, so a message that
+  ;; already carries quotes arrives quoted. Strip one outer pair rather
+  ;; than reporting the class as `"budget-exhausted`.
+  (let [parts (str-split "" message)]
+    (if (> (count parts) 1)
+      (let [head (first parts) tail (last parts)]
+        (if (and (str-starts-with? head "\"") (str-starts-with? tail "\""))
+          (str-join "" (rest (reverse (rest (str-split "" tail)))))
+          message))
+      message)))
+
+(defn runner--queued-head [store]
+  ;; The run the next claim will select. Reported before the claim runs so
+  ;; a failure can be attributed to the run it was actually claiming.
+  (let [rows (store--query store "SELECT r.id FROM runs r JOIN queued_work q ON q.run=r.id WHERE r.state='queued' ORDER BY r.rowid LIMIT 1" [])]
+    (if (empty? rows) nil (grove--get-key (first rows) :id nil))))
+
+(defn runner--claim-next [runner]
+  ;; A claim that raises still means one specific queued run is
+  ;; unclaimable: `runner--queued-head` names it before the claim runs.
+  ;; Draining that run is what lets the queue advance instead of
+  ;; re-selecting the same oldest row on every tick. The claim failure is
+  ;; NOT re-raised: the next tick moves to the following run, so the owner
+  ;; reports the run's failed state rather than a stalled scheduler.
+  (let [store (get runner :store)
+        head (runner--queued-head store)]
+    (try (runner--claim-transaction runner)
+         (catch any
+           (if head
+             (runner--drain-claim runner head (runner--error-detail (str *error*)))
+             nil)
+           nil))))
 
 (defn runner--input-path [runner raw]
   (grove--require (string? raw) "invalid-input" "input must name a permitted file")

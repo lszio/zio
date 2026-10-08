@@ -107,6 +107,14 @@ health="$(curl -sS --max-time 3 "http://$bind/api/health")"
 epoch="$(printf '%s' "$health" | sed -n 's/.*"owner_epoch":\([0-9]*\).*/\1/p')"
 [[ -n "$epoch" && "$epoch" -ge 1 ]] || fail "service did not claim a coordinator epoch: $health"
 
+# Health must carry the scheduler's last failure: a stalled queue that
+# still answered "ok" is the failure these fields exist to prevent.
+[[ "$health" == *'"scheduler_failure":null'* ]] \
+  || fail "healthy service must report a null scheduler_failure: $health"
+for field in owner_pid store_root schema; do
+  [[ "$health" == *"\"$field\""* ]] || fail "health payload lost \"$field\": $health"
+done
+
 fetch -X POST "http://$bind/api/learning/queue" \
   -H 'Authorization: Bearer operator-test' \
   -H 'Content-Type: application/json' \
@@ -124,5 +132,25 @@ for _ in {1..60}; do
   sleep 0.5
 done
 [[ -n "$state" && "$state" != queued ]] || fail "queued run never left the queue: $http_body"
+
+# A run the scheduler cannot claim (more steps than the grant) must not
+# wedge the queue: it is failed and the next run still executes.
+fetch -X POST "http://$bind/api/learning/queue" \
+  -H 'Authorization: Bearer operator-test' \
+  -H 'Content-Type: application/json' \
+  --data '{"run_id":"run-poison","task_id":"task-1","steps_budget":1,"kind":"training","work":{"steps":2,"graph":{}}}'
+[[ "$http_status" == 201 ]] || fail "poisoned queue POST: expected HTTP 201; got HTTP $http_status: $http_body"
+
+poison_state=""
+for _ in {1..60}; do
+  fetch "http://$bind/api/runs/run-poison" -H 'Authorization: Bearer reader-test'
+  poison_state="$(printf '%s' "$http_body" | sed -n 's/.*"state":"\([^"]*\)".*/\1/p')"
+  [[ "$poison_state" == failed ]] && break
+  sleep 0.5
+done
+[[ "$poison_state" == failed ]] || fail "unclaimable run was not drained: $http_body"
+
+# The drain must not wedge the service: health still answers.
+expect "server healthy after a drained run" 200 '"status":"ok"' "http://$bind/api/health"
 
 printf 'PASS Grove Zio HTTP health, auth, query, routing and request lifecycle\n'

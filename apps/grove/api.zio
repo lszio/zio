@@ -196,15 +196,22 @@
     {:events rows :cursor cursor :has_more (= (count rows) limit)}))
 
 ;; ---------- Route handlers (one per path, each takes request + env) ----------
+;; `request :scheduler_failure` is the last tick failure the owner loop
+;; recorded; nil while every tick succeeded.
 (defn api--handle-health [request]
   (let* [store (get request :store)
-         owner (coordinator--owner store)]
+         owner (coordinator--owner store)
+         failure (get request :scheduler_failure nil)
+         ;; A scheduler that cannot advance is not `ok`: reporting "ok"
+         ;; over a stalled queue is the failure this field exists to stop.
+         base {:schema 1
+               :owner_epoch (if owner (grove--get-key owner :epoch 0) 0)
+               :owner_pid (if owner (grove--get-key owner :pid 0) 0)
+               :store_root (get store :root "")}]
     (api--ok request
-      {:status "ok"
-       :schema 1
-       :owner_epoch (if owner (grove--get-key owner :epoch 0) 0)
-       :owner_pid (if owner (grove--get-key owner :pid 0) 0)
-       :store_root (get store :root "")})))
+      (assoc base
+        :status (if failure "degraded" "ok")
+        :scheduler_failure failure))))
 
 (defn api--handle-list-runs [request]
   (let* [principal (get request :principal)
@@ -638,13 +645,24 @@
    :web-root (get config :web-root "")
    :worker-config (get config :worker-config {})})
 
-(defn api--tick [runner]
+(defn api--tick [owner]
   ;; One owner, one attempt at failure. A tick that raises must not take
   ;; the HTTP surface down with it: the run is already recorded as
-  ;; running, and a dead service reports nothing at all.
-  (try (runner--tick runner)
-       (catch any
-         (do (host/sleep-ms 50) runner))))
+  ;; running, and a dead service reports nothing at all. The failure is
+  ;; still recorded, so /api/health stops claiming "ok" while the
+  ;; scheduler cannot progress; the next clean tick clears it.
+  (let [runner (get owner :runner)]
+    (try (assoc owner :runner (runner--tick runner) :scheduler_failure nil)
+         (catch any
+           (do (host/sleep-ms 50)
+               ;; runner--error-detail strips the quotes `error` adds when
+               ;; it Debug-formats a string, so the class is a class and
+               ;; not `"conflict`.
+               (let [detail (runner--error-detail (str *error*))]
+                 (assoc owner :scheduler_failure
+                   {:class (first (str-split ": " detail))
+                    :detail detail
+                    :at_ms (host/clock-ms)})))))))
 
 (defn api--serve [bind root config]
   (let* [tokens (api--load-tokens)
@@ -655,12 +673,12 @@
          store (store--open root {:id "service" :role "operator"})
          runner (runner--open store (api--service-config config))]
     (loop [owner {:listener listener :store store :tokens tokens
-                  :runner runner :config config}]
+                  :runner runner :config config :scheduler_failure nil}]
       ;; Poll before blocking so queued work advances while no request is
       ;; in flight, and while one is: a single tick per loop iteration is
       ;; the whole scheduler, and HTTP wait must not starve it.
-      (let [next (assoc owner :runner (api--tick (get owner :runner)))]
-        (let [raw (host/http-next (get owner :listener) 200)]
+      (let [next (api--tick owner)]
+        (let [raw (host/http-next (get next :listener) 200)]
           (if (nil? raw)
             (recur next)
             (let* [method (get raw :method "GET")
@@ -677,6 +695,7 @@
                             :store (store--as (get (get next :store) :db) (get (get next :store) :root) principal)
                             :tokens (get next :tokens)
                             :principal principal
+                            :scheduler_failure (get next :scheduler_failure nil)
                             :listener (get next :listener)
                             :id (get raw :id)}]
               (if (and (nil? role) (not (api--public-path path)))
