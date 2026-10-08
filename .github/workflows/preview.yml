@@ -57,6 +57,61 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number || inputs.pull_request }}
         run: bash tools/preview-stack.sh delete
 
+      - name: Wait for checks on the head SHA
+        # Deploy only after every check run on the verified head SHA passes.
+        # Unconditional deploys served unverified code as a live preview.
+        if: >-
+          github.event_name == 'pull_request_target' &&
+          github.event.action != 'closed'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          REPO: ${{ github.repository }}
+        run: |
+          deadline=$(( $(date +%s) + 1800 ))  # bounded: 30 minutes
+          while :; do
+            pending=0 failed=0 page=1
+            while :; do
+              resp="$(gh api "repos/$REPO/commits/$HEAD_SHA/check-runs?per_page=100&page=$page")"
+              count="$(jq -r '.total_count' <<<"$resp")"
+              [ "$count" -gt 0 ] || break
+              while read -r status conclusion; do
+                case "$status" in
+                  completed)
+                    case "$conclusion" in success|skipped|neutral) ;; *) failed=1 ;; esac ;;
+                  *) pending=1 ;;
+                esac
+              done < <(jq -r '.check_runs[] | "\(.status) \(.conclusion // "none")"' <<<"$resp")
+              [ "$count" -lt 100 ] || { page=$((page+1)); continue; }
+              break
+            done
+            if [ "$failed" -ne 0 ]; then echo "checks failed on $HEAD_SHA; not deploying" >&2; exit 1; fi
+            if [ "$pending" -eq 0 ]; then echo "all checks passed on $HEAD_SHA"; exit 0; fi
+            [ "$(date +%s)" -lt "$deadline" ] || { echo "timed out waiting for checks on $HEAD_SHA" >&2; exit 1; }
+            sleep 30
+          done
+
+      - name: Derive per-PR Grove tokens
+        # One master secret, deterministic per-PR tokens:
+        #   token(PR, role) = hex(HMAC-SHA256(master, "zio-preview|<PR>|<role>"))
+        # Bound: anyone holding the master secret can derive ANY PR's
+        # tokens; a leaked single-PR token reveals nothing about other
+        # PRs. No persistence service needed.
+        id: tokens
+        if: >-
+          github.event_name == 'pull_request_target' &&
+          github.event.action != 'closed'
+        env:
+          MASTER: ${{ secrets.GROVE_PREVIEW_TOKEN_MASTER }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          [ -n "$MASTER" ] || { echo 'secrets.GROVE_PREVIEW_TOKEN_MASTER must be set' >&2; exit 1; }
+          for role in reader operator publisher annotator; do
+            key="$(printf 'zio-preview|%s|%s' "$PR_NUMBER" "$role" \
+              | openssl dgst -sha256 -hmac "$MASTER" -hex | sed 's/^.*= //')"
+            echo "${role}=$key" >> "$GITHUB_OUTPUT"
+          done
+
       - name: Create preview
         if: >-
           github.event_name != 'workflow_dispatch' &&
@@ -70,7 +125,8 @@ jobs:
           PREVIEW_PROJECT: ${{ steps.preview.outputs.project }}
           PREVIEW_DOMAIN: ${{ steps.preview.outputs.domain }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
-          GROVE_PREVIEW_TOKEN_READER: ${{ secrets.GROVE_PREVIEW_TOKEN_READER }}
-          GROVE_PREVIEW_TOKEN_OPERATOR: ${{ secrets.GROVE_PREVIEW_TOKEN_OPERATOR }}
-          GROVE_PREVIEW_TOKEN_PUBLISHER: ${{ secrets.GROVE_PREVIEW_TOKEN_PUBLISHER }}
+          GROVE_PREVIEW_TOKEN_READER: ${{ steps.tokens.outputs.reader }}
+          GROVE_PREVIEW_TOKEN_OPERATOR: ${{ steps.tokens.outputs.operator }}
+          GROVE_PREVIEW_TOKEN_PUBLISHER: ${{ steps.tokens.outputs.publisher }}
+          GROVE_PREVIEW_TOKEN_ANNOTATOR: ${{ steps.tokens.outputs.annotator }}
         run: bash tools/preview-stack.sh up
