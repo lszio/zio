@@ -154,6 +154,7 @@
   ;; the jail exposes only /scratch. `out` is separate from `weights` so
   ;; the trained parameters cannot overwrite the file the worker reads.
   (let* [config (get runner :config) work (get claim :work)
+         store (get runner :store)
          scratch (get (get config :worker-config) :scratch "")
          host-scratch (str scratch "/" (get claim :run_id))
          jail (str "/scratch/" (get claim :run_id))]
@@ -167,6 +168,14 @@
     (if (get work :val_data nil)
       (host/write-atomic (str host-scratch "/val.gvd1") (runner--read-input runner (get work :val_data)))
       nil)
+    ;; A resumed run's `:resume` names a committed checkpoint's state
+    ;; artifact; the worker loads optimizer/RNG/step state from a jail
+    ;; path, so the bytes are staged into scratch and the frame carries
+    ;; the continuation fields the worker reads.
+    (if (get work :resume nil)
+      (host/write-atomic (str host-scratch "/state.json")
+        (artifact--get store (grove--ref-hex (get work :resume))))
+      nil)
     {:v 1
      :type "train"
      :run_id (get claim :run_id)
@@ -177,7 +186,10 @@
      :val_data (if (get work :val_data nil) (str jail "/val.gvd1") nil)
      :out (str jail "/trained.json")
      :steps (get work :steps 1)
-     :seed (get work :seed 1)}))
+     :seed (get work :seed 1)
+     :resume (if (get work :resume nil) (str jail "/state.json") nil)
+     :resume_level (get work :resume_level nil)
+     :resume_run (get work :resume_run nil)}))
 
 (defn runner--start [runner claim]
   (let* [config (get runner :config)
