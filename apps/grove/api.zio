@@ -506,8 +506,10 @@
                 (grove--get-key body :new_run_id "")
                 (grove--get-key body :steps_budget 1000)
                 (grove--get-key body :training {}))]
-    (store--receipt-put store op "POST /api/learning/resume" body "created" (merge plan {:operation_id op}))
-    (api--created request (merge plan {:operation_id op}))))
+    ;; `merge` does not exist in this language; the plan map gains the
+    ;; operation id the same way every other reply decorates a payload.
+    (store--receipt-put store op "POST /api/learning/resume" body "created" (assoc plan :operation_id op))
+    (api--created request (assoc plan :operation_id op))))
 
 (defn api--handle-fork [request]
   (let* [store (get request :store)

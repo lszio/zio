@@ -20,16 +20,20 @@
 (defn checkpoint--commit [store run-id parent level body]
   (grove--authorize store "operator")
   (let* [run (grove--get store "Run" run-id)
-         state (checkpoint--manifest body run-id level)
-         object (artifact--put store body)
-         checkpoint {:schema 1 :id (str "ckpt-" run-id "-" (get state :step))
-           :owner (get (get store :principal) :id) :run_id run-id
-           :snapshot (get run :base_snapshot) :parent parent :resume_level level
-           :state_artifact (grove--artifact-ref object)
-           :budget_spent_steps (get run :steps_consumed) :created_at_ms (host/clock-ms)}]
+         state (checkpoint--manifest body run-id level)]
+    ;; Every refusal precedes artifact durability: a failure after the
+    ;; domain write would strand an orphaned artifact with no checkpoint
+    ;; row pointing at it. The record goes through the checkpoint domain
+    ;; write, not the validating-only grove--put, or resume/fork could
+    ;; never read the row back.
     (grove--require (= (get state :step) (get run :steps_consumed)) "incompatible-state" "checkpoint step does not match the observed budget ledger")
-    (grove--put store "Checkpoint" checkpoint)
-    checkpoint))
+    (let* [checkpoint {:schema 1 :id (str "ckpt-" run-id "-" (get state :step))
+             :owner (get (get store :principal) :id) :run_id run-id
+             :snapshot (get run :base_snapshot) :parent parent :resume_level level
+             :state_artifact (grove--artifact-ref (artifact--put store body))
+             :budget_spent_steps (get run :steps_consumed) :created_at_ms (host/clock-ms)}]
+      (store--put-checkpoint store checkpoint)
+      checkpoint)))
 
 (defn checkpoint--pause [store run-id body]
   (store--transaction store (fn []
