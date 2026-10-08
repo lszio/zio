@@ -46,8 +46,8 @@ const HTTP_HANDLE: &str = "host/http-handle";
 fn http_response_from_value(value: &Value) -> Result<HttpResponse, EvalError> {
     let status = values::get(value, "status")
         .ok_or_else(|| invalid("HTTP response requires integer status"))?;
-    let status = u16::try_from(values::integer(status)?)
-        .map_err(|_| invalid("HTTP status out of range"))?;
+    let status =
+        u16::try_from(values::integer(status)?).map_err(|_| invalid("HTTP status out of range"))?;
     let headers = values::get(value, "headers")
         .ok_or_else(|| invalid("HTTP response headers must be an object"))?;
     let headers = values::to_json(headers)?;
@@ -116,7 +116,6 @@ fn keyword_map(entries: impl IntoIterator<Item = (&'static str, Value)>) -> Valu
 fn json_to_value(value: Json) -> Result<Value, EvalError> {
     values::from_json(value)
 }
-
 
 fn exit_map(exit: &ProcessExit) -> Value {
     keyword_map([
@@ -438,13 +437,7 @@ pub fn install(ctx: &EvalContext, policy: &HostPolicy) {
                 return Err(capability("network"));
             }
             values::arity(&args, 1)?;
-            call_handle(
-                &args[0],
-                "readable",
-                Vector::new(),
-                engine,
-                HTTP_HANDLE,
-            )
+            call_handle(&args[0], "readable", Vector::new(), engine, HTTP_HANDLE)
         });
     }
     {
@@ -470,13 +463,7 @@ pub fn install(ctx: &EvalContext, policy: &HostPolicy) {
                 return Err(capability("network"));
             }
             values::arity(&args, 1)?;
-            call_handle(
-                &args[0],
-                "close",
-                Vector::new(),
-                engine,
-                HTTP_HANDLE,
-            )
+            call_handle(&args[0], "close", Vector::new(), engine, HTTP_HANDLE)
         });
     }
 

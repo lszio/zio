@@ -239,15 +239,15 @@ mod tests {
     }
 }
 
-    #[test]
-    fn virtual_paths_are_canonicalized_independently_of_host_os() {
-        let io = BufferIoHost::new();
-        assert_eq!(
-            io.canonicalize_path("/zio/apps/grove/../site/./index.zio")
-                .unwrap(),
-            "/zio/apps/site/index.zio"
-        );
-        assert_eq!(io.canonicalize_path("/").unwrap(), "/");
-        assert!(io.canonicalize_path("zio/apps").is_err());
-        assert!(io.canonicalize_path("/../escape").is_err());
-    }
+#[test]
+fn virtual_paths_are_canonicalized_independently_of_host_os() {
+    let io = BufferIoHost::new();
+    assert_eq!(
+        io.canonicalize_path("/zio/apps/grove/../site/./index.zio")
+            .unwrap(),
+        "/zio/apps/site/index.zio"
+    );
+    assert_eq!(io.canonicalize_path("/").unwrap(), "/");
+    assert!(io.canonicalize_path("zio/apps").is_err());
+    assert!(io.canonicalize_path("/../escape").is_err());
+}
