@@ -141,6 +141,23 @@ def fingerprint(values) -> str:
     return digest.hexdigest()[:16]
 
 
+def max_abs_diff(a, b) -> float:
+    """Largest absolute difference between two nested numeric structures."""
+    flat_a: list[float] = []
+    flat_b: list[float] = []
+
+    def walk(node, out) -> None:
+        if isinstance(node, (list, tuple)):
+            for item in node:
+                walk(item, out)
+        elif isinstance(node, (int, float)):
+            out.append(float(node))
+
+    walk(a, flat_a)
+    walk(b, flat_b)
+    return max((abs(x - y) for x, y in zip(flat_a, flat_b)), default=0.0)
+
+
 def stop(process: subprocess.Popen) -> None:
     """Close a worker's stdin and reap it.
 
@@ -508,6 +525,170 @@ class WorkerProtocolTests(unittest.TestCase):
                         "a linear fusion should not solve the XOR")
         self.assertGreater(nonlinear["val_accuracy"], 0.9,
                            "the nonlinear structure should fit it")
+
+
+class ResumeContractTests(unittest.TestCase):
+    """checkpoint--resume enqueues a NEW run id together with the parent's
+    identity (`resume_run`) and a level; the worker must accept the parent
+    state for the new run and restore only what the level names."""
+
+    DATA = str(TASK / "data" / "train.bin")
+
+    def _write_weights(self, tmp: Path) -> Path:
+        weights = tmp / "w.json"
+        weights.write_text(json.dumps(
+            {"frozen": seeded_layer(32, 258, 7), "active": seeded_layer(2, 32, 3)}))
+        return weights
+
+    def _checkpoint(self, tmp: Path, run_id: str = "run-a") -> Path:
+        """Ten real steps, then stop exactly at the checkpoint boundary."""
+        process = start_worker()
+        state = tmp / f"{run_id}-state.json"
+        send(process, {
+            "v": 1, "type": "train",
+            "run_id": run_id, "attempt_id": "att-parent",
+            "graph": two_layer_graph_payload(),
+            "weights": str(self._write_weights(tmp)),
+            "data": self.DATA, "out": str(tmp / f"{run_id}-out.json"),
+            "steps": 10, "seed": 1,
+            "save_at": 10, "state_out": str(state), "stop_after_save": True,
+        })
+        done = until(process, run_id)
+        self.assertEqual(done["type"], "done", done)
+        stop(process)
+        return state
+
+    def _run(self, tmp: Path, frame: dict) -> list[dict]:
+        """One train frame; every frame the run emitted, terminal last."""
+        import selectors
+        import time
+        process = start_worker()
+        send(process, frame)
+        frames: list[dict] = []
+        sel = selectors.DefaultSelector()
+        sel.register(process.stdout, selectors.EVENT_READ)
+        deadline = time.monotonic() + 90.0
+        try:
+            while True:
+                if time.monotonic() > deadline:
+                    process.kill()
+                    raise AssertionError(f"worker never finished {frame['run_id']}")
+                if not sel.select(timeout=1.0):
+                    continue
+                emitted = json.loads(process.stdout.readline())
+                if emitted.get("run_id") != frame["run_id"]:
+                    continue
+                frames.append(emitted)
+                if emitted.get("type") in ("done", "failed"):
+                    return frames
+        finally:
+            stop(process)
+
+    def test_resume_learning_continuation_accepts_the_parent_state(self):
+        """A resumed run (new id by design) continues the parent's Adam
+        moments, RNG stream and step: 10 saved + 20 resumed lands exactly
+        where 30 uninterrupted steps would."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            state = self._checkpoint(tmp)
+            weights = self._write_weights(tmp)
+
+            control = start_worker()
+            send(control, {
+                "v": 1, "type": "train", "run_id": "run-control",
+                "graph": two_layer_graph_payload(),
+                "weights": str(weights), "data": self.DATA,
+                "out": str(tmp / "control-out.json"),
+                "steps": 30, "seed": 1,
+            })
+            done = until(control, "run-control")
+            self.assertEqual(done["type"], "done", done)
+            stop(control)
+
+            frames = self._run(tmp, {
+                "v": 1, "type": "train", "run_id": "run-b",
+                "attempt_id": "att-child",
+                "graph": two_layer_graph_payload(),
+                "weights": str(weights), "data": self.DATA,
+                "out": str(tmp / "run-b-out.json"),
+                "steps": 20, "seed": 1,
+                "resume": str(state), "resume_level": "learning-continuation",
+                "resume_run": "run-a",
+            })
+            self.assertEqual(frames[-1]["type"], "done", frames)
+            steps = [f.get("step") for f in frames if f["type"] == "progress"]
+            # the run never restarts at 1: it continues the parent's ledger
+            self.assertTrue(all(s > 10 for s in steps), steps)
+            self.assertAlmostEqual(frames[-1]["loss"], done["loss"], delta=1e-6)
+            resumed = json.loads((tmp / "run-b-out.json").read_text())
+            control_out = json.loads((tmp / "control-out.json").read_text())
+            # optimizer, RNG and step all restored: identical trajectory
+            self.assertLessEqual(
+                max_abs_diff(resumed["params"], control_out["params"]), 1e-5)
+
+    def test_resume_model_initialization_restores_weights_only(self):
+        """Weights carry over; Adam moments, RNG and the step counter do
+        not: the resumed run's first step matches a fresh run started from
+        the parent's saved weights."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            state = self._checkpoint(tmp)
+            weights = self._write_weights(tmp)
+
+            frames = self._run(tmp, {
+                "v": 1, "type": "train", "run_id": "run-b",
+                "attempt_id": "att-child",
+                "graph": two_layer_graph_payload(),
+                "weights": str(weights), "data": self.DATA,
+                "out": str(tmp / "run-b-out.json"),
+                "steps": 1, "seed": 1,
+                "resume": str(state), "resume_level": "model-initialization",
+                "resume_run": "run-a",
+            })
+            self.assertEqual(frames[-1]["type"], "done", frames)
+            steps = [f.get("step") for f in frames if f["type"] == "progress"]
+            # a weights-only resume restarts the ledger at 0, not 10
+            self.assertEqual(steps, [1], steps)
+
+            # the exact step a never-paused run would take from the
+            # checkpointed weights: fresh Adam, fresh seed, parent weights
+            artifact = json.loads(state.read_text())
+            parent_weights = tmp / "parent-w.json"
+            parent_weights.write_text(json.dumps(artifact["params"]))
+            fresh = start_worker()
+            send(fresh, {
+                "v": 1, "type": "train", "run_id": "run-fresh",
+                "graph": two_layer_graph_payload(),
+                "weights": str(parent_weights), "data": self.DATA,
+                "out": str(tmp / "fresh-out.json"),
+                "steps": 1, "seed": 1,
+            })
+            done = until(fresh, "run-fresh")
+            self.assertEqual(done["type"], "done", done)
+            stop(fresh)
+
+            resumed = json.loads((tmp / "run-b-out.json").read_text())
+            fresh_out = json.loads((tmp / "fresh-out.json").read_text())
+            self.assertLessEqual(
+                max_abs_diff(resumed["params"], fresh_out["params"]), 1e-6)
+
+    def test_resume_refuses_a_state_artifact_from_an_unrelated_run(self):
+        """The parent identity in the frame is the trust anchor: an
+        artifact minted by a different run never loads."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            state = self._checkpoint(tmp)
+            frames = self._run(tmp, {
+                "v": 1, "type": "train", "run_id": "run-b",
+                "graph": two_layer_graph_payload(),
+                "weights": str(self._write_weights(tmp)), "data": self.DATA,
+                "out": str(tmp / "run-b-out.json"),
+                "steps": 5, "seed": 1,
+                "resume": str(state), "resume_level": "learning-continuation",
+                "resume_run": "run-someone-else",
+            })
+            self.assertEqual(frames[-1]["type"], "failed", frames)
+            self.assertIn("belongs to run", frames[-1].get("error", ""))
 
 
 if __name__ == "__main__":

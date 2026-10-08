@@ -303,8 +303,14 @@ def save_state(path: Path, run_id: str, attempt_id: str, step: int,
     os.replace(tmp, path)
 
 
-def load_state(path: Path, linears: dict, optimiser, named):
-    """Restore everything the training loop consumes: parameters, Adam
+def load_state(path: Path, linears: dict, optimiser, named,
+               level: str | None = "learning-continuation"):
+    """Restore the training state the resume level asks for.
+
+    "model-initialization" restores weights only — the resumed run keeps
+    its fresh Adam moments, RNG stream and step counter, mirroring
+    checkpoint.zio's manifest rule where only continuation levels require
+    optimizer membership. Any other level restores parameters, Adam
     moments and step, and the CPU RNG stream.
 
     A state artifact whose `trainable` set does not match this attempt's
@@ -322,17 +328,23 @@ def load_state(path: Path, linears: dict, optimiser, named):
             f"state artifact schema {payload.get('schema')!r} predates the "
             "trainable set being recorded; refusing to resume blind"
         )
-    saved_keys = set(payload.get("optimizer", {}).get("adam", {}))
-    if saved_keys != {key for key, _ in named}:
-        raise GraphError(
-            f"state artifact was saved for optimizer parameters {sorted(saved_keys)}, "
-            f"this attempt trains {sorted(key for key, _ in named)}"
-        )
+    continuation = level != "model-initialization"
+    if continuation:
+        saved_keys = set(payload.get("optimizer", {}).get("adam", {}))
+        if saved_keys != {key for key, _ in named}:
+            raise GraphError(
+                f"state artifact was saved for optimizer parameters {sorted(saved_keys)}, "
+                f"this attempt trains {sorted(key for key, _ in named)}"
+            )
     with torch.no_grad():
         for name, layer in linears.items():
             saved = payload["params"][name]
             layer.weight.copy_(torch.tensor(saved["w"], dtype=torch.float32))
             layer.bias.copy_(torch.tensor(saved["b"], dtype=torch.float32))
+    if not continuation:
+        # weights-only: the new run starts from step 0 on the seed's fresh
+        # RNG stream — the state a never-paused run of that id would have
+        return payload["run_id"], 0, None
     for key, param in named:
         entry = payload["optimizer"]["adam"][key]
         optimiser.state[param] = {
@@ -358,14 +370,18 @@ def do_train(frame: dict) -> None:
         data = load_tensors(Path(frame["data"]))
         val = load_tensors(Path(frame["val_data"])) if frame.get("val_data") else None
         resume_path = frame.get("resume")
+        resume_level = frame.get("resume_level")
+        # A resumed run has a NEW id by design (checkpoint--resume creates
+        # it); the artifact's parent identity is forwarded as `resume_run`.
+        resume_run = frame.get("resume_run") or run_id
         save_at = frame.get("save_at")
         stop_after_save = bool(frame.get("stop_after_save", False))
 
         weights = load_weights(Path(frame["weights"]))
         params = weights.get("params", weights)
-        # construction draws from the RNG, but a resumed run overwrites the
-        # whole RNG stream from the state artifact below, so constructor
-        # draws never leak into the sampling sequence
+        # construction draws from the RNG, but a continuation resume
+        # overwrites the whole RNG stream from the state artifact below, so
+        # constructor draws never leak into the sampling sequence
         forward, parameters, linears = build_model(graph, params, seed)
 
         torch.manual_seed(seed)
@@ -379,10 +395,10 @@ def do_train(frame: dict) -> None:
         first_loss = None
         if resume_path:
             state_run, start_step, first_loss = load_state(
-                Path(resume_path), linears, optimiser, named)
-            if state_run != run_id:
+                Path(resume_path), linears, optimiser, named, level=resume_level)
+            if state_run != resume_run:
                 raise GraphError(
-                    f"state artifact belongs to run {state_run!r}, not {run_id!r}"
+                    f"state artifact belongs to run {state_run!r}, not {resume_run!r}"
                 )
 
         x, y, mask = data["x"], data["y"], data["mask"]
