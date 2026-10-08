@@ -1,0 +1,36 @@
+# MR preview stack. One stack per pull request, its own volume, its own
+# tokens, deleted when the pull request closes or merges. No host port
+# mappings: a preview is reached through its own Dokploy domain.
+services:
+  site:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    expose:
+      - "80"
+  grove:
+    build:
+      context: .
+      dockerfile: Dockerfile.grove
+    restart: unless-stopped
+    environment:
+      GROVE_ROOT: /srv/grove/data
+      GROVE_BIND: 0.0.0.0:8787
+      GROVE_WORKERS: "1"
+      GROVE_TENSOR_PYTHON: /opt/grove-venv/bin/python
+      GROVE_TOKEN_READER: ${GROVE_PREVIEW_TOKEN_READER}
+      GROVE_TOKEN_OPERATOR: ${GROVE_PREVIEW_TOKEN_OPERATOR}
+      GROVE_TOKEN_PUBLISHER: ${GROVE_PREVIEW_TOKEN_PUBLISHER}
+    expose:
+      - "8787"
+    volumes:
+      - preview-data:/srv/grove/data
+    deploy:
+      resources:
+        limits:
+          cpus: "2"
+          memory: 4G
+
+volumes:
+  preview-data:
