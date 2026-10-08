@@ -34,6 +34,19 @@ jobs:
       - name: Build
         run: cargo build --workspace --all-targets
 
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # Workspace isolation contracts exercise the real CPU worker and require
+      # its gitignored virtual environment in a clean checkout.
+      - name: Set up CPU worker runtime
+        run: |
+          python -m venv .venv
+          .venv/bin/python -m pip install \
+            --index-url https://download.pytorch.org/whl/cpu \
+            -r apps/grove/workers/torch/requirements.txt
+
       - name: Test
         run: cargo test --workspace
 
