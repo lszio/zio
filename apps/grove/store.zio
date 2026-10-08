@@ -265,15 +265,32 @@
         "INSERT OR IGNORE INTO populations(id,owner,schema,body) VALUES(?1,?2,1,?3)"
         [(grove--get-key record :id nil) (grove--principal-id store) body])))))
 
+(def store--run-id-chars (map (fn [i] (host/bytes-utf8 (host/byte-slice "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-" i 1))) (range 65)))
+
 (defn store--put-run [store record]
   (grove--schema! (grove--get-key record :schema nil))
   (grove--authorize store "operator")
-  (let [body (codec--text "Run" record)]
-    (store--transaction store (fn []
-      (store--execute store
-        "INSERT OR IGNORE INTO runs(id,task,state,schema,body) VALUES(?1,?2,?3,1,?4)"
-        [(grove--get-key record :id nil) (grove--get-key record :task_id nil)
-         (grove--get-key record :state nil) body])))))
+  ;; Run ids become scratch directory names (runner--stage), so an id
+  ;; like "victim/" would alias the files of run "victim" on disk.
+  (let [id (grove--get-key record :id nil)
+        bytes (host/bytes (str id))
+        length (host/byte-length bytes)]
+    (grove--require
+      (and (= (type id) :string)
+           (> length 0)
+           (not (str-starts-with? id "."))
+           (loop [offset 0]
+             (if (= offset length) true
+               (if (grove--contains store--run-id-chars (host/bytes-utf8 (host/byte-slice bytes offset 1)))
+                 (recur (+ offset 1))
+                 false))))
+      "invalid-input" "run id must be [A-Za-z0-9._-], not starting with a dot")
+    (let [body (codec--text "Run" record)]
+      (store--transaction store (fn []
+        (store--execute store
+          "INSERT OR IGNORE INTO runs(id,task,state,schema,body) VALUES(?1,?2,?3,1,?4)"
+          [id (grove--get-key record :task_id nil)
+           (grove--get-key record :state nil) body]))))))
 
 (defn store--set-run [store run]
   (grove--authorize store "operator")
