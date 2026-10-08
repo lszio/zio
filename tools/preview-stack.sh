@@ -56,9 +56,13 @@ get() { # get <procedure> <json-input>
   if $dry_run; then
     printf 'GET %s/api/trpc/%s?input=%s\n' "$api" "$1" "$(jq -rn --arg v "$2" '$v|@uri')" >&2
   else
-    curl -sS --fail-with-body "$api/api/trpc/$1?input=$(jq -rn --arg v "$2" '$v|@uri')" \
-      -H "x-api-key: $token"
-    printf '\n'
+    # Propagate curl's status: a trailing printf would turn a 401/transport
+    # failure into success and make the name lookup report "absent".
+    local body status=0
+    body="$(curl -sS --fail-with-body "$api/api/trpc/$1?input=$(jq -rn --arg v "$2" '$v|@uri')" \
+      -H "x-api-key: $token")" || status=$?
+    printf '%s\n' "$body"
+    return "$status"
   fi
 }
 
@@ -71,8 +75,11 @@ resolve_compose_id() {
     get environment.one "{\"environmentId\":\"$env_id\"}" # name -> composeId lookup
     printf '<composeId-of-%s>\n' "$project"
   else
+    # No `|| true`: with `set -euo pipefail` a transport/auth/JSON failure
+    # propagates and aborts, while a successful lookup without a match
+    # still means absent (empty composeId).
     get environment.one "{\"environmentId\":\"$env_id\"}" \
-      | jq -r --arg name "$project" '(.result.data.json // .result.data // .).compose[]? | select(.name == $name) | .composeId' || true
+      | jq -r --arg name "$project" '(.result.data.json // .result.data // .).compose[]? | select(.name == $name) | .composeId'
   fi
 }
 
