@@ -10,6 +10,7 @@
 #
 # Usage:
 #   tools/install.sh [target-dir]        # default: dist/zio
+#   tools/install.sh /opt/zio            # what Dockerfile.grove runs
 #
 # Layout produced:
 #   <target>/bin/zio            the language CLI
