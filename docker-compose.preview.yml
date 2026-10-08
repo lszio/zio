@@ -14,6 +14,10 @@ services:
       context: .
       dockerfile: Dockerfile.grove
     restart: unless-stopped
+    # Training needs user namespaces; Docker's default seccomp filter makes
+    # unshare(CLONE_NEWUSER) fail with EPERM (see docker-compose.dokploy.yml).
+    security_opt:
+      - seccomp:unconfined
     environment:
       GROVE_ROOT: /srv/grove/data
       GROVE_BIND: 0.0.0.0:8787
