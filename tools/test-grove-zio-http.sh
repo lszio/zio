@@ -13,6 +13,7 @@ cargo build -q -p zio-cli
 port="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()')"
 bind="127.0.0.1:$port"
 export GROVE_TOKEN_READER=reader-test
+export GROVE_TOKEN_ANNOTATOR=annotator-test
 export GROVE_TOKEN_OPERATOR=operator-test
 export GROVE_TOKEN_PUBLISHER=publisher-test
 
@@ -128,6 +129,25 @@ expect "reader cannot enqueue" 403 '"class":"capability-denied"' -X POST \
   -H 'Authorization: Bearer reader-test' -H 'Content-Type: application/json' \
   --data '{"run_id":"run-reader","task_id":"task-1","steps_budget":1,"operation_id":"op-reader-queue"}' \
   "http://$bind/api/learning/queue"
+
+# An annotator may file a correction and must be able to record the
+# receipt for it: the route requires only the annotator role, so a stricter
+# gate on receipt recording would refuse the annotator on its own path
+# AFTER the signal was already filed.
+expect "reader cannot file a signal" 403 '"class":"capability-denied"' -X POST \
+  -H 'Authorization: Bearer reader-test' -H 'Content-Type: application/json' \
+  --data '{"id":"corr-reader","kind":"human-correction","operation_id":"op-sig-reader","target_field":"state"}' \
+  "http://$bind/api/signals"
+signal_body='{"schema":1,"id":"corr-1","kind":"human-correction","target_field":"state","content":"clear","operation_id":"op-sig-ann"}'
+fetch -X POST "http://$bind/api/signals" \
+  -H 'Authorization: Bearer annotator-test' -H 'Content-Type: application/json' --data "$signal_body"
+[[ "$http_status" == 201 && "$http_body" == *'"id":"corr-1"'* ]] \
+  || fail "annotator signal POST: expected HTTP 201 naming corr-1; got HTTP $http_status: $http_body"
+# The replay must come back from the ledger the annotator wrote, not from a
+# second write: same answer, recorded by the annotator's own token.
+expect "annotator signal replay" 201 '"id":"corr-1"' -X POST \
+  -H 'Authorization: Bearer annotator-test' -H 'Content-Type: application/json' --data "$signal_body" \
+  "http://$bind/api/signals"
 
 # An operation id means one thing. The identical replay returns the first
 # answer verbatim; a replay that differs under the same id is refused

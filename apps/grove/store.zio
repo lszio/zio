@@ -1071,7 +1071,25 @@
   ;; -- comparing that with the caller's answer compares the answer with
   ;; itself, so a writer whose INSERT OR IGNORE did nothing would be told
   ;; it won while a later replay hands out the first writer's answer.
-  (do (grove--authorize store "operator")
+  ;;
+  ;; A receipt is the ledger entry for an operation the caller was already
+  ;; authorized to perform, not a domain write of its own. The Rust oracle
+  ;; records it as `Actor::new("grove-api", Operator)`
+  ;; (apps/grove/native/app/src/api.rs:158) regardless of the caller's role,
+  ;; because the authority in question is the ROUTE's, already checked by
+  ;; `api--require-role` before the handler ran. Demanding `operator` here
+  ;; refused an annotator on its own `POST /api/signals` -- a route that
+  ;; requires only `annotator` -- after the handler had already filed the
+  ;; signal and could not answer for it. The floor is therefore `reader`:
+  ;; the lowest role any receipt-recording route admits
+  ;; (`POST /api/observations` and `POST /api/predictions` both take a
+  ;; reader), and every route above that raises its own floor first, so a
+  ;; reader never reaches a receipt for work it could not have done. A
+  ;; reader that does reach one is refused by its read-only connection --
+  ;; that is the boundary, and it is not weakened by this check. The
+  ;; binding still records the real principal, so a receipt recorded by one
+  ;; token is never replayed to another.
+  (do (grove--authorize store "reader")
       (let* [principal (grove--principal-id store)
         answer (let [existing (store--receipt-lookup store operation principal route payload)]
                  (if (nil? existing) (store--receipt-store store operation principal route payload status response))
