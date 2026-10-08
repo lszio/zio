@@ -239,6 +239,14 @@ struct AppLaunch {
     resource_root: Option<PathBuf>,
     tensor_backend: Option<PathBuf>,
     tensor_python: Option<PathBuf>,
+    /// The isolated worker script and the interpreter that execs it.
+    /// Both are launcher decisions: the application names neither.
+    worker_script: Option<PathBuf>,
+    worker_python: Option<PathBuf>,
+    /// Extra read-only directories the jail mounts for the worker.
+    /// `/usr` and the interpreter's tree are not derivable from any other
+    /// flag, and the jail refuses to start without declared mounts.
+    worker_mounts: Vec<PathBuf>,
     data_root: Option<PathBuf>,
     bind: Option<String>,
     workers: Option<i64>,
@@ -283,10 +291,40 @@ impl AppLaunch {
             self.tensor_python.as_ref().map(|p| p.display().to_string()),
         );
         put(
+            "worker-script",
+            self.worker_script.as_ref().map(|p| p.display().to_string()),
+        );
+        put(
+            "worker-python",
+            self.worker_python.as_ref().map(|p| p.display().to_string()),
+        );
+        put(
             "root",
             self.data_root.as_ref().map(|p| p.display().to_string()),
         );
+        // The staging root is derived here rather than named by a fourth
+        // flag: it must be a write root, and the launcher granted exactly
+        // one write root.
+        put(
+            "worker-scratch",
+            self.data_root
+                .as_ref()
+                .map(|root| root.join("worker-scratch").display().to_string()),
+        );
         put("bind", self.bind.clone());
+        // Inserted after the last `put`: the closure holds `map` mutably.
+        if !self.worker_mounts.is_empty() {
+            map.insert(
+                Value::Keyword("worker-mounts".into()),
+                string_vector(
+                    &self
+                        .worker_mounts
+                        .iter()
+                        .map(|p| p.display().to_string())
+                        .collect::<Vec<_>>(),
+                ),
+            );
+        }
         if let Some(workers) = self.workers {
             map.insert(Value::Keyword("workers".into()), Value::Integer(workers));
         }
@@ -364,6 +402,14 @@ fn app_context(launch: &AppLaunch) -> Result<EvalContext, EvalError> {
     }
     if let Some(share) = &launch.app_share {
         policy.read_roots.push(share.clone());
+    }
+    // The worker's interpreter and script must be readable by the service
+    // to be mounted into the jail, and /usr is what any interpreter links
+    // against after pivot_root. These are launcher-decided grants, like
+    // the tensor backend: the config map cannot widen them.
+    policy.read_roots.push(PathBuf::from("/usr"));
+    for mount in &launch.worker_mounts {
+        policy.read_roots.push(mount.clone());
     }
     // The tensor backend and its interpreter are granted as fixed paths,
     // and only here. The application passes a config map, but the map
@@ -563,6 +609,9 @@ fn main() {
             "--app-resource-root" => launch.resource_root = Some(path()),
             "--app-tensor-backend" => launch.tensor_backend = Some(path()),
             "--app-tensor-python" => launch.tensor_python = Some(path()),
+            "--app-worker-script" => launch.worker_script = Some(path()),
+            "--app-worker-python" => launch.worker_python = Some(path()),
+            "--app-worker-mount" => launch.worker_mounts.push(path()),
             "--app-root-dir" => launch.data_root = Some(path()),
             "--app-bind" => launch.bind = Some(value()),
             "--app-workers" => launch.workers = Some(number("--app-workers")),

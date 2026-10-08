@@ -22,12 +22,41 @@ run_grove() {
   for arg in "$@"; do
     args+=(--args "$arg")
   done
+  local python_path="${GROVE_TENSOR_PYTHON:-$root/.venv/bin/python}"
+  local worker_script="${GROVE_WORKER_SCRIPT:-$root/apps/grove/workers/torch/worker.py}"
+  [[ "$python_path" == /* ]] || python_path="$root/$python_path"
+  [[ "$worker_script" == /* ]] || worker_script="$root/$worker_script"
+  local py_real base_dir alias_dir mount_dir
+  py_real="$(readlink -f "$python_path")"
+  # The venv python symlinks through uv's alias directory, so both the
+  # real install tree and its parent alias directory are granted: the
+  # interpreter is exec'd by the un-resolved path inside the jail.
+  base_dir="$(readlink -f "$(dirname "$py_real")/..")"
+  alias_dir="$(readlink -f "$base_dir/..")"
+  # Anything under /usr is covered by the service's whole-/usr grant; a
+  # duplicate or nested mount target is refused by the jail.
+  mount_dir() {
+    case "$1" in /usr|/usr/*|/) return ;; esac
+    MOUNTS+=(--app-worker-mount "$1")
+  }
+  local MOUNTS=()
+  mount_dir "$(cd "$(dirname "$worker_script")" && pwd)"
+  mount_dir "$(readlink -f "$(dirname "$python_path")/..")"
+  # The alias directory contains the real install tree, so granting it
+  # covers both; fall back to the base tree when the alias is /usr-side.
+  case "$alias_dir" in
+    /|/usr|/usr/*) mount_dir "$base_dir" ;;
+    *) mount_dir "$alias_dir" ;;
+  esac
   ./target/debug/zio-cli \
     --app apps/grove/main.zio \
     --app-root apps/grove \
     --app-share . \
     --app-root-dir "$test_dir" \
     --app-bind "$bind" \
+    --app-worker-script "$worker_script" \
+    --app-worker-python "$python_path" \
+    "${MOUNTS[@]}" \
     "${args[@]}"
 }
 
@@ -116,10 +145,27 @@ for field in owner_pid store_root schema; do
   [[ "$health" == *"\"$field\""* ]] || fail "health payload lost \"$field\": $health"
 done
 
+# Run-1 carries a real GVD1 split and a real minimal graph: the worker
+# must train tensors, not die on a placeholder frame.
+training_data="$test_dir/training-data.gvd1"
+python3 - "$training_data" <<'PYGEN'
+import json, struct, sys
+path = sys.argv[1]
+sample = struct.Struct("<IBBBBff")
+pixels = bytes(256)
+rows = b""
+for i in range(64):
+    label = i % 2
+    rows += sample.pack(i, 1, 1, label, 0, 1.0 if label else -1.0, 0.5) + pixels
+header = json.dumps({"record_bytes": sample.size + 256}).encode()
+blob = b"GVD1" + struct.pack("<I", len(header)) + header + rows
+open(path, "wb").write(blob)
+PYGEN
+graph='{"inputs":{"x":{"shape":[258],"space":"generic"}},"ops":[{"kind":"linear","inputs":["x"],"output":"logits","attrs":{"out":2}}],"outputs":{"logits":"logits"},"trainable":["logits"]}'
 fetch -X POST "http://$bind/api/learning/queue" \
   -H 'Authorization: Bearer operator-test' \
   -H 'Content-Type: application/json' \
-  --data '{"run_id":"run-1","task_id":"task-1","steps_budget":1,"steps":1,"kind":"training","work":{"steps":1,"graph":{}}}'
+  --data "{\"run_id\":\"run-1\",\"task_id\":\"task-1\",\"steps_budget\":8,\"steps_consumed\":0,\"steps\":8,\"kind\":\"training\",\"work\":{\"steps\":8,\"seed\":1,\"graph\":$graph,\"data\":\"$training_data\",\"val_data\":\"$training_data\"}}"
 [[ "$http_status" == 201 ]] || fail "queue POST: expected HTTP 201; got HTTP $http_status: $http_body"
 
 # Authority comes from the token that made the request, not from the
@@ -186,6 +232,55 @@ for _ in {1..60}; do
   sleep 0.5
 done
 [[ -n "$state" && "$state" != queued ]] || fail "queued run never left the queue: $http_body"
+
+# A worker that cannot be isolated must refuse training honestly rather
+# than report a completed run, and a worker that can must leave a named
+# snapshot whose content-addressed params artifact round-trips.
+if ! command -v unshare >/dev/null 2>&1 || ! unshare -Urn --pid --mount --fork true >/dev/null 2>&1; then
+  printf 'SKIP: namespaces unavailable; CPU training not exercised on this host\n' >&2
+  for _ in {1..60}; do
+    fetch "http://$bind/api/runs/run-1" -H 'Authorization: Bearer reader-test'
+    state="$(printf '%s' "$http_body" | sed -n 's/.*"state":"\([^"]*\)".*/\1/p')"
+    [[ "$state" == failed ]] && break
+    sleep 0.5
+  done
+  [[ "$state" == failed ]] || fail "without namespaces the run must fail honestly, not succeed: $state"
+else
+  for _ in {1..120}; do
+    fetch "http://$bind/api/runs/run-1" -H 'Authorization: Bearer reader-test'
+    state="$(printf '%s' "$http_body" | sed -n 's/.*"state":"\([^"]*\)".*/\1/p')"
+    case "$state" in evaluating|failed) break ;; esac
+    sleep 0.5
+  done
+  [[ "$state" == evaluating ]] || fail "isolated worker did not reach evaluating: $state"
+  fetch "http://$bind/api/events?run_id=run-1&limit=100" -H 'Authorization: Bearer reader-test'
+  [[ "$http_body" == *'"kind":"worker-started"'* ]] \
+    || fail "worker started event not recorded for run-1: $http_body"
+  trained_params="$(python3 - "$test_dir" <<'PYART'
+import hashlib, pathlib, sqlite3, sys
+db = sqlite3.connect(sys.argv[1] + "/grove.db")
+row = db.execute(
+    "SELECT digest FROM named_snapshots WHERE name='trained-run-1'").fetchone()
+hex_ = row[0].split(":")[-1]
+# Content-addressed round-trip: the stored object must exist and hash
+# under grove--digest (sha256 of "grove-artifact-v1\\0" + bytes) to its
+# own digest, i.e. artifact--get returns exactly what was put.
+obj = pathlib.Path(sys.argv[1]) / "artifacts" / "objects" / hex_[:2] / hex_
+if not obj.is_file():
+    print(f"missing object for {hex_}")
+else:
+    blob = obj.read_bytes()
+    got = hashlib.sha256(b"grove-artifact-v1\x00" + blob).hexdigest()
+    if got != hex_:
+        print(f"corrupt object {hex_}: hashed {got}")
+    else:
+        print(f"round-trip ok sha256:{hex_} bytes={len(blob)} params={blob[:120].decode(errors='replace')}")
+PYART
+)"
+  [[ "$trained_params" == "round-trip ok"* ]] \
+    || fail "trained params artifact does not round-trip: $trained_params"
+  printf 'trained-run-1 %s\n' "$trained_params"
+fi
 
 # A run the scheduler cannot claim (more steps than the grant) must not
 # wedge the queue: it is failed and the next run still executes.

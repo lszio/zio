@@ -28,33 +28,42 @@
   (> (count (filter (fn [x] (= x value)) values)) 0))
 (defn grove--unique [values]
   (reduce (fn [out x] (if (grove--contains out x) out (conj out x))) [] values))
+;; Byte-level string surgery: `slice` refuses strings, so hex work goes
+;; through the byte primitives.
+(defn grove--hex-slice [hex from to]
+  ;; `host/byte-slice` is (start, length).
+  (host/bytes-utf8 (host/byte-slice (host/bytes-utf8 hex) from (- to from))))
+(defn grove--hex-digits []
+  ;; Built per call: `host` primitives are absent in bare-source contexts,
+  ;; so nothing may touch them at load time.
+  (into [] (map (fn [i] (grove--hex-slice "0123456789abcdef" i (+ i 1))) (range 16))))
 (defn grove--hex? [value]
   (if (string? value)
-    (if (= (count value) 64)
-      (= (count (filter (fn [c] (grove--contains ["0" "1" "2" "3" "4" "5" "6" "7" "8" "9" "a" "b" "c" "d" "e" "f"] c)) (map (fn [i] (slice value i (+ i 1))) (range 64)))) 64)
+    (if (= (host/byte-length (host/bytes-utf8 value)) 64)
+      (= (count (filter (fn [c] (grove--contains (grove--hex-digits) c))
+                        (map (fn [i] (grove--hex-slice value i (+ i 1))) (range 64)))) 64)
       false)
     false))
-(defn grove--digest [bytes]
-  (host/sha256 (host/byte-concat [(host/bytes "grove-artifact-v1") (host/bytes [0]) (host/bytes bytes)])))
+(defn grove--hex-digit [digit]
+  (loop [i 0]
+    (if (= digit (get (grove--hex-digits) i "")) i
+      (if (< i 15) (recur (+ i 1)) (error "invalid-input" "hex digit out of range")))))
+(defn grove--artifact-ref [ref]
+  (let [hex (grove--ref-hex ref)]
+    {:digest (map (fn [i]
+      (+ (* 16 (grove--hex-digit (grove--hex-slice hex (* 2 i) (+ (* 2 i) 1))))
+         (grove--hex-digit (grove--hex-slice hex (+ (* 2 i) 1) (+ (* 2 i) 2))))) (range 0 32))}))
 (defn grove--ref-hex [ref]
   (if (string? ref)
     (do (grove--require (grove--hex? ref) "invalid-input" "digest must be lowercase 64-hex") ref)
     (let [bytes (grove--get-key ref :digest [])]
       (grove--require (= (count bytes) 32) "invalid-input" "ArtifactRef must hold 32 bytes")
       (apply str (map (fn [b]
-        (grove--require (and (int? b) (>= b 0) (< b 256)) "invalid-input" "digest byte out of range")
-        (str (slice "0123456789abcdef" (/ b 16) (+ (/ b 16) 1))
-             (slice "0123456789abcdef" (mod b 16) (+ (mod b 16) 1)))) bytes)))))
-(defn grove--hex-digit [digit]
-  (loop [i 0]
-    (if (= digit (slice "0123456789abcdef" i (+ i 1))) i
-      (if (= i 15) (grove--fail "invalid-input" "invalid hex digit") (recur (+ i 1))))))
-(defn grove--artifact-ref [ref]
-  (let [hex (grove--ref-hex ref)]
-    {:digest (map (fn [i]
-      (+ (* 16 (grove--hex-digit (slice hex i (+ i 1))))
-         (grove--hex-digit (slice hex (+ i 1) (+ i 2))))) (range 0 64 2))}))
-
+        (grove--require (and (integer? b) (>= b 0) (< b 256)) "invalid-input" "digest byte out of range")
+        (str (grove--hex-digit (grove--hex-slice "0123456789abcdef" (/ b 16) (+ (/ b 16) 1)))
+             (grove--hex-digit (grove--hex-slice "0123456789abcdef" (mod b 16) (+ (mod b 16) 1))))) bytes)))))
+(defn grove--digest [bytes]
+  (host/sha256 (host/byte-concat [(host/bytes "grove-artifact-v1") (host/bytes [0]) (host/bytes bytes)])))
 ;; A new actor's identity is the request-bound principal; never trust a
 ;; caller-supplied "approved=true" or "actor" field. The store treats
 ;; the principal on the open handle as the only identity source.

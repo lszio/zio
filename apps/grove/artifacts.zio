@@ -1,7 +1,7 @@
 (load "contracts.zio")
 (defn artifact--path [store digest]
   (let [hex (grove--ref-hex digest)]
-    (str (get store :root) "/artifacts/objects/" (slice hex 0 2) "/" hex)))
+    (str (get store :root) "/artifacts/objects/" (grove--hex-slice hex 0 2) "/" hex)))
 (defn artifact--get [store digest]
   (let* [hex (grove--ref-hex digest) path (artifact--path store hex)]
     (grove--require (not (nil? (host/stat-path path))) "artifact-unavailable" (str "missing object " hex))
@@ -11,9 +11,10 @@
 (defn artifact--put [store bytes]
   (grove--authorize store "reader")
   (let* [buffer (host/bytes bytes) hex (grove--digest buffer) path (artifact--path store hex)]
-    (if (host/stat-path path)
-      (artifact--get store hex)
-      (host/write-atomic path buffer))
+    ;; No stat probe: `stat-path` errors (rather than returning nil) when
+    ;; the two-char shard directory does not exist yet, and write-atomic
+    ;; is already an idempotent content-addressed create.
+    (host/write-atomic path buffer)
     (artifact--get store hex)
     hex))
 (defn artifact--objects [store]

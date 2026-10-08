@@ -1,7 +1,6 @@
 ;; One owner loop, one database, independent bounded worker processes.
 (load "events.zio")
 (load "training.zio")
-(require :libs.learning.runner :refer [learn--runner-read-gvd1])
 (defn grove--raise [class detail] (grove--fail class detail))
 (def runner--edges {"queued" ["running" "cancelled" "failed"]
                    "running" ["evaluating" "paused" "failed" "cancelled"]
@@ -145,28 +144,54 @@
        "/" (get claim :run_id) "/trained.json"))
 
 (defn runner--prepare [runner claim]
-  (let* [store (get runner :store) config (get runner :config) work (get claim :work)
-         run (grove--get store "Run" (get claim :run_id))]
-    (if (= (get claim :kind) "zio")
-      (assoc claim :config config :budget (get claim :reserved_steps))
-      (let* [rows (if (get work :rows nil) (get work :rows)
-                    (learn--runner-read-gvd1 (get work :data "")))
-             validation (if (get work :val_rows nil) (get work :val_rows)
-                          (if (get work :val_data nil) (learn--runner-read-gvd1 (get work :val_data "")) []))
-             weights (if (get work :params nil) {:params (get work :params)}
-                       (if (get work :weights nil) (codec--normalize (json-parse (host/bytes-utf8 (runner--read-input runner (get work :weights))))) {}))
-             resume (if (get work :resume nil) (codec--normalize (json-parse (host/bytes-utf8 (artifact--get store (get work :resume))))) nil)
-             request (assoc work :rows rows :val_rows validation :weights weights :resume_state resume)]
-        (assoc claim :work request :config config :budget (get claim :reserved_steps)
-               :ledger_step (get run :steps_consumed))))))
+  ;; The bounded agent runner consumes the claim itself; training inputs
+  ;; are staged into the worker scratch instead of decoded here.
+  (grove--require (= (get claim :kind) "zio") "invalid-input" "unsupported queue kind")
+  (assoc claim :config (get runner :config) :budget (get claim :reserved_steps)))
+
+(defn runner--stage [runner claim]
+  ;; Host paths are staging locations; the frame names jail paths, because
+  ;; the jail exposes only /scratch. `out` is separate from `weights` so
+  ;; the trained parameters cannot overwrite the file the worker reads.
+  (let* [config (get runner :config) work (get claim :work)
+         scratch (get (get config :worker-config) :scratch "")
+         host-scratch (str scratch "/" (get claim :run_id))
+         jail (str "/scratch/" (get claim :run_id))]
+    (try (host/mkdir scratch) (catch any nil))
+    (host/mkdir host-scratch)
+    (host/write-atomic (str host-scratch "/data.gvd1") (runner--read-input runner (get work :data nil)))
+    (host/write-atomic (str host-scratch "/weights.json")
+      (if (get work :weights nil)
+        (runner--read-input runner (get work :weights))
+        (host/json-bytes {:params {}})))
+    (if (get work :val_data nil)
+      (host/write-atomic (str host-scratch "/val.gvd1") (runner--read-input runner (get work :val_data)))
+      nil)
+    {:v 1
+     :type "train"
+     :run_id (get claim :run_id)
+     :attempt_id (get claim :attempt_id)
+     :graph (get work :graph {})
+     :data (str jail "/data.gvd1")
+     :weights (str jail "/weights.json")
+     :val_data (if (get work :val_data nil) (str jail "/val.gvd1") nil)
+     :out (str jail "/trained.json")
+     :steps (get work :steps 1)
+     :seed (get work :seed 1)}))
 
 (defn runner--start [runner claim]
   (let* [config (get runner :config)
-         process-config (assoc (get config :worker-config) :identity {:run_id (get claim :run_id) :attempt_id (get claim :attempt_id)}
+         frame (if (= (get claim :kind) "training") (runner--stage runner claim)
+                  (runner--prepare runner claim))
+         ;; No `identity` fields: the jail's bootstrap marker carries
+         ;; none, so per-frame identity verification would kill the
+         ;; handshake. Claim ownership is enforced per frame by
+         ;; `runner--receive` instead.
+         process-config (assoc (get config :worker-config)
                               :max-frame-bytes (get config :max-frame-bytes 16777216))
          proc (host/process-start process-config)]
     (try
-      (host/process-write proc (runner--prepare runner claim))
+      (host/process-write proc frame)
       (catch any (do (host/process-kill proc) (error (str *error*)))))
     (runner--event (get runner :store) claim "worker-started" "isolated worker process admitted")
     {:claim claim :process proc :started_ms (host/clock-ms) :last_seen (host/clock-ms)}))
@@ -202,13 +227,19 @@
 (defn runner--receive [runner worker frame]
   (let* [store (get runner :store) claim (get worker :claim)
          f (codec--normalize frame) type (get f :type)]
-    (grove--require (and (= (get f :run_id) (get claim :run_id)) (= (get f :attempt_id) (get claim :attempt_id))) "protocol-violation" "foreign completion or progress frame")
-    (coordinator--live store claim (host/clock-ms))
-    (if (= type "progress")
+    ;; The handshake frame carries no claim identity; the two-argument
+    ;; `get` throws on a missing key, so hello is acknowledged here and
+    ;; every other frame must name this claim.
+    (if (= type "hello")
+      (assoc worker :last_seen (host/clock-ms))
+      (do
+        (grove--require (and (= (get f :run_id) (get claim :run_id)) (= (get f :attempt_id) (get claim :attempt_id))) "protocol-violation" "foreign completion or progress frame")
+        (coordinator--live store claim (host/clock-ms))
+        (if (= type "progress")
       (do
         (coordinator--bill store claim (str (get claim :attempt_id) "-step-" (get f :step)) (get f :observed_steps 1))
         (store--execute store "UPDATE grove_progress SET step=?1 WHERE attempt=?2" [(get f :step) (get claim :attempt_id)])
-        (runner--event store claim "progress" (json-stringify (select-keys f [:step :loss :metrics :consumed])))
+        (runner--event store claim "progress" (json-stringify {:step (get f :step nil) :loss (get f :loss nil)}))
         (if (get f :consumed nil) (store--record-consumption store (get claim :run_id) (get f :consumed)) nil)
         (coordinator--renew store claim (get (get runner :config) :lease-ms 30000))
         (assoc worker :last_seen (host/clock-ms)))
@@ -242,7 +273,7 @@
             (runner--finish runner worker "evaluating"
               (json-stringify {:final_loss (get f :loss nil) :val_accuracy (get f :val_accuracy nil)})))
           (if (= type "failed") (runner--finish runner worker "failed" (get f :error "worker failed"))
-            (grove--raise "protocol-violation" (str "unexpected worker frame " type))))))))
+            (grove--raise "protocol-violation" (str "unexpected worker frame " type))))))))))
 
 (defn runner--poll-worker [runner worker]
   (let* [store (get runner :store) claim (get worker :claim) proc (get worker :process)
@@ -254,21 +285,24 @@
         (if (= 1 (grove--get-key intent :pause 0))
           (host/process-write proc {:type "pause" :run_id (get claim :run_id) :attempt_id (get claim :attempt_id)}) nil)
         (let [reply (host/process-read proc 0)]
-          (if (= (get reply :status) :frame) (runner--receive runner worker (get reply :frame))
-            (if (= (get reply :status) :eof)
+          ;; The host returns the envelope status as a string, not a keyword.
+          (if (= (get reply :status) "frame") (runner--receive runner worker (get reply :frame))
+            (if (= (get reply :status) "eof")
               (runner--finish runner worker "failed" "worker exited without a terminal frame")
               (if (> (- (host/clock-ms) (get worker :last_seen)) (get (get runner :config) :deadline-ms 300000))
                 (runner--finish runner worker "failed" "worker deadline exceeded")
                 (do (coordinator--renew store claim (get (get runner :config) :lease-ms 30000)) worker)))))))))
 
 (defn runner--tick [runner]
-  (let* [survivors (filter (fn [w] (not (nil? w)))
+  ;; `filter` yields a list; the worker accumulator below is a vector and
+  ;; `vector-conj` refuses lists, so normalize here.
+  (let* [survivors (into [] (filter (fn [w] (not (nil? w)))
                      (map (fn [worker]
                        (try (runner--poll-worker runner worker)
                          (catch any
                            (do (host/process-kill (get worker :process))
                                (try (runner--finish runner worker "failed" (str *error*)) (catch any nil))
-                               nil)))) (get runner :workers)))
+                               nil)))) (get runner :workers))))
          initial (assoc runner :workers survivors)]
     (loop [owner initial]
       (if (>= (count (get owner :workers)) (get (get owner :config) :worker-count 2)) owner

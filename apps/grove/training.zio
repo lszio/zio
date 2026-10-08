@@ -78,7 +78,12 @@
   ;; codec's field list has no metrics key, so adding one would be dropped
   ;; on encode and the snapshot would not contain what it appears to.
   (let* [params (training--params weights-bytes)
-         artifact (artifact--put store weights-bytes)
+         artifact (let* [buffer (host/bytes weights-bytes)
+                            hex (grove--digest buffer)
+                            path (artifact--path store hex)]
+                       (host/write-atomic path buffer)
+                       (artifact--get store hex)
+                       hex)
          snapshot {:schema 1
                    :owner (grove--principal-id store)
                    :entrypoint "predict"

@@ -680,6 +680,35 @@
       (= path "/favicon.ico")))
 
 ;; ---------- Static assets ----------
+(defn api--worker-mounts [config]
+  ;; The jail execs under `env -i` with everything pivot-rooted away, so
+  ;; it needs /usr and any interpreter tree the launcher granted; a mount
+  ;; under /usr is already covered by the whole-directory grant.
+  (into [{:source "/usr" :target "/usr"}]
+        (map (fn [dir] {:source dir :target dir})
+             (filter (fn [dir] (not (str-starts-with? "/usr" dir)))
+                     (get config :worker-mounts [])))))
+
+(defn api--worker-config [config]
+  ;; Worker authority comes from the launcher, never from request data:
+  ;; an executable, interpreter and scratch the host granted. The jail
+  ;; execs `executable` under `env -i`, so `executable` is the interpreter
+  ;; and the script is argv[1]; cwd is a jail path (/scratch), while
+  ;; scratch is the host staging directory the jail binds at /scratch.
+  (let [scratch (get config :worker-scratch "")]
+    {:executable (get config :worker-python "")
+     :argv [(get config :worker-script "")]
+     :cwd "/scratch"
+     :scratch scratch
+     :read-only-mounts (api--worker-mounts config)
+     :timeout-ms 300000
+     :max-frame-bytes 16777216
+     :max-address-space 2147483648
+     :max-cpu-seconds 300
+     ;; RLIMIT_NPROC counts every thread of the real UID; the default 64
+     ;; cannot even fork the jail's own unshare --fork.
+     :max-processes 4096}))
+
 (defn api--service-config [config]
   ;; Everything the owner needs comes from the launcher's keyword map, so
   ;; the service reads no environment and no argv to decide its own
@@ -690,7 +719,9 @@
    :max-frame-bytes 16777216
    :input-root (get config :root "")
    :web-root (get config :web-root "")
-   :worker-config (get config :worker-config {})})
+   :worker-config (if (= (get config :worker-script "") "")
+                    {}
+                    (api--worker-config config))})
 
 (defn api--tick [owner]
   ;; One owner, one attempt at failure. A tick that raises must not take
