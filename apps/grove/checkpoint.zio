@@ -78,7 +78,7 @@
          inherited (if (= level "learning-continuation") (get cp :budget_spent_steps) 0)
          run (assoc parent :id new-run :state "queued" :steps_consumed inherited :steps_budget budget :resumed_from (get parent :id))
          work (assoc training :resume (grove--ref-hex (get cp :state_artifact)) :resume_level level :resume_run (get cp :run_id))]
-    (store--require-resumable store (get cp :snapshot))
+    (store--require-resumable store parent (get cp :snapshot))
     (grove--require (<= inherited budget) "budget-exhausted" "checkpoint lineage already exceeded the new grant")
     (runner--enqueue store run "training" work)
     {:run run :checkpoint_id checkpoint-id :state_step (get state :step)}))

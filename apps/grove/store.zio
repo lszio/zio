@@ -510,10 +510,27 @@
              "); retrain without them"))
       nil)))
 
-(defn store--require-resumable [store snapshot]
+(defn store--retracted-datasets [store]
+  ;; The frozen dataset revisions carrying ANY retracted signal, queried at
+  ;; gate time: a retracted signal keeps status='retracted', so the set
+  ;; stays queryable long after propagation has run.
+  (map (fn [row] (get row :id))
+    (store--query store
+      "SELECT d.id FROM datasets d WHERE EXISTS (SELECT 1 FROM signals s WHERE s.status='retracted' AND instr(d.body, '\"' || s.id || '\"') > 0) ORDER BY d.id"
+      [])))
+
+(defn store--require-resumable [store run snapshot]
   ;; A from-scratch checkpoint has no base snapshot: nil means there is no
   ;; lineage to check against retraction invalidations, not a missing one.
-  (if (nil? snapshot) nil
+  ;; The run's own frozen dataset revision still gates the resume: when any
+  ;; signal it consumed was retracted, resuming would keep training on
+  ;; revoked data even though propagation had no snapshot to invalidate.
+  (if (nil? snapshot)
+    (let [revision (grove--get-key run :dataset_revision nil)]
+      (if (grove--contains (store--retracted-datasets store) revision)
+        (grove--raise "incompatible-state"
+          (str "run consumed dataset revision " revision " whose signal(s) were retracted; retrain without them"))
+        nil))
     (store--require-deployable store snapshot)))
 
 (defn store--publish [store snapshot expected-version]
@@ -892,10 +909,14 @@
               (store--mark-snapshot-live acc (grove--ref-hex (get b :head nil)))))) base
           (store--query store "SELECT body,schema FROM branches ORDER BY id" []))
         with-runs (reduce (fn [acc row]
-          (let [r (codec--decode (get row :body) (get row :schema))]
-            (if (grove--contains ["accepted" "rejected" "failed" "cancelled"] (get r :state nil))
+          (let [r (codec--decode (get row :body) (get row :schema))
+                base-snap (get r :base_snapshot nil)]
+            ;; From-scratch runs carry no base snapshot: a nil is nothing
+            ;; to keep live, not a digest to resolve.
+            (if (or (nil? base-snap)
+                    (grove--contains ["accepted" "rejected" "failed" "cancelled"] (get r :state nil)))
               acc
-              (store--mark-snapshot-live acc (grove--ref-hex (get r :base_snapshot nil)))))) with-branches
+              (store--mark-snapshot-live acc (grove--ref-hex base-snap))))) with-branches
           (store--query store "SELECT body,schema FROM runs ORDER BY id" []))
         with-candidates (reduce (fn [acc row]
           (let [c (codec--decode (get row :body) (get row :schema))]
