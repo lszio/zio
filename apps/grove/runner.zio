@@ -202,6 +202,10 @@
      :stop_after_save (get work :stop_after_save nil)}))
 
 (defn runner--start [runner claim]
+  ;; The bounded Zio execution worker is not part of this deployment;
+  ;; failing here records a truthful backend failure on the queue instead
+  ;; of a protocol-confusion one inside the worker.
+  (grove--require (= (get claim :kind) "training") "backend-failed" "no bounded Zio execution worker in this deployment")
   (let* [config (get runner :config)
          frame (if (= (get claim :kind) "training") (runner--stage runner claim)
                   (runner--prepare runner claim))
