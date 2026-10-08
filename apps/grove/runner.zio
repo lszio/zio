@@ -207,7 +207,10 @@
       (store--execute store "DELETE FROM grove_reservations WHERE attempt=?1" [(get claim :attempt_id)])
       (store--execute store "UPDATE grove_progress SET outcome=?1 WHERE attempt=?2" [state (get claim :attempt_id)])
       (runner--event store claim state detail)))
-    (host/process-kill (get worker :process))
+    ;; runner--start either returns a real handle or raises, so a nil
+    ;; :process means the worker never started; host/process-kill would
+    ;; reject nil and mask the real failure in api--tick.
+    (if (nil? (get worker :process)) nil (host/process-kill (get worker :process)))
     nil))
 
 (defn runner--intent [store run-id intent]
