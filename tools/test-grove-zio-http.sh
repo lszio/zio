@@ -187,7 +187,13 @@ expect "reader cannot file a signal" 403 '"class":"capability-denied"' -X POST \
   -H 'Authorization: Bearer reader-test' -H 'Content-Type: application/json' \
   --data '{"id":"corr-reader","kind":"human-correction","operation_id":"op-sig-reader","target_field":"state"}' \
   "http://$bind/api/signals"
-signal_body='{"schema":1,"id":"corr-1","kind":"human-correction","target_field":"state","content":"clear","operation_id":"op-sig-ann"}'
+signal_body='{"schema":1,"id":"corr-1","idempotency_key":"corr-1","kind":"human-correction","target_field":"state","content":"clear","task_id":"task-1","received_at_ms":1,"operation_id":"op-sig-ann"}'
+# A signal without an idempotency key would violate a NOT NULL column the
+# store inserts into; it must be refused, not answered as if it were stored.
+expect "signal without idempotency key is refused" 400 '"class":"invalid-input"' -X POST \
+  -H 'Authorization: Bearer annotator-test' -H 'Content-Type: application/json' \
+  --data '{"schema":1,"id":"corr-nokey","kind":"human-correction","target_field":"state","content":"clear","task_id":"task-1","received_at_ms":1}' \
+  "http://$bind/api/signals"
 fetch -X POST "http://$bind/api/signals" \
   -H 'Authorization: Bearer annotator-test' -H 'Content-Type: application/json' --data "$signal_body"
 [[ "$http_status" == 201 && "$http_body" == *'"id":"corr-1"'* ]] \
