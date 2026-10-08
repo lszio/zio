@@ -7,18 +7,13 @@ set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$root"
 project="zio-deploy-check-$$"
-# The compose file pins 127.0.0.1:8080, which may be taken by the real
-# deployment; always remap the site to a free ephemeral host port.
-site_port="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()')"
-override="$(mktemp)"
-# Grove needs no host port at all: the site proxies over the Compose network,
-# and the pinned 8787 may be taken by the live deployment.
-printf 'services:\n  site:\n    ports: !override ["127.0.0.1:%s:80"]\n  grove:\n    ports: !override []\n' "$site_port" > "$override"
-compose() { docker compose -p "$project" -f docker-compose.dokploy.yml -f "$override" "$@"; }
+# The deployment file is expose-only (host ports are global on a shared
+# Dokploy host); the local override adds loopback mappings. The site port is
+# resolved via `docker compose port`, so the pinned value may be remapped.
+compose() { docker compose -p "$project" -f docker-compose.dokploy.yml -f docker-compose.local.yml "$@"; }
 # `down -v` removes the named volumes Compose created for this project;
 # there is no volume named after the project, so nothing else to clean.
 cleanup() {
-  rm -f "$override"
   compose down -v --remove-orphans >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
@@ -26,6 +21,7 @@ trap cleanup EXIT
 export GROVE_TOKEN_READER=reader-test
 export GROVE_TOKEN_OPERATOR=operator-test
 export GROVE_TOKEN_PUBLISHER=publisher-test
+export GROVE_TOKEN_ANNOTATOR=annotator-test
 compose up -d --build
 compose ps
 
@@ -46,6 +42,10 @@ check() {
 check "site intro page" 200 "http://127.0.0.1:$site_port/grove/"
 check "site wasm" 200 "http://127.0.0.1:$site_port/wasm/zio_core_bg.wasm"
 check "grove control plane" 200 "http://127.0.0.1:$site_port/grove/app/"
+# Dots in the tail must not trip the .md/.zio/.tsv regex into a site
+# filesystem lookup: these must be answered by the proxies (^~ prefixes).
+check "grove app stylesheet" 200 "http://127.0.0.1:$site_port/grove/app/styles.css"
+check "dotted run id reaches api" 401 "http://127.0.0.1:$site_port/api/runs/ci-run.zio"
 check "unauthenticated api" 401 "http://127.0.0.1:$site_port/api/runs"
 check "reader api" 200 -H 'Authorization: Bearer reader-test' "http://127.0.0.1:$site_port/api/runs"
 

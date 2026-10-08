@@ -8,10 +8,6 @@ services:
     restart: unless-stopped
     expose:
       - "80"
-    ports:
-      # Local end-to-end verification only; Dokploy routes the domain
-      # through the internal network.
-      - "127.0.0.1:8080:80"
   grove:
     build:
       context: .
@@ -25,12 +21,9 @@ services:
       GROVE_TOKEN_READER: ${GROVE_TOKEN_READER}
       GROVE_TOKEN_OPERATOR: ${GROVE_TOKEN_OPERATOR}
       GROVE_TOKEN_PUBLISHER: ${GROVE_TOKEN_PUBLISHER}
+      GROVE_TOKEN_ANNOTATOR: ${GROVE_TOKEN_ANNOTATOR}
     expose:
       - "8787"
-    ports:
-      # Local end-to-end verification only. Dokploy routes the domain
-      # through the internal network and never publishes this port.
-      - "127.0.0.1:8787:8787"
     volumes:
       - grove-data:/srv/grove/data
     # Health lives in Dockerfile.grove's HEALTHCHECK; a second definition
