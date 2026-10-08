@@ -70,11 +70,14 @@ jobs:
         run: |
           deadline=$(( $(date +%s) + 1800 ))  # bounded: 30 minutes
           while :; do
-            pending=0 failed=0 page=1
+            pending=0 failed=0 total=0 page=1
             while :; do
+              # The deadline is enforced inside pagination: a large page
+              # count must never burn it before any decision is reached.
+              [ "$(date +%s)" -lt "$deadline" ] || { echo "timed out waiting for checks on $HEAD_SHA" >&2; exit 1; }
               resp="$(gh api "repos/$REPO/commits/$HEAD_SHA/check-runs?per_page=100&page=$page")"
-              count="$(jq -r '.total_count' <<<"$resp")"
-              [ "$count" -gt 0 ] || break
+              count="$(jq -r '.check_runs | length' <<<"$resp")"
+              total=$((total + count))
               while read -r status conclusion; do
                 case "$status" in
                   completed)
@@ -86,8 +89,10 @@ jobs:
               break
             done
             if [ "$failed" -ne 0 ]; then echo "checks failed on $HEAD_SHA; not deploying" >&2; exit 1; fi
+            # Zero check runs means the head SHA has not been picked up yet:
+            # that is "keep waiting", never "deploy unverified code".
+            if [ "$total" -eq 0 ]; then pending=1; fi
             if [ "$pending" -eq 0 ]; then echo "all checks passed on $HEAD_SHA"; exit 0; fi
-            [ "$(date +%s)" -lt "$deadline" ] || { echo "timed out waiting for checks on $HEAD_SHA" >&2; exit 1; }
             sleep 30
           done
 
@@ -109,6 +114,9 @@ jobs:
           for role in reader operator publisher annotator; do
             key="$(printf 'zio-preview|%s|%s' "$PR_NUMBER" "$role" \
               | openssl dgst -sha256 -hmac "$MASTER" -hex | sed 's/^.*= //')"
+            # mask before export: the "Create preview" step header prints
+            # its environment, which would otherwise leak the token
+            echo "::add-mask::$key"
             echo "${role}=$key" >> "$GITHUB_OUTPUT"
           done
 
