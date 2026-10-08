@@ -143,6 +143,11 @@
   (str (get (get (get runner :config) :worker-config) :scratch "")
        "/" (get claim :run_id) "/trained.json"))
 
+;; Host-side mirror of the jail path the worker reports in `progress.saved`.
+(defn runner--state-path [runner claim]
+  (str (get (get (get runner :config) :worker-config) :scratch "")
+       "/" (get claim :run_id) "/state.json"))
+
 (defn runner--prepare [runner claim]
   ;; The bounded agent runner consumes the claim itself; training inputs
   ;; are staged into the worker scratch instead of decoded here.
@@ -189,7 +194,12 @@
      :seed (get work :seed 1)
      :resume (if (get work :resume nil) (str jail "/state.json") nil)
      :resume_level (get work :resume_level nil)
-     :resume_run (get work :resume_run nil)}))
+     :resume_run (get work :resume_run nil)
+     ;; Checkpoint-on-the-way fields; `state_out` names a jail path, and
+     ;; `runner--receive` reads the host mirror when the worker reports it.
+     :save_at (get work :save_at nil)
+     :state_out (if (get work :save_at nil) (str jail "/state.json") nil)
+     :stop_after_save (get work :stop_after_save nil)}))
 
 (defn runner--start [runner claim]
   (let* [config (get runner :config)
@@ -206,7 +216,10 @@
       (host/process-write proc frame)
       (catch any (do (host/process-kill proc) (error (str *error*)))))
     (runner--event (get runner :store) claim "worker-started" "isolated worker process admitted")
-    {:claim claim :process proc :started_ms (host/clock-ms) :last_seen (host/clock-ms)}))
+    ;; Billing is by cumulative step deltas, so the handle remembers the
+    ;; run's ledger baseline when the attempt starts.
+    {:claim claim :process proc :started_ms (host/clock-ms) :last_seen (host/clock-ms)
+     :billed_step (get (grove--get (get runner :store) "Run" (get claim :run_id)) :steps_consumed 0)}))
 
 (defn runner--finish [runner worker state detail]
   (let* [store (get runner :store) claim (get worker :claim)]
@@ -252,12 +265,25 @@
         (coordinator--live store claim (host/clock-ms))
         (if (= type "progress")
       (do
-        (coordinator--bill store claim (str (get claim :attempt_id) "-step-" (get f :step)) (get f :observed_steps 1))
-        (store--execute store "UPDATE grove_progress SET step=?1 WHERE attempt=?2" [(get f :step) (get claim :attempt_id)])
-        (runner--event store claim "progress" (json-stringify {:step (get f :step nil) :loss (get f :loss nil)}))
-        (if (get f :consumed nil) (store--record-consumption store (get claim :run_id) (get f :consumed)) nil)
-        (coordinator--renew store claim (get (get runner :config) :lease-ms 30000))
-        (assoc worker :last_seen (host/clock-ms)))
+        ;; The worker's `step` is cumulative over the run's ledger
+        ;; baseline, so the run is billed the delta, not a flat 1.
+        (let* [step (get f :step 0)
+               billed (get worker :billed_step 0)
+               delta (- step billed)]
+          (if (> delta 0) (coordinator--bill store claim (str (get claim :attempt_id) "-steps-" step) delta) nil)
+          (store--execute store "UPDATE grove_progress SET step=?1 WHERE attempt=?2" [step (get claim :attempt_id)])
+          ;; A checkpoint save is reported on a progress frame; the state
+          ;; file lives in the worker scratch and is committed here.
+          (if (get f :saved nil)
+            (let* [cp (checkpoint--commit store (get claim :run_id) nil "learning-continuation"
+                                          (host/read-bytes (runner--state-path runner claim)))]
+              (store--execute store "UPDATE grove_progress SET checkpoint=?1 WHERE attempt=?2" [(get cp :id) (get claim :attempt_id)])
+              (runner--event store claim "checkpoint" (get cp :id)))
+            nil)
+          (runner--event store claim "progress" (json-stringify {:step (get f :step nil) :loss (get f :loss nil)}))
+          (if (get f :consumed nil) (store--record-consumption store (get claim :run_id) (get f :consumed)) nil)
+          (coordinator--renew store claim (get (get runner :config) :lease-ms 30000))
+          (assoc worker :last_seen (host/clock-ms) :billed_step (if (> step billed) step billed))))
       (if (= type "checkpoint")
         (let* [body (host/bytes (json-stringify (get f :state)))
                cp (checkpoint--commit store (get claim :run_id) nil "learning-continuation" body)]
@@ -269,7 +295,14 @@
             ;; The worker ends with the path of the weights it wrote plus
             ;; loss/accuracy fields, not a model value and a metrics map.
             (if (= (get claim :kind) "training")
-              (let* [result (codec--normalize (json-parse (training--commit-snapshot
+              (let* [;; Reconcile the ledger to the final cumulative step:
+                     ;; progress notifications can undershoot the last
+                     ;; executed step, so bill any remaining delta here.
+                     step (get f :step 0)
+                     billed (get worker :billed_step 0)
+                     delta (- step billed)
+                     _ (if (> delta 0) (coordinator--bill store claim (str (get claim :attempt_id) "-steps-" step) delta) nil)
+                     result (codec--normalize (json-parse (training--commit-snapshot
                                store (get claim :run_id)
                                (host/read-bytes (runner--trained-path runner claim))
                                (get (get claim :work) :graph {})

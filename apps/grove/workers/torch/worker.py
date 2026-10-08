@@ -479,6 +479,7 @@ def do_train(frame: dict) -> None:
         }), encoding="utf-8")
         emit({"v": PROTOCOL_VERSION, "type": "done", "run_id": run_id,
               "attempt_id": attempt_id, "weights": str(out_path),
+              "step": step,
               "first_loss": first_loss, "loss": last_loss,
               "val_accuracy": accuracy})
     except Exception as exc:  # every failure is a terminal, visible state
