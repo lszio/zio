@@ -603,8 +603,11 @@ class CheckpointSaveTests(unittest.TestCase):
                 state = json.loads(path.read_text())
                 self.assertEqual(state["step"], frame["step"])
                 self.assertEqual(state["run_id"], "run-save")
-            # no shared mutable name: a plain state file never exists
-            self.assertFalse((tmp / "run-save-state.json").exists())
+            # the caller-named state_out is a mirror of the LAST save, not
+            # a name any owner reads while the worker lives: the per-step
+            # files above are what progress.saved hands to the owner.
+            mirror = json.loads((tmp / "run-save-state.json").read_text())
+            self.assertEqual(mirror["step"], 12)
             names = sorted(p.name for p in tmp.glob("state-*.json"))
             self.assertEqual(names, ["state-10.json", "state-11.json",
                                      "state-12.json"])

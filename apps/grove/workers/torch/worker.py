@@ -449,6 +449,11 @@ def do_train(frame: dict) -> None:
                 state_path = Path(frame["state_out"]).with_name(f"state-{step}.json")
                 save_state(state_path, run_id, attempt_id, step,
                            linears, optimiser, named, first_loss)
+                # The caller-named state_out is written too, atomically with
+                # the same bytes: the Rust owner reads that path only after
+                # the process is gone, so its mutability races nothing.
+                save_state(Path(frame["state_out"]), run_id, attempt_id, step,
+                           linears, optimiser, named, first_loss)
                 emit({"v": PROTOCOL_VERSION, "type": "progress", "run_id": run_id,
                       "attempt_id": attempt_id, "step": step, "loss": last_loss,
                       "saved": str(state_path)})

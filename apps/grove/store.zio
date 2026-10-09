@@ -269,7 +269,14 @@
         "INSERT OR IGNORE INTO populations(id,owner,schema,body) VALUES(?1,?2,1,?3)"
         [(grove--get-key record :id nil) (grove--principal-id store) body])))))
 
-(def store--run-id-chars (map (fn [i] (host/bytes-utf8 (host/byte-slice "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-" i 1))) (range 65)))
+;; A literal vector, not a computed one: this file loads in restricted
+;; contexts (the agent contract runs without host filesystem primitives),
+;; and a load-time `host/bytes-utf8` call would break those loads.
+(def store--run-id-chars ["A" "B" "C" "D" "E" "F" "G" "H" "I" "J" "K" "L" "M"
+                          "N" "O" "P" "Q" "R" "S" "T" "U" "V" "W" "X" "Y" "Z"
+                          "a" "b" "c" "d" "e" "f" "g" "h" "i" "j" "k" "l" "m"
+                          "n" "o" "p" "q" "r" "s" "t" "u" "v" "w" "x" "y" "z"
+                          "0" "1" "2" "3" "4" "5" "6" "7" "8" "9" "." "_" "-"])
 
 (defn store--put-run [store record]
   (grove--schema! (grove--get-key record :schema nil))
