@@ -4,6 +4,14 @@ fn main() {
     let map = zio_core::span::SourceMap::new();
     match zio_core::syntax::inspect_source(&map, "x.zio", &src) {
         Ok(n) => println!("parsed {} forms", n.len()),
-        Err(e) => { println!("{e}"); if let Some(s)=e.span() { println!("line {} col {} bytes {}..{}", s.line, s.col, s.start.0, s.end.0); } }
+        Err(e) => {
+            println!("{e}");
+            if let Some(s) = e.span() {
+                println!(
+                    "line {} col {} bytes {}..{}",
+                    s.line, s.col, s.start.0, s.end.0
+                );
+            }
+        }
     }
 }
