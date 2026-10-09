@@ -5,6 +5,12 @@ use zio_core::special::TailResult;
 use zio_core::value::Value;
 
 pub fn arity(args: &Vector<Value>, expected: usize) -> Result<(), EvalError> {
+    if std::env::var_os("ZIO_PROBE_ARITY").is_some() && args.len() != expected {
+        eprintln!(
+            "[arity] expected {expected} got {} args={args:?}",
+            args.len()
+        );
+    }
     if args.len() == expected {
         Ok(())
     } else {

@@ -1,0 +1,140 @@
+name: MR preview
+# Dokploy builds the PR commit, so PR code is never executed here. The
+# credential-bearing steps only run for pull_request_target, whose steps
+# always check out the BASE ref, and only for same-repo PRs from users with
+# write access. Forks and first-time contributors are skipped entirely.
+# workflow_dispatch lets a maintainer delete a preview for any PR number.
+on:
+  pull_request_target:
+    types: [opened, reopened, synchronize, closed]
+  workflow_dispatch:
+    inputs:
+      pull_request:
+        description: pull request number (deletes its preview)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  preview:
+    runs-on: ubuntu-latest
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (
+        github.event.pull_request.head.repo.full_name == github.repository &&
+        contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.pull_request.author_association)
+      )
+    steps:
+      # pull_request_target always checks out the base ref by default, so this
+      # runs repo (base) scripts only — never PR code. No explicit ref needed.
+      - uses: actions/checkout@v4
+
+      - name: Resolve preview identity
+        id: preview
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number || inputs.pull_request }}
+          PREVIEW_ZONE: ${{ vars.PREVIEW_ZONE }}
+        run: |
+          : "${PR_NUMBER:?PR number unresolved}"
+          : "${PREVIEW_ZONE:?vars.PREVIEW_ZONE must be set, e.g. lszio.space}"
+          echo "project=zio-pr-$PR_NUMBER" >> "$GITHUB_OUTPUT"
+          echo "domain=zio-pr-$PR_NUMBER.$PREVIEW_ZONE" >> "$GITHUB_OUTPUT"
+
+      - name: Delete preview
+        if: >-
+          github.event_name == 'workflow_dispatch' ||
+          github.event.action == 'closed'
+        env:
+          DOKPLOY_API_URL: ${{ secrets.DOKPLOY_API_URL }}
+          DOKPLOY_API_TOKEN: ${{ secrets.DOKPLOY_API_TOKEN }}
+          DOKPLOY_PROJECT_ID: ${{ secrets.DOKPLOY_PROJECT_ID }}
+          DOKPLOY_ENVIRONMENT_ID: ${{ secrets.DOKPLOY_ENVIRONMENT_ID }}
+          DOKPLOY_GITHUB_ID: ${{ secrets.DOKPLOY_GITHUB_ID }}
+          PREVIEW_PROJECT: ${{ steps.preview.outputs.project }}
+          PREVIEW_DOMAIN: ${{ steps.preview.outputs.domain }}
+          PR_NUMBER: ${{ github.event.pull_request.number || inputs.pull_request }}
+        run: bash tools/preview-stack.sh delete
+
+      - name: Wait for checks on the head SHA
+        # Deploy only after every check run on the verified head SHA passes.
+        # Unconditional deploys served unverified code as a live preview.
+        if: >-
+          github.event_name == 'pull_request_target' &&
+          github.event.action != 'closed'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          REPO: ${{ github.repository }}
+        run: |
+          deadline=$(( $(date +%s) + 1800 ))  # bounded: 30 minutes
+          while :; do
+            pending=0 failed=0 total=0 page=1
+            while :; do
+              # The deadline is enforced inside pagination: a large page
+              # count must never burn it before any decision is reached.
+              [ "$(date +%s)" -lt "$deadline" ] || { echo "timed out waiting for checks on $HEAD_SHA" >&2; exit 1; }
+              resp="$(gh api "repos/$REPO/commits/$HEAD_SHA/check-runs?per_page=100&page=$page")"
+              count="$(jq -r '.check_runs | length' <<<"$resp")"
+              total=$((total + count))
+              while read -r status conclusion; do
+                case "$status" in
+                  completed)
+                    case "$conclusion" in success|skipped|neutral) ;; *) failed=1 ;; esac ;;
+                  *) pending=1 ;;
+                esac
+              done < <(jq -r '.check_runs[] | "\(.status) \(.conclusion // "none")"' <<<"$resp")
+              [ "$count" -lt 100 ] || { page=$((page+1)); continue; }
+              break
+            done
+            if [ "$failed" -ne 0 ]; then echo "checks failed on $HEAD_SHA; not deploying" >&2; exit 1; fi
+            # Zero check runs means the head SHA has not been picked up yet:
+            # that is "keep waiting", never "deploy unverified code".
+            if [ "$total" -eq 0 ]; then pending=1; fi
+            if [ "$pending" -eq 0 ]; then echo "all checks passed on $HEAD_SHA"; exit 0; fi
+            sleep 30
+          done
+
+      - name: Derive per-PR Grove tokens
+        # One master secret, deterministic per-PR tokens:
+        #   token(PR, role) = hex(HMAC-SHA256(master, "zio-preview|<PR>|<role>"))
+        # Bound: anyone holding the master secret can derive ANY PR's
+        # tokens; a leaked single-PR token reveals nothing about other
+        # PRs. No persistence service needed.
+        id: tokens
+        if: >-
+          github.event_name == 'pull_request_target' &&
+          github.event.action != 'closed'
+        env:
+          MASTER: ${{ secrets.GROVE_PREVIEW_TOKEN_MASTER }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          [ -n "$MASTER" ] || { echo 'secrets.GROVE_PREVIEW_TOKEN_MASTER must be set' >&2; exit 1; }
+          for role in reader operator publisher annotator; do
+            key="$(printf 'zio-preview|%s|%s' "$PR_NUMBER" "$role" \
+              | openssl dgst -sha256 -hmac "$MASTER" -hex | sed 's/^.*= //')"
+            # mask before export: the "Create preview" step header prints
+            # its environment, which would otherwise leak the token
+            echo "::add-mask::$key"
+            echo "${role}=$key" >> "$GITHUB_OUTPUT"
+          done
+
+      - name: Create preview
+        if: >-
+          github.event_name != 'workflow_dispatch' &&
+          github.event.action != 'closed'
+        env:
+          DOKPLOY_API_URL: ${{ secrets.DOKPLOY_API_URL }}
+          DOKPLOY_API_TOKEN: ${{ secrets.DOKPLOY_API_TOKEN }}
+          DOKPLOY_PROJECT_ID: ${{ secrets.DOKPLOY_PROJECT_ID }}
+          DOKPLOY_ENVIRONMENT_ID: ${{ secrets.DOKPLOY_ENVIRONMENT_ID }}
+          DOKPLOY_GITHUB_ID: ${{ secrets.DOKPLOY_GITHUB_ID }}
+          PREVIEW_PROJECT: ${{ steps.preview.outputs.project }}
+          PREVIEW_DOMAIN: ${{ steps.preview.outputs.domain }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          GROVE_PREVIEW_TOKEN_READER: ${{ steps.tokens.outputs.reader }}
+          GROVE_PREVIEW_TOKEN_OPERATOR: ${{ steps.tokens.outputs.operator }}
+          GROVE_PREVIEW_TOKEN_PUBLISHER: ${{ steps.tokens.outputs.publisher }}
+          GROVE_PREVIEW_TOKEN_ANNOTATOR: ${{ steps.tokens.outputs.annotator }}
+        run: bash tools/preview-stack.sh up

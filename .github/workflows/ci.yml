@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, dev]
   pull_request:
   workflow_dispatch:
 
@@ -177,3 +177,26 @@ jobs:
       # run. The canary check is the point of it.
       - name: Protocol session
         run: python3 tools/lsp_probe.py target/debug/zio-lsp
+
+  grove-service:
+    name: grove service
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: CPU worker runtime
+        run: |
+          python -m venv .venv
+          .venv/bin/python -m pip install \
+            --index-url https://download.pytorch.org/whl/cpu \
+            -r apps/grove/workers/torch/requirements.txt
+      - name: Grove HTTP contract
+        run: bash tools/test-grove-zio-http.sh
+      - name: Browser controller contract
+        run: bash -c 'cd apps/grove && ../../target/debug/zio-cli web/browser-contract.zio'
+      - name: Unified deployment
+        run: bash tools/test-grove-deployment.sh

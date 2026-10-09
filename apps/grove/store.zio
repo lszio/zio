@@ -233,7 +233,11 @@
   (grove--authorize store "operator")
   (grove--owned store record)
   (artifact--get store (grove--get-key record :state_artifact nil))
-  (store--require-owner store (grove--get-key record :snapshot nil))
+  ;; A from-scratch checkpoint has no base lineage to own: a nil snapshot
+  ;; means the run never resumed from a manifest, not that a manifest is
+  ;; missing. state_artifact ownership is already proven by artifact--get.
+  (if (nil? (grove--get-key record :snapshot nil)) nil
+    (store--require-owner store (grove--get-key record :snapshot nil)))
   (let* [bytes (codec--encode "Checkpoint" record)
          digest (artifact--put store bytes)
          body (codec--text "Checkpoint" record)]
@@ -265,15 +269,39 @@
         "INSERT OR IGNORE INTO populations(id,owner,schema,body) VALUES(?1,?2,1,?3)"
         [(grove--get-key record :id nil) (grove--principal-id store) body])))))
 
+;; A literal vector, not a computed one: this file loads in restricted
+;; contexts (the agent contract runs without host filesystem primitives),
+;; and a load-time `host/bytes-utf8` call would break those loads.
+(def store--run-id-chars ["A" "B" "C" "D" "E" "F" "G" "H" "I" "J" "K" "L" "M"
+                          "N" "O" "P" "Q" "R" "S" "T" "U" "V" "W" "X" "Y" "Z"
+                          "a" "b" "c" "d" "e" "f" "g" "h" "i" "j" "k" "l" "m"
+                          "n" "o" "p" "q" "r" "s" "t" "u" "v" "w" "x" "y" "z"
+                          "0" "1" "2" "3" "4" "5" "6" "7" "8" "9" "." "_" "-"])
+
 (defn store--put-run [store record]
   (grove--schema! (grove--get-key record :schema nil))
   (grove--authorize store "operator")
-  (let [body (codec--text "Run" record)]
-    (store--transaction store (fn []
-      (store--execute store
-        "INSERT OR IGNORE INTO runs(id,task,state,schema,body) VALUES(?1,?2,?3,1,?4)"
-        [(grove--get-key record :id nil) (grove--get-key record :task_id nil)
-         (grove--get-key record :state nil) body])))))
+  ;; Run ids become scratch directory names (runner--stage), so an id
+  ;; like "victim/" would alias the files of run "victim" on disk.
+  (let [id (grove--get-key record :id nil)
+        bytes (host/bytes (str id))
+        length (host/byte-length bytes)]
+    (grove--require
+      (and (= (type id) :string)
+           (> length 0)
+           (not (str-starts-with? id "."))
+           (loop [offset 0]
+             (if (= offset length) true
+               (if (grove--contains store--run-id-chars (host/bytes-utf8 (host/byte-slice bytes offset 1)))
+                 (recur (+ offset 1))
+                 false))))
+      "invalid-input" "run id must be [A-Za-z0-9._-], not starting with a dot")
+    (let [body (codec--text "Run" record)]
+      (store--transaction store (fn []
+        (store--execute store
+          "INSERT OR IGNORE INTO runs(id,task,state,schema,body) VALUES(?1,?2,?3,1,?4)"
+          [id (grove--get-key record :task_id nil)
+           (grove--get-key record :state nil) body]))))))
 
 (defn store--set-run [store run]
   (grove--authorize store "operator")
@@ -329,14 +357,26 @@
                   (if (or (= kind "human-correction") (= kind "human-preference") (= kind "demonstration"))
                     "annotator" "reader"))
          producer (grove--get-key signal :producer nil)
+         idempotency (grove--get-key signal :idempotency_key nil)
+         id (grove--get-key signal :id nil)
+         task (grove--get-key signal :task_id nil)
+         received (grove--get-key signal :received_at_ms nil)
          body (codec--text "LearningSignal" signal)
          target (store--signal-target signal)]
     (grove--authorize store required)
     (grove--require (grove--contains store--signal-kinds kind) "invalid-input" "unknown signal kind")
     (grove--require (= producer (grove--principal-id store)) "capability-denied" "signal producer must be authenticated principal")
+    ;; The signals columns are NOT NULL: INSERT OR IGNORE would silently
+    ;; drop a row missing any of them and the caller would read
+    ;; "accepted" for a signal that was never stored (and retraction
+    ;; propagation could never see it). Refuse up front instead.
+    (grove--require (and (string? id) (> (count id) 0)) "invalid-input" "signal requires a non-empty id")
+    (grove--require (and (string? idempotency) (> (count idempotency) 0)) "invalid-input" "signal requires a non-empty idempotency_key")
+    (grove--require (and (string? task) (> (count task) 0)) "invalid-input" "signal requires a non-empty task_id")
+    (grove--require (not (nil? received)) "invalid-input" "signal requires received_at_ms")
     (store--transaction store (fn []
       (let [existing (store--query store "SELECT body FROM signals WHERE producer=?1 AND idempotency=?2"
-                              [producer (grove--get-key signal :idempotency_key nil)])]
+                              [producer idempotency])]
         (if (not (empty? existing))
           (do (grove--require (= body (get (first existing) :body nil)) "conflict" "signal idempotency key was used for different content")
               "duplicate")
@@ -345,16 +385,26 @@
               (let* [referred (grove--get-key signal :revises nil)
                      rows (store--query store "SELECT 1 FROM signals WHERE id=?1" [referred])]
                 (if (empty? rows)
-                  (grove--raise "incompatible-state"
+                  (grove--fail "incompatible-state"
                     (str "signal " (grove--get-key signal :id nil) " revises unknown signal " referred))
                   nil))
               nil)
-            (store--execute store
+            (let [changed (store--execute store
               "INSERT OR IGNORE INTO signals(id,producer,idempotency,kind,target,status,task,target_field,received_at_ms,schema,body) VALUES(?1,?2,?3,?4,?5,'accepted',?6,?7,?8,1,?9)"
-              [(grove--get-key signal :id nil) producer (grove--get-key signal :idempotency_key nil)
-               kind target (grove--get-key signal :task_id nil) (grove--get-key signal :target_field nil)
-               (grove--get-key signal :received_at_ms nil) body])
-            "accepted")))))))
+              [(grove--get-key signal :id nil) producer idempotency
+               kind target task (grove--get-key signal :target_field nil)
+               received body])]
+              ;; NOT NULL fields are validated above, so a dropped insert
+              ;; can only be the immutable-id collision; re-read the
+              ;; (producer, idempotency) row to say which fact holds.
+              (if (= changed 1) "accepted"
+                (let [reread (store--query store
+                               "SELECT body FROM signals WHERE producer=?1 AND idempotency=?2" [producer idempotency])]
+                  (if (not (empty? reread))
+                    (do (grove--require (= body (get (first reread) :body nil))
+                          "conflict" "signal idempotency key was used for different content")
+                        "duplicate")
+                    (grove--fail "conflict" (str "signal id " id " already exists")))))))))))))
 
 (defn store--active-signals [store target]
   (map (fn [row] (codec--decode (get row :body) (get row :schema)))
@@ -406,14 +456,14 @@
     (reduce (fn [_ id]
       (let [status (store--signal-status store id)]
         (if (not (= "accepted" status))
-          (grove--raise "incompatible-state" (str "frozen signal " id " is " status))
+          (grove--fail "incompatible-state" (str "frozen signal " id " is " status))
           nil))) nil (grove--get-key revision :signal_ids []))
     (reduce (fn [_ id]
       (let [obs (grove--get store "Observation" id)]
         (if (not (= (grove--get-key obs :task_id nil) (grove--get-key revision :task_id nil)))
-          (grove--raise "protocol-violation" "cross-task dataset observation")
+          (grove--fail "protocol-violation" "cross-task dataset observation")
           (if (not (grove--get-key obs :training_permitted false))
-            (grove--raise "capability-denied" "observation licence forbids training")
+            (grove--fail "capability-denied" "observation licence forbids training")
             nil)))) nil (grove--get-key revision :observation_ids []))
     (let [body (codec--text "DatasetRevision" revision)]
       (store--execute store "INSERT INTO datasets(id,task,schema,body) VALUES(?1,?2,1,?3)"
@@ -481,7 +531,7 @@
 (defn store--require-deployable [store snapshot]
   (let [rows (store--query store "SELECT signal,dataset FROM invalidations WHERE snapshot=?1" [(grove--ref-hex snapshot)])]
     (if (not (empty? rows))
-      (grove--raise "incompatible-state"
+      (grove--fail "incompatible-state"
         (str "snapshot " (grove--ref-hex snapshot) " was trained on retracted signal(s) "
              (map (fn [r] (get r :signal)) rows)
              " (frozen view(s) "
@@ -489,8 +539,34 @@
              "); retrain without them"))
       nil)))
 
-(defn store--require-resumable [store snapshot]
-  (store--require-deployable store snapshot))
+(defn store--retracted-datasets [store]
+  ;; The frozen dataset revisions carrying ANY retracted signal, queried at
+  ;; gate time: a retracted signal keeps status='retracted', so the set
+  ;; stays queryable long after propagation has run. Membership is decided
+  ;; on the DECODED :signal_ids vector, not a substring of the serialized
+  ;; body: a quoted id in another field must neither freeze nor spare a
+  ;; revision.
+  (let [retracted (map (fn [row] (get row :id))
+    (store--query store "SELECT id FROM signals WHERE status='retracted'" []))]
+    (map (fn [row] (get row :id))
+      (filter (fn [row]
+        (let [ids (grove--get-key (codec--decode (get row :body) (get row :schema)) :signal_ids [])]
+          (reduce (fn [hit s] (if hit hit (grove--contains ids s))) false retracted)))
+        (store--query store "SELECT id,body,schema FROM datasets ORDER BY id" [])))))
+
+(defn store--require-resumable [store run snapshot]
+  ;; A from-scratch checkpoint has no base snapshot: nil means there is no
+  ;; lineage to check against retraction invalidations, not a missing one.
+  ;; The run's own frozen dataset revision still gates the resume: when any
+  ;; signal it consumed was retracted, resuming would keep training on
+  ;; revoked data even though propagation had no snapshot to invalidate.
+  (if (nil? snapshot)
+    (let [revision (grove--get-key run :dataset_revision nil)]
+      (if (grove--contains (store--retracted-datasets store) revision)
+        (grove--fail "incompatible-state"
+          (str "run consumed dataset revision " revision " whose signal(s) were retracted; retrain without them"))
+        nil))
+    (store--require-deployable store snapshot)))
 
 (defn store--publish [store snapshot expected-version]
   (grove--authorize store "publisher")
@@ -505,7 +581,7 @@
                           (+ cur-v 1)
                           (if (= expected-version cur-v)
                             (+ cur-v 1)
-                            (grove--raise "conflict"
+                            (grove--fail "conflict"
                               (str "publication is at version " cur-v ", caller expected " expected-version))))))]
         (store--execute store "UPDATE publications SET state='retired' WHERE state='active'" [])
         (store--execute store "INSERT INTO publications(id,snapshot,version,actor,state) VALUES(?1,?2,?3,?4,'active')"
@@ -547,7 +623,7 @@
     (store--transaction store (fn []
       (let [existing (store--query store "SELECT 1 FROM approvals WHERE id=?1" [approval-id])]
         (if (not (empty? existing))
-          (grove--raise "conflict"
+          (grove--fail "conflict"
             (str "approval " approval-id " already exists; a second decision about the same candidate is a different approval"))
           nil))
       (store--execute store
@@ -674,7 +750,7 @@
               run (codec--decode (get (first rows2) :body nil) 1)
               next (assoc run :state final-state)]
           (if (not (store--epoch-check store epoch))
-            (grove--raise "conflict" "the coordinator ownership epoch was superseded")
+            (grove--fail "conflict" "the coordinator ownership epoch was superseded")
             nil)
           (store--execute store "UPDATE runs SET state=?1,body=?2 WHERE id=?3"
             [final-state (codec--text "Run" next) run-id])
@@ -694,7 +770,7 @@
       (store--execute store "INSERT INTO queued_work(run,kind,payload,schema) VALUES(?1,?2,?3,1)"
         [run-id kind payload])
       (if (not (= (get (first existing) :payload nil) payload))
-        (grove--raise "conflict" (str "run " run-id " is already queued for different work"))
+        (grove--fail "conflict" (str "run " run-id " is already queued for different work"))
         nil))))
 
 (defn store--queued-work [store run-id]
@@ -709,7 +785,7 @@
       (store--execute store "INSERT INTO receipts(operation_id,status,body,created_at_ms) VALUES(?1,?2,?3,?4)"
         [operation-id status body (host/clock-ms)])
       (= (get (first existing) :body nil) body) nil
-      true (grove--raise "conflict"
+      true (grove--fail "conflict"
              (str "operation " operation-id " already produced a different answer")))))
 
 (defn store--get-receipt [store operation-id]
@@ -741,7 +817,7 @@
              source (if (nil? src) nil (codec--text "EventSourceStub" src))
              at (grove--get-key event :at_ms (host/clock-ms))]
         (if (> (count detail) 8192)
-          (grove--raise "protocol-violation"
+          (grove--fail "protocol-violation"
             (str "execution event " run-id ":" sequence " detail exceeds 8192 bytes"))
           nil)
         (store--execute store
@@ -779,7 +855,11 @@
         acc))) [] (store--query store "SELECT body,schema FROM checkpoints ORDER BY id" [])))
 
 (defn store--retraction-snapshots [store run-ids ckpt-ids]
-  (let* [run-marks (map (fn [i] (str "?" (+ i 1))) (range (count run-ids)))
+  ;; `into` of two empty lists yields an empty list and the reduction
+  ;; below cannot take it apart: no runs and no checkpoints means nothing
+  ;; to invalidate.
+  (if (and (empty? run-ids) (empty? ckpt-ids)) []
+    (let* [run-marks (map (fn [i] (str "?" (+ i 1))) (range (count run-ids)))
          run-sql (str "SELECT body,schema FROM runs WHERE id IN (" (codec--join run-marks ",") ")")
          run-rows (if (= 0 (count run-ids)) []
                     (store--query store run-sql run-ids))
@@ -789,7 +869,9 @@
          ckpt-rows (if (= 0 (count ckpt-ids)) []
                      (store--query store ckpt-sql ckpt-ids))
          ckpt-snap (map (fn [row] (grove--get-key (codec--decode (get row :body) (get row :schema)) :snapshot nil)) ckpt-rows)]
-    (grove--unique (map grove--ref-hex (into run-snap ckpt-snap)))))
+    ;; From-scratch runs and their checkpoints carry no snapshot ref; a nil
+    ;; is nothing to invalidate, not a digest to resolve.
+    (grove--unique (map grove--ref-hex (filter (fn [ref] (not (nil? ref))) (into run-snap ckpt-snap)))))))
 
 (defn store--propagate-retraction [store signal-id]
   ;; A retraction does not just mark the signal: it follows the signal's
@@ -866,10 +948,14 @@
               (store--mark-snapshot-live acc (grove--ref-hex (get b :head nil)))))) base
           (store--query store "SELECT body,schema FROM branches ORDER BY id" []))
         with-runs (reduce (fn [acc row]
-          (let [r (codec--decode (get row :body) (get row :schema))]
-            (if (grove--contains ["accepted" "rejected" "failed" "cancelled"] (get r :state nil))
+          (let [r (codec--decode (get row :body) (get row :schema))
+                base-snap (get r :base_snapshot nil)]
+            ;; From-scratch runs carry no base snapshot: a nil is nothing
+            ;; to keep live, not a digest to resolve.
+            (if (or (nil? base-snap)
+                    (grove--contains ["accepted" "rejected" "failed" "cancelled"] (get r :state nil)))
               acc
-              (store--mark-snapshot-live acc (grove--ref-hex (get r :base_snapshot nil)))))) with-branches
+              (store--mark-snapshot-live acc (grove--ref-hex base-snap))))) with-branches
           (store--query store "SELECT body,schema FROM runs ORDER BY id" []))
         with-candidates (reduce (fn [acc row]
           (let [c (codec--decode (get row :body) (get row :schema))]
@@ -965,13 +1051,13 @@
         module-path (grove--get-key candidate :module_path "")
         gov-state (get governance module-path "learnable")]
     (if (= gov-state "protected")
-      (grove--raise "protocol-violation"
+      (grove--fail "protocol-violation"
         (str module-path " is protected; a candidate may not rewrite it"))
       nil)
     (reduce (fn [_ d]
       (if (reduce (fn [hit p] (if hit hit (= d p))) false parent-deps)
         (if (= (get governance d "") "protected")
-          (grove--raise "protocol-violation"
+          (grove--fail "protocol-violation"
             (str "dependency " d " is newly required and its region is protected"))
           nil)
         nil)) nil proposed-deps))
@@ -987,18 +1073,18 @@
 (defn store--publish-approved [store approval expected-version]
   (grove--authorize store "publisher")
   (if (not (= "approved" (grove--get-key approval :decision nil)))
-    (grove--raise "incompatible-state"
+    (grove--fail "incompatible-state"
       (str "approval " (grove--get-key approval :id nil) " is not an approval"))
     nil)
   (if (not (store--approval-is-current store approval))
-    (grove--raise "incompatible-state"
+    (grove--fail "incompatible-state"
       (str "approval " (grove--get-key approval :id nil)
            " does not match a recorded evaluation of " (grove--get-key approval :subject_id nil)))
     nil)
   (if (not (store--approval-version-is-current store approval))
     (let [active (store--active-publication store)
           current (if (nil? active) "none" (get active :version nil))]
-      (grove--raise "conflict"
+      (grove--fail "conflict"
         (str "approval " (grove--get-key approval :id nil)
              " expected publication v" (grove--get-key approval :expected_publication_version nil)
              ", the pointer is at v" current)))
@@ -1008,7 +1094,7 @@
 (defn store--approve-and-publish [store protocol candidate expected-version now-ms]
   (let [verdict (store--evaluate-candidate store protocol candidate now-ms)]
     (if (not (= "qualified" (get verdict :state nil)))
-      (grove--raise "incompatible-state"
+      (grove--fail "incompatible-state"
         (str "candidate " (grove--get-key candidate :id nil) " does not qualify: "
              (str-join "; " (get verdict :gate_failures []))
              "; the active publication is untouched"))
@@ -1052,6 +1138,62 @@
 ;; ─── Receipt replay: the same operation id under the same
 ;;     principal/route/payload always returns the same answer. ───
 
+(defn store--receipt [store operation route payload]
+  ;; The lookup half, for a handler that is about to do the work: nil
+  ;; means "not seen yet", and the caller proceeds. The principal comes
+  ;; from the request-bound handle, so a receipt recorded by one token
+  ;; is not replayed to another.
+  (store--receipt-lookup store operation (grove--principal-id store) route payload))
+
+(defn store--receipt-put [store operation route payload status response]
+  ;; The record half. An id that already exists is a replay, and the
+  ;; second writer must be *told* rather than silently believing it won.
+  ;; Same answer twice is idempotent; a different answer under the same
+  ;; id, or a lost race for it, is a conflict. The Rust oracle is
+  ;; `put_receipt` (apps/grove/native/learning/src/store.rs:1451).
+  ;; The pre-read is only an optimization: skip the write when the answer
+  ;; is already recorded. The stored answer is ALWAYS re-read, never taken
+  ;; from `store--receipt-store`, which returns the caller's own map back
+  ;; -- comparing that with the caller's answer compares the answer with
+  ;; itself, so a writer whose INSERT OR IGNORE did nothing would be told
+  ;; it won while a later replay hands out the first writer's answer.
+  ;;
+  ;; A receipt is the ledger entry for an operation the caller was already
+  ;; authorized to perform, not a domain write of its own. The Rust oracle
+  ;; records it as `Actor::new("grove-api", Operator)`
+  ;; (apps/grove/native/app/src/api.rs:158) regardless of the caller's role,
+  ;; because the authority in question is the ROUTE's, already checked by
+  ;; `api--require-role` before the handler ran. Demanding `operator` here
+  ;; refused an annotator on its own `POST /api/signals` -- a route that
+  ;; requires only `annotator` -- after the handler had already filed the
+  ;; signal and could not answer for it. The floor is therefore `reader`:
+  ;; the lowest role any receipt-recording route admits
+  ;; (`POST /api/observations` and `POST /api/predictions` both take a
+  ;; reader), and every route above that raises its own floor first, so a
+  ;; reader never reaches a receipt for work it could not have done. A
+  ;; reader that does reach one is refused by its read-only connection --
+  ;; that is the boundary, and it is not weakened by this check. The
+  ;; binding still records the real principal, so a receipt recorded by one
+  ;; token is never replayed to another.
+  (do (grove--authorize store "reader")
+      (let* [principal (grove--principal-id store)
+        answer (let [existing (store--receipt-lookup store operation principal route payload)]
+                 (if (nil? existing) (store--receipt-store store operation principal route payload status response))
+                 (store--receipt-lookup store operation principal route payload))]
+    ;; The row is ours (we just wrote it) or another writer's; either way
+    ;; nil here means the receipt vanished, which cannot be reported as
+    ;; success for an answer nobody can replay.
+    (grove--require (not (nil? answer)) "conflict"
+      (str "operation " operation " was not recorded and cannot be replayed"))
+    ;; The recorded body comes back through json-parse, so both sides are
+    ;; normalized before the comparison: comparing a round-tripped map to
+    ;; the caller's keyword-keyed map would call every replay a conflict.
+    (grove--require (and (= (get answer :status nil) status)
+                         (= (codec--normalize (get answer :body nil)) (codec--normalize response)))
+      "conflict"
+      (str "operation " operation " already produced a different answer; one id cannot mean two things"))
+    answer)))
+
 (defn store--receipt-lookup [store operation principal route payload]
   (let [rows (store--query store
     "SELECT r.status,r.body,b.principal,b.route,b.payload_digest FROM receipts r LEFT JOIN receipt_bindings b ON r.operation_id=b.operation_id WHERE r.operation_id=?1"
@@ -1063,16 +1205,17 @@
                  (= (get row :route nil) route)
                  (= (get row :payload_digest nil) payload-digest))
           {:status (get row :status nil) :body (json-parse (get row :body nil))}
-          (grove--raise "conflict" "operation replay differs in principal, route or payload"))))))
+          (grove--fail "conflict" "operation replay differs in principal, route or payload"))))))
 
 (defn store--receipt-store [store operation principal route payload status response]
-  (store--transaction store (fn []
-    (let [payload-digest (host/sha256 (host/json-bytes payload))]
-      (store--execute store
-        "INSERT OR IGNORE INTO receipts(operation_id,status,body,created_at_ms) VALUES(?1,?2,?3,?4)"
-        [operation status (json-stringify response) (host/clock-ms)])
-      (store--execute store
-        "INSERT OR IGNORE INTO receipt_bindings(operation_id,principal,route,payload_digest) VALUES(?1,?2,?3,?4)"
-        [operation principal route payload-digest])))
-  {:status status :body response}))
+  (do
+    (store--transaction store (fn []
+      (let [payload-digest (host/sha256 (host/json-bytes payload))]
+        (store--execute store
+          "INSERT OR IGNORE INTO receipts(operation_id,status,body,created_at_ms) VALUES(?1,?2,?3,?4)"
+          [operation status (json-stringify response) (host/clock-ms)])
+        (store--execute store
+          "INSERT OR IGNORE INTO receipt_bindings(operation_id,principal,route,payload_digest) VALUES(?1,?2,?3,?4)"
+          [operation principal route payload-digest]))))
+    {:status status :body response}))
 

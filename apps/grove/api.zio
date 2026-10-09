@@ -47,6 +47,27 @@
 (defn api--accepted [request body] (api--reply request "accepted" body))
 (defn api--no-content [request] (host/http-reply (get request :listener) (get request :id) {:status 204 :headers {} :body ""}))
 
+(def api--refusals ["unauthorized" "bad-request" "not_found" "method-not-allowed"
+                    "invalid-input" "capability-denied" "conflict" "incompatible-state"
+                    "budget-exhausted" "artifact-unavailable" "timeout" "cancelled"
+                    "backend-failed" "protocol-violation"])
+
+(defn api--refusal [message]
+  ;; `grove--fail` raises "class: detail", and `*error*` carries that
+  ;; string wrapped in one pair of quotes, so the class would read as
+  ;; `"capability-denied` unless the pair is dropped. Collapsing every
+  ;; raised error to 502 would report a reader's forbidden queue POST as
+  ;; a backend outage. A message naming no known class is a backend
+  ;; failure.
+  (let* [parts (str-split ": " (runner--error-detail message))
+         class (get parts 0 "")
+         detail (loop [i 1 out ""]
+                   (if (= i (count parts)) out
+                     (recur (+ i 1) (str out (if (= i 1) "" ": ") (get parts i)))))]
+    (if (grove--contains api--refusals class)
+      {:class class :detail detail}
+      {:class "backend-failed" :detail message})))
+
 (defn api--error [request class detail extra]
   (let [payload (reduce (fn [out key] (assoc out key (get extra key)))
                         {"class" class "detail" detail}
@@ -60,20 +81,37 @@
       (get parts 1 nil)
       nil)))
 
+(defn api--require-role [request required]
+  ;; The store handle belongs to the service; the authority for one
+  ;; request belongs to the token that made it. Under the service's
+  ;; operator handle every token would pass `grove--authorize`.
+  (let [role (grove--get-key (get request :principal) :role "")]
+    (grove--require (>= (grove--role-rank role) (grove--role-rank required))
+      "capability-denied" (str required " role required"))
+    true))
+
 
 ;; ---------- Idempotency ----------
 (defn api--operation-id [request]
   (let [body (get request :body {})]
     (grove--get-key body :operation_id nil)))
 
+(def api--replayed "grove.replayed")
+
 (defn api--replay [request route]
+  ;; A replay has already been answered, so the handler must stop here:
+  ;; replying a second time would be answering the same request id twice,
+  ;; and re-running the work would be re-deciding a decision the receipt
+  ;; already stands for. The sentinel unwinds to the dispatcher, which
+  ;; sees the reply is out and answers nothing further.
   (let* [store (get request :store)
          op (api--operation-id request)
          payload (get request :body {})]
     (if (and store op)
       (let [existing (store--receipt store op route payload)]
         (if existing
-          (api--reply request (get existing :status "ok") (get existing :body {}))
+          (do (api--reply request (get existing :status "ok") (get existing :body {}))
+              (error api--replayed))
           nil))
       nil)))
 
@@ -196,15 +234,22 @@
     {:events rows :cursor cursor :has_more (= (count rows) limit)}))
 
 ;; ---------- Route handlers (one per path, each takes request + env) ----------
+;; `request :scheduler_failure` is the last tick failure the owner loop
+;; recorded; nil while every tick succeeded.
 (defn api--handle-health [request]
   (let* [store (get request :store)
-         owner (coordinator--owner store)]
+         owner (coordinator--owner store)
+         failure (get request :scheduler_failure nil)
+         ;; A scheduler that cannot advance is not `ok`: reporting "ok"
+         ;; over a stalled queue is the failure this field exists to stop.
+         base {:schema 1
+               :owner_epoch (if owner (grove--get-key owner :epoch 0) 0)
+               :owner_pid (if owner (grove--get-key owner :pid 0) 0)
+               :store_root (get store :root "")}]
     (api--ok request
-      {:status "ok"
-       :schema 1
-       :owner_epoch (if owner (grove--get-key owner :epoch 0) 0)
-       :owner_pid (if owner (grove--get-key owner :pid 0) 0)
-       :store_root (get store :root "")})))
+      (assoc base
+        :status (if failure "degraded" "ok")
+        :scheduler_failure failure))))
 
 (defn api--handle-list-runs [request]
   (let* [principal (get request :principal)
@@ -265,6 +310,7 @@
 (defn api--handle-post-signal [request]
   (let* [store (get request :store)
          body (get request :body)
+         _ (api--require-role request "annotator")
          _ (api--replay request "POST /api/signals")
          rec (assoc body :producer (grove--principal-id store))
          kind (grove--get-key rec :kind nil)
@@ -327,6 +373,7 @@
   (let* [store (get request :store)
          body (get request :body)
          _ (grove--authorize store "operator")
+         _ (api--require-role request "operator")
          _ (api--replay request "POST /api/logic/propose")
          rec body
          op (grove--get-key body :operation_id
@@ -377,6 +424,7 @@
   (let* [store (get request :store)
          body (get request :body)
          _ (grove--authorize store "operator")
+         _ (api--require-role request "operator")
          _ (api--replay request "POST /api/learning/queue")
          run {:schema 1 :id (grove--get-key body :run_id "")
               :task_id (grove--get-key body :task_id "")
@@ -403,6 +451,7 @@
   (let* [store (get request :store)
          body (get request :body)
          _ (grove--authorize store "operator")
+         _ (api--require-role request "operator")
          id (api--path-params request :id)
          _ (api--replay request "POST /api/learning/runs/{id}/cancel")
          next (runner--intent store id "cancel")
@@ -421,6 +470,7 @@
   (let* [store (get request :store)
          body (get request :body)
          _ (grove--authorize store "operator")
+         _ (api--require-role request "operator")
          _ (api--replay request "POST /api/learning/pause")
          op (grove--get-key body :operation_id
                 (str "op-"
@@ -440,6 +490,7 @@
   (let* [store (get request :store)
          body (get request :body)
          _ (grove--authorize store "operator")
+         _ (api--require-role request "operator")
          _ (api--replay request "POST /api/learning/resume")
          op (grove--get-key body :operation_id
                 (str "op-"
@@ -455,13 +506,16 @@
                 (grove--get-key body :new_run_id "")
                 (grove--get-key body :steps_budget 1000)
                 (grove--get-key body :training {}))]
-    (store--receipt-put store op "POST /api/learning/resume" body "created" (merge plan {:operation_id op}))
-    (api--created request (merge plan {:operation_id op}))))
+    ;; `merge` does not exist in this language; the plan map gains the
+    ;; operation id the same way every other reply decorates a payload.
+    (store--receipt-put store op "POST /api/learning/resume" body "created" (assoc plan :operation_id op))
+    (api--created request (assoc plan :operation_id op))))
 
 (defn api--handle-fork [request]
   (let* [store (get request :store)
          body (get request :body)
          _ (grove--authorize store "operator")
+         _ (api--require-role request "operator")
          _ (api--replay request "POST /api/learning/fork")
          op (grove--get-key body :operation_id
                 (str "op-"
@@ -483,6 +537,7 @@
          body (get request :body)
          decision (grove--get-key body :decision "reject")
          _ (if (= decision "accept") (grove--authorize store "publisher") (grove--authorize store "operator"))
+         _ (api--require-role request (if (= decision "accept") "publisher" "operator"))
          _ (api--replay request "POST /api/learning/select")
          op (grove--get-key body :operation_id
                 (str "op-"
@@ -502,6 +557,7 @@
   (let* [store (get request :store)
          body (get request :body)
          _ (grove--authorize store "publisher")
+         _ (api--require-role request "publisher")
          active (store--active-publication store)
          _ (api--replay request "POST /api/approve")
          op (grove--get-key body :operation_id
@@ -531,26 +587,30 @@
          result (api--list-events (get request :store) (get request :query {}))]
     (api--ok request result)))
 
-(defn api--static-file [request path content-type]
+(defn api--web-root [request]
+  ;; Assets resolve from the root the host granted, never from the process
+  ;; working directory: an installed service is launched from wherever the
+  ;; supervisor happens to be.
+  (let [root (get request :web_root "")]
+    (grove--require (not (= root "")) "invalid-input" "no web root was granted to the service")
+    root))
+
+(defn api--static-file [request relative content-type]
   (host/http-reply
     (get request :listener)
     (get request :id)
     {:status 200
      :headers {"content-type" content-type}
-     :body (host/read-bytes path)}))
+     :body (host/read-bytes (str (api--web-root request) "/" relative))}))
 
 (defn api--handle-static-index [request]
-  (api--static-file request "apps/grove/web/index.html" "text/html; charset=utf-8"))
+  (api--static-file request "index.html" "text/html; charset=utf-8"))
 (defn api--handle-static-bridge [request]
-  (api--static-file request "apps/grove/web/bridge.js" "text/javascript; charset=utf-8"))
+  (api--static-file request "bridge.js" "text/javascript; charset=utf-8"))
 (defn api--handle-static-controller [request]
-  (api--static-file request "apps/grove/web/controller-source.js" "text/javascript; charset=utf-8"))
+  (api--static-file request "controller-source.js" "text/javascript; charset=utf-8"))
 (defn api--handle-static-styles [request]
-  (api--static-file request "apps/grove/web/styles.css" "text/css; charset=utf-8"))
-(defn api--handle-static-wasm-loader [request]
-  (api--static-file request "apps/site/public/wasm/zio_core.js" "text/javascript; charset=utf-8"))
-(defn api--handle-static-wasm [request]
-  (api--static-file request "apps/site/public/wasm/zio_core_bg.wasm" "application/wasm"))
+  (api--static-file request "styles.css" "text/css; charset=utf-8"))
 (defn api--handle-static-favicon [request]
   (api--no-content request))
 
@@ -583,8 +643,6 @@
   {:path "/bridge.js" :methods {"GET" api--handle-static-bridge}}
   {:path "/controller-source.js" :methods {"GET" api--handle-static-controller}}
   {:path "/styles.css" :methods {"GET" api--handle-static-styles}}
-  {:path "/wasm/zio_core.js" :methods {"GET" api--handle-static-wasm-loader}}
-  {:path "/wasm/zio_core_bg.wasm" :methods {"GET" api--handle-static-wasm}}
   {:path "/favicon.ico" :methods {"GET" api--handle-static-favicon}}
 ])
 
@@ -621,42 +679,119 @@
       (= path "/bridge.js")
       (= path "/controller-source.js")
       (= path "/styles.css")
-      (= path "/wasm/zio_core.js")
-      (= path "/wasm/zio_core_bg.wasm")
       (= path "/favicon.ico")))
 
 ;; ---------- Static assets ----------
-(defn api--serve [bind root]
+(defn api--worker-mounts [config]
+  ;; The jail execs under `env -i` with everything pivot-rooted away, so
+  ;; it needs /usr and any interpreter tree the launcher granted; a mount
+  ;; under /usr is already covered by the whole-directory grant.
+  (into [{:source "/usr" :target "/usr"}]
+        (map (fn [dir] {:source dir :target dir})
+             (filter (fn [dir] (not (str-starts-with? "/usr" dir)))
+                     (get config :worker-mounts [])))))
+
+(defn api--worker-config [config]
+  ;; Worker authority comes from the launcher, never from request data:
+  ;; an executable, interpreter and scratch the host granted. The jail
+  ;; execs `executable` under `env -i`, so `executable` is the interpreter
+  ;; and the script is argv[1]; cwd is a jail path (/scratch), while
+  ;; scratch is the host staging directory the jail binds at /scratch.
+  (let [scratch (get config :worker-scratch "")]
+    {:executable (get config :worker-python "")
+     :argv [(get config :worker-script "")]
+     :cwd "/scratch"
+     :scratch scratch
+     :read-only-mounts (api--worker-mounts config)
+     :timeout-ms 300000
+     :max-frame-bytes 16777216
+     :max-address-space 2147483648
+     :max-cpu-seconds 300
+     ;; RLIMIT_NPROC counts every thread of the real UID; the default 64
+     ;; cannot even fork the jail's own unshare --fork.
+     :max-processes 4096}))
+
+(defn api--service-config [config]
+  ;; Everything the owner needs comes from the launcher's keyword map, so
+  ;; the service reads no environment and no argv to decide its own
+  ;; authority. Missing values fall back to the smallest workable loop.
+  {:worker-count (get config :workers 2)
+   :lease-ms 30000
+   :deadline-ms 300000
+   :max-frame-bytes 16777216
+   :input-root (get config :root "")
+   :web-root (get config :web-root "")
+   :worker-config (if (= (get config :worker-script "") "")
+                    {}
+                    (api--worker-config config))})
+
+(defn api--tick [owner]
+  ;; One owner, one attempt at failure. A tick that raises must not take
+  ;; the HTTP surface down with it: the run is already recorded as
+  ;; running, and a dead service reports nothing at all. The failure is
+  ;; still recorded, so /api/health stops claiming "ok" while the
+  ;; scheduler cannot progress; the next clean tick clears it.
+  (let [runner (get owner :runner)]
+    (try (assoc owner :runner (runner--tick runner) :scheduler_failure nil)
+         (catch any
+           (do (host/sleep-ms 50)
+               ;; runner--error-detail strips the quotes `error` adds when
+               ;; it Debug-formats a string, so the class is a class and
+               ;; not `"conflict`.
+               (let [detail (runner--error-detail (str *error*))]
+                 (assoc owner :scheduler_failure
+                   {:class (first (str-split ": " detail))
+                    :detail detail
+                    :at_ms (host/clock-ms)})))))))
+
+(defn api--serve [bind root config]
   (let* [tokens (api--load-tokens)
          listener (host/http-listen {:address bind :timeout-ms 30000})
-         store (store--open root {:id "service" :role "reader"})]
-    (loop [owner {:listener listener :store store :tokens tokens}]
-      (let* [raw (host/http-next (get owner :listener) 60000)]
-        (if (nil? raw)
-          (recur owner)
-          (let* [method (get raw :method "GET")
-                 path (get raw :path "/")
-                 token (api--bearer (get raw :headers {}))
-                 role (if token (get tokens token) nil)
-                 principal (if role {:id (str "token:" (host/sha256 (host/bytes token))) :role role} nil)
-                 body-bytes (get raw :body (host/bytes "{}"))
-                 request {:method method
-                          :path path
-                          :headers (get raw :headers {})
-                          :body_bytes body-bytes
-                          :query_raw (get raw :query "")
-                          :store (store--as (get store :db) (get store :root) principal)
-                          :tokens (get owner :tokens)
-                          :principal principal
-                          :listener (get owner :listener)
-                          :id (get raw :id)}]
-            (if (and (nil? role) (not (api--public-path path)))
-              (api--error request "unauthorized" "missing or unknown bearer token" nil)
-              (try
-                (api--route request)
-                (catch any
-                  (api--error request "backend-failed" (str *error*) nil))))
-            (recur owner)))))))
+         ;; One connection, one principal. The service writes: a reader
+         ;; handle cannot create the schema, cannot claim an epoch and
+         ;; cannot accept a queue POST.
+         store (store--open root {:id "service" :role "operator"})
+         runner (runner--open store (api--service-config config))]
+    (loop [owner {:listener listener :store store :tokens tokens
+                  :runner runner :config config :scheduler_failure nil}]
+      ;; Poll before blocking so queued work advances while no request is
+      ;; in flight, and while one is: a single tick per loop iteration is
+      ;; the whole scheduler, and HTTP wait must not starve it.
+      (let [next (api--tick owner)]
+        (let [raw (host/http-next (get next :listener) 200)]
+          (if (nil? raw)
+            (recur next)
+            (let* [method (get raw :method "GET")
+                   path (get raw :path "/")
+                   token (api--bearer (get raw :headers {}))
+                   role (if token (get (get next :tokens) token) nil)
+                   principal (if role {:id (str "token:" (host/sha256 (host/bytes token))) :role role} nil)
+                   body-bytes (get raw :body (host/bytes "{}"))
+                   request {:method method
+                            :path path
+                            :headers (get raw :headers {})
+                            :body_bytes body-bytes
+                            :query_raw (get raw :query "")
+                            :store (store--as (get (get next :store) :db) (get (get next :store) :root) principal)
+                            :tokens (get next :tokens)
+                            :principal principal
+                            :scheduler_failure (get next :scheduler_failure nil)
+                            :web_root (get config :web-root "")
+                            :listener (get next :listener)
+                            :id (get raw :id)}]
+              (if (and (nil? role) (not (api--public-path path)))
+                (api--error request "unauthorized" "missing or unknown bearer token" nil)
+                (try
+                  (api--route request)
+                  (catch any
+                    ;; The replay sentinel means the handler already
+                    ;; replied; answering again would answer one request
+                    ;; id twice.
+                    (if (= (runner--error-detail (str *error*)) api--replayed)
+                      nil
+                      (let [refusal (api--refusal *error*)]
+                        (api--error request (get refusal :class "backend-failed") (get refusal :detail "") nil))))))
+              (recur next))))))))
 
 (defn api--check-bind [bind token-count]
   ;; Refusing to serve an unauthenticated API on a routable address is

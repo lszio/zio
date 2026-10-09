@@ -1,4 +1,6 @@
 ;; One owner loop, one database, independent bounded worker processes.
+(load "events.zio")
+(load "training.zio")
 (defn grove--raise [class detail] (grove--fail class detail))
 (def runner--edges {"queued" ["running" "cancelled" "failed"]
                    "running" ["evaluating" "paused" "failed" "cancelled"]
@@ -9,7 +11,9 @@
   (store--execute store "UPDATE runs SET state=?1,body=?2 WHERE id=?3" [(get run :state) (codec--text "Run" run) (get run :id)])
   run)
 (defn runner--event [store claim kind detail]
-  (events--append store [{:schema 1 :sequence 0 :run_id (get claim :run_id) :attempt_id (get claim :attempt_id "") :kind kind :detail detail :source nil :at_ms (host/clock-ms)}]))
+  ;; `events--append` allocates the per-run sequence; the store refuses a
+  ;; detail over its cap and inserts append-only.
+  (events--append store {:schema 1 :run_id (get claim :run_id) :attempt_id (get claim :attempt_id "") :kind kind :detail detail :source nil :at_ms (host/clock-ms)}))
 (defn runner--enqueue [store run kind work]
   (grove--authorize store "operator")
   (grove--require (= "queued" (get run :state)) "invalid-input" "only queued work can be submitted")
@@ -19,7 +23,7 @@
     (grove--require (> (grove--get-key work :steps 0) 0) "invalid-input" "training needs a positive step count")
     (grove--require (string? (grove--get-key work :source nil)) "invalid-input" "queued Zio needs source"))
   (store--transaction store (fn []
-    (grove--put store "Run" run)
+    (store--put-run store run)
     (store--execute store "INSERT INTO queued_work(run,kind,payload,schema) VALUES(?1,?2,?3,1)" [(get run :id) kind (json-stringify work)])
     (store--execute store "INSERT INTO grove_queue_identity(run,owner) VALUES(?1,?2)" [(get run :id) (get (get store :principal) :id)])
     run)))
@@ -43,7 +47,26 @@
     (runner--recover store)
     {:store store :config config :epoch (grove--get-key owner :epoch 0) :workers []}))
 
-(defn runner--claim-next [runner]
+(defn runner--drain-claim [runner id reason]
+  ;; A queued run that cannot be claimed would otherwise be selected again
+  ;; on every tick (`ORDER BY r.rowid LIMIT 1`) and block every later run
+  ;; forever, so an unclaimable run is failed and the queue moves on. The
+  ;; event is best-effort: `runner--event` still depends on a symbol that
+  ;; does not exist, and losing the event must not leave the run queued.
+  (let [store (get runner :store)
+        run (grove--get store "Run" id)]
+    (runner--transition! (get run :state) "failed")
+    (store--transaction store (fn []
+      (runner--write-run store (assoc run :state "failed"))
+      (try (runner--event store {:run_id id} "claim-rejected" reason)
+           (catch any nil))))
+    nil))
+
+(defn runner--claim-transaction [runner]
+  ;; The claim transaction only. A failure propagates out of it so the
+  ;; transaction rolls back whole; the caller drains the unclaimable run
+  ;; afterwards, outside this transaction, because a drain performed
+  ;; inside it would be rolled back with the failure it records.
   (let* [store (get runner :store) config (get runner :config)]
     (store--transaction store (fn []
       (coordinator--check-epoch store (get runner :epoch))
@@ -58,7 +81,12 @@
                  attempt (str "attempt-" id "-" (get runner :epoch) "-" (host/sha256 (host/random-bytes 16)))
                  claim {:run_id id :attempt_id attempt :epoch (get runner :epoch)
                         :reserved_steps steps :lease_expires_ms (+ (host/clock-ms) (get config :lease-ms 30000))
-                        :kind kind :work work}]
+                        :kind kind :work work
+                        ;; The ledger baseline this attempt starts from: the
+                        ;; worker's restored step over it is this attempt's
+                        ;; own consumption, and the difference is the
+                        ;; checkpoint ledger origin (see checkpoint--commit).
+                        :base_consumed (get run :steps_consumed)}]
             (grove--require (<= steps remaining) "budget-exhausted" "requested work cannot fit in the remaining run grant")
             (coordinator--reserve store attempt (get work :population nil) steps)
             (runner--transition! (get run :state) "running")
@@ -68,38 +96,167 @@
             (store--execute store "INSERT INTO grove_progress(attempt,step) VALUES(?1,?2)" [attempt (get run :steps_consumed)])
             claim)))))))
 
-(defn runner--input-path [runner raw]
-  (grove--require (string? raw) "invalid-input" "input must name a permitted file")
-  (host/fs-resolve (get (get runner :config) :input-root (get (get runner :store) :root)) raw))
+(defn runner--error-detail [message]
+  ;; `error` formats a string argument with Debug, so a message that
+  ;; already carries quotes arrives quoted. Strip one outer pair rather
+  ;; than reporting the class as `"budget-exhausted`. `str-split ""`
+  ;; yields empty leading and trailing elements, so the opening quote is
+  ;; at index 1 and the closing one second-to-last.
+  (let* [parts (str-split "" message)
+         n (count parts)
+         quote (get (str-split "" "\"") 1 "")
+         wrapped (and (> n 3)
+                      (= (get parts 1 "") quote)
+                      (= (get parts (- n 2) "") quote)
+                      (= (get parts (- n 1) "") ""))]
+    (if wrapped
+      (loop [i 2 out ""]
+        (if (>= i (- n 2)) out
+          (recur (+ i 1) (str out (get parts i)))))
+      message)))
+
+(defn runner--queued-head [store]
+  ;; The run the next claim will select. Reported before the claim runs so
+  ;; a failure can be attributed to the run it was actually claiming.
+  (let [rows (store--query store "SELECT r.id FROM runs r JOIN queued_work q ON q.run=r.id WHERE r.state='queued' ORDER BY r.rowid LIMIT 1" [])]
+    (if (empty? rows) nil (grove--get-key (first rows) :id nil))))
+
+(defn runner--claim-next [runner]
+  ;; A claim that raises still means one specific queued run is
+  ;; unclaimable: `runner--queued-head` names it before the claim runs.
+  ;; Draining that run is what lets the queue advance instead of
+  ;; re-selecting the same oldest row on every tick. The claim failure is
+  ;; NOT re-raised: the next tick moves to the following run, so the owner
+  ;; reports the run's failed state rather than a stalled scheduler.
+  (let [store (get runner :store)
+        head (runner--queued-head store)]
+    (try (runner--claim-transaction runner)
+         (catch any
+           (if head
+             (runner--drain-claim runner head (runner--error-detail (str *error*)))
+             nil)
+           nil))))
+
 (defn runner--read-input [runner raw]
-  (host/fs-read (runner--input-path runner raw)))
+  ;; `host/read-bytes` is the granted filesystem primitive and it resolves
+  ;; relative paths against the granted roots, so the input root is a
+  ;; capability boundary, not a string prefix this code has to enforce.
+  (grove--require (string? raw) "invalid-input" "input must name a permitted file")
+  (host/read-bytes raw))
+
+(defn runner--trained-path [runner claim]
+  (str (get (get (get runner :config) :worker-config) :scratch "")
+       "/" (get claim :run_id) "/trained.json"))
+
+;; The worker saves one immutable file per checkpointed step and reports
+;; its jail path in `progress.saved`; committing exactly the file the frame
+;; names is what keeps the committed bytes identical to the billed step
+;; when frames and later saves interleave asynchronously. The path is
+;; checked against this attempt's per-step name before the host mirror is
+;; read, so a foreign or stale path can never be committed.
+(defn runner--saved-state-path [runner claim saved step]
+  (grove--require (= saved (str "/scratch/" (get claim :run_id) "/state-" step ".json"))
+                  "protocol-violation" "saved frame does not name this attempt's per-step state file")
+  (str (get (get (get runner :config) :worker-config) :scratch "")
+       "/" (get claim :run_id) "/state-" step ".json"))
 
 (defn runner--prepare [runner claim]
-  (let* [store (get runner :store) config (get runner :config) work (get claim :work)
-         run (grove--get store "Run" (get claim :run_id))]
-    (if (= (get claim :kind) "zio")
-      (assoc claim :config config :budget (get claim :reserved_steps))
-      (let* [rows (if (get work :rows nil) (get work :rows)
-                    (learn--decode-gvd1 (runner--read-input runner (get work :data))))
-             validation (if (get work :val_rows nil) (get work :val_rows)
-                          (if (get work :val_data nil) (learn--decode-gvd1 (runner--read-input runner (get work :val_data))) []))
-             weights (if (get work :params nil) {:params (get work :params)}
-                       (if (get work :weights nil) (codec--normalize (json-parse (host/bytes-utf8 (runner--read-input runner (get work :weights))))) {}))
-             resume (if (get work :resume nil) (codec--normalize (json-parse (host/bytes-utf8 (artifact--get store (get work :resume))))) nil)
-             request (assoc work :rows rows :val_rows validation :weights weights :resume_state resume)]
-        (assoc claim :work request :config config :budget (get claim :reserved_steps)
-               :ledger_step (get run :steps_consumed))))))
+  ;; The bounded agent runner consumes the claim itself; training inputs
+  ;; are staged into the worker scratch instead of decoded here.
+  (grove--require (= (get claim :kind) "zio") "invalid-input" "unsupported queue kind")
+  (assoc claim :config (get runner :config) :budget (get claim :reserved_steps)))
+
+(defn runner--stage [runner claim]
+  ;; Host paths are staging locations; the frame names jail paths, because
+  ;; the jail exposes only /scratch. `out` is separate from `weights` so
+  ;; the trained parameters cannot overwrite the file the worker reads.
+  (let* [config (get runner :config) work (get claim :work)
+         store (get runner :store)
+         scratch (get (get config :worker-config) :scratch "")
+         host-scratch (str scratch "/" (get claim :run_id))
+         jail (str "/scratch/" (get claim :run_id))
+         resume-bytes (if (get work :resume nil)
+                        (artifact--get store (grove--ref-hex (get work :resume)))
+                        nil)
+         ;; The worker restores the checkpoint's step for every level
+         ;; except model-initialization (weights only, step restarts at 0),
+         ;; so the owner's billing baseline is the restored step, not the
+         ;; run ledger's origin: a controlled-replay attempt is billed what
+         ;; it executes (consumed = frame.step - start_step) while
+         ;; learning-continuation inherits a ledger whose origin is that
+         ;; same checkpoint step.
+         start-step (if (and resume-bytes (not (= (get work :resume_level nil) "model-initialization")))
+                      (get (codec--normalize (json-parse (host/bytes-utf8 resume-bytes))) :step 0)
+                      0)]
+    (try (host/mkdir scratch) (catch any nil))
+    (host/mkdir host-scratch)
+    (host/write-atomic (str host-scratch "/data.gvd1") (runner--read-input runner (get work :data nil)))
+    (host/write-atomic (str host-scratch "/weights.json")
+      (if (get work :weights nil)
+        (runner--read-input runner (get work :weights))
+        (host/json-bytes {:params {}})))
+    (if (get work :val_data nil)
+      (host/write-atomic (str host-scratch "/val.gvd1") (runner--read-input runner (get work :val_data)))
+      nil)
+    ;; A resumed run's `:resume` names a committed checkpoint's state
+    ;; artifact; the worker loads optimizer/RNG/step state from a jail
+    ;; path, so the bytes are staged into scratch and the frame carries
+    ;; the continuation fields the worker reads.
+    (if resume-bytes
+      (host/write-atomic (str host-scratch "/state.json") resume-bytes)
+      nil)
+    {:v 1
+     :type "train"
+     :run_id (get claim :run_id)
+     :attempt_id (get claim :attempt_id)
+     :graph (get work :graph {})
+     :data (str jail "/data.gvd1")
+     :weights (str jail "/weights.json")
+     :val_data (if (get work :val_data nil) (str jail "/val.gvd1") nil)
+     :out (str jail "/trained.json")
+     :steps (get work :steps 1)
+     :seed (get work :seed 1)
+     :resume (if (get work :resume nil) (str jail "/state.json") nil)
+     :resume_level (get work :resume_level nil)
+     :resume_run (get work :resume_run nil)
+     ;; The worker's restored starting step; `runner--start` bills deltas
+     ;; over it. Informational to the worker, which derives its own copy.
+     :start_step start-step
+     ;; Checkpoint-on-the-way fields; `state_out` anchors the directory the
+     ;; worker writes per-step `state-<step>.json` files into, and
+     ;; `runner--receive` reads the host mirror of the path the frame names.
+     :save_at (get work :save_at nil)
+     :state_out (if (get work :save_at nil) (str jail "/state.json") nil)
+     :stop_after_save (get work :stop_after_save nil)}))
 
 (defn runner--start [runner claim]
+  ;; The bounded Zio execution worker is not part of this deployment;
+  ;; failing here records a truthful backend failure on the queue instead
+  ;; of a protocol-confusion one inside the worker.
+  (grove--require (= (get claim :kind) "training") "backend-failed" "no bounded Zio execution worker in this deployment")
   (let* [config (get runner :config)
-         process-config (assoc (get config :worker-config) :identity {:run_id (get claim :run_id) :attempt_id (get claim :attempt_id)}
+         frame (if (= (get claim :kind) "training") (runner--stage runner claim)
+                  (runner--prepare runner claim))
+         ;; No `identity` fields: the jail's bootstrap marker carries
+         ;; none, so per-frame identity verification would kill the
+         ;; handshake. Claim ownership is enforced per frame by
+         ;; `runner--receive` instead.
+         process-config (assoc (get config :worker-config)
                               :max-frame-bytes (get config :max-frame-bytes 16777216))
          proc (host/process-start process-config)]
     (try
-      (host/process-write proc (runner--prepare runner claim))
+      (host/process-write proc frame)
       (catch any (do (host/process-kill proc) (error (str *error*)))))
     (runner--event (get runner :store) claim "worker-started" "isolated worker process admitted")
-    {:claim claim :process proc :started_ms (host/clock-ms) :last_seen (host/clock-ms)}))
+    ;; Billing is by cumulative step deltas, so the handle remembers the
+    ;; worker's restored starting step: the delta over it is this
+    ;; attempt's consumption, whatever origin the run ledger inherited.
+    ;; The checkpoint ledger origin is that restored step minus the
+    ;; baseline the claim carried (0 fresh/replay, the parent's spent for
+    ;; continuation); checkpoint--commit's equality runs over it.
+    {:claim (assoc claim :origin (- (get frame :start_step 0) (get claim :base_consumed 0)))
+     :process proc :started_ms (host/clock-ms) :last_seen (host/clock-ms)
+     :billed_step (get frame :start_step 0)}))
 
 (defn runner--finish [runner worker state detail]
   (let* [store (get runner :store) claim (get worker :claim)]
@@ -112,7 +269,10 @@
       (store--execute store "DELETE FROM grove_reservations WHERE attempt=?1" [(get claim :attempt_id)])
       (store--execute store "UPDATE grove_progress SET outcome=?1 WHERE attempt=?2" [state (get claim :attempt_id)])
       (runner--event store claim state detail)))
-    (host/process-kill (get worker :process))
+    ;; runner--start either returns a real handle or raises, so a nil
+    ;; :process means the worker never started; host/process-kill would
+    ;; reject nil and mask the real failure in api--tick.
+    (if (nil? (get worker :process)) nil (host/process-kill (get worker :process)))
     nil))
 
 (defn runner--intent [store run-id intent]
@@ -132,34 +292,85 @@
 (defn runner--receive [runner worker frame]
   (let* [store (get runner :store) claim (get worker :claim)
          f (codec--normalize frame) type (get f :type)]
-    (grove--require (and (= (get f :run_id) (get claim :run_id)) (= (get f :attempt_id) (get claim :attempt_id))) "protocol-violation" "foreign completion or progress frame")
-    (coordinator--live store claim (host/clock-ms))
-    (if (= type "progress")
+    ;; The handshake frame carries no claim identity; the two-argument
+    ;; `get` throws on a missing key, so hello is acknowledged here and
+    ;; every other frame must name this claim.
+    (if (= type "hello")
+      (assoc worker :last_seen (host/clock-ms))
       (do
-        (coordinator--bill store claim (str (get claim :attempt_id) "-step-" (get f :step)) (get f :observed_steps 1))
-        (store--execute store "UPDATE grove_progress SET step=?1 WHERE attempt=?2" [(get f :step) (get claim :attempt_id)])
-        (runner--event store claim "progress" (json-stringify (select-keys f [:step :loss :metrics :consumed])))
-        (if (get f :consumed nil) (store--record-consumption store (get claim :run_id) (get f :consumed)) nil)
-        (coordinator--renew store claim (get (get runner :config) :lease-ms 30000))
-        (assoc worker :last_seen (host/clock-ms)))
+        (grove--require (and (= (get f :run_id) (get claim :run_id)) (= (get f :attempt_id) (get claim :attempt_id))) "protocol-violation" "foreign completion or progress frame")
+        (coordinator--live store claim (host/clock-ms))
+        (if (= type "progress")
+      (do
+        ;; The worker's `step` is cumulative over the run's ledger
+        ;; baseline, so the run is billed the delta, not a flat 1.
+        (let* [step (get f :step 0)
+               billed (get worker :billed_step 0)
+               delta (- step billed)]
+          (if (> delta 0) (coordinator--bill store claim (str (get claim :attempt_id) "-steps-" step) delta) nil)
+          (store--execute store "UPDATE grove_progress SET step=?1 WHERE attempt=?2" [step (get claim :attempt_id)])
+          ;; A checkpoint save is reported on a progress frame; the frame
+          ;; names the exact per-step file, so the committed bytes are
+          ;; always the billed step's.
+          (let [continued (if (get f :saved nil)
+                            (let* [cp (checkpoint--commit store (get claim :run_id) nil "learning-continuation"
+                                                          (host/read-bytes (runner--saved-state-path runner claim (get f :saved nil) step))
+                                                          (get claim :origin 0))]
+                              (store--execute store "UPDATE grove_progress SET checkpoint=?1 WHERE attempt=?2" [(get cp :id) (get claim :attempt_id)])
+                              (runner--event store claim "checkpoint" (get cp :id))
+                              ;; A stop_after_save claim ends here: the run
+                              ;; settles paused on the committed checkpoint
+                              ;; and the worker is removed, so its trailing
+                              ;; done frame (a trained snapshot and an
+                              ;; evaluating transition) is never processed.
+                              (if (grove--get-key (get claim :work) :stop_after_save false)
+                                (runner--finish runner worker "paused" (get cp :id))
+                                worker))
+                            worker)]
+            (if (nil? continued) nil
+              (do
+                (runner--event store claim "progress" (json-stringify {:step (get f :step nil) :loss (get f :loss nil)}))
+                (if (get f :consumed nil) (store--record-consumption store (get claim :run_id) (get f :consumed)) nil)
+                (coordinator--renew store claim (get (get runner :config) :lease-ms 30000))
+                (assoc worker :last_seen (host/clock-ms) :billed_step (if (> step billed) step billed)))))))
       (if (= type "checkpoint")
         (let* [body (host/bytes (json-stringify (get f :state)))
-               cp (checkpoint--commit store (get claim :run_id) nil "learning-continuation" body)]
+               cp (checkpoint--commit store (get claim :run_id) nil "learning-continuation" body (get claim :origin 0))]
           (store--execute store "UPDATE grove_progress SET checkpoint=?1 WHERE attempt=?2" [(get cp :id) (get claim :attempt_id)])
           (runner--event store claim "checkpoint" (get cp :id))
           (if (get f :paused false) (runner--finish runner worker "paused" (get cp :id)) worker))
         (if (= type "done")
           (do
+            ;; The worker ends with the path of the weights it wrote plus
+            ;; loss/accuracy fields, not a model value and a metrics map.
             (if (= (get claim :kind) "training")
-              (let [digest (inference--commit-trained store (get claim :run_id) (get f :model) (get (get claim :work) :graph) (get f :metrics {}))]
+              (let* [;; Reconcile the ledger to the final cumulative step:
+                     ;; progress notifications can undershoot the last
+                     ;; executed step, so bill any remaining delta here.
+                     step (get f :step 0)
+                     billed (get worker :billed_step 0)
+                     delta (- step billed)
+                     _ (if (> delta 0) (coordinator--bill store claim (str (get claim :attempt_id) "-steps-" step) delta) nil)
+                     result (codec--normalize (json-parse (training--commit-snapshot
+                               store (get claim :run_id)
+                               (host/read-bytes (runner--trained-path runner claim))
+                               (get (get claim :work) :graph {})
+                               {:final_loss (get f :loss nil)
+                                :first_loss (get f :first_loss nil)
+                                :val_accuracy (get f :val_accuracy nil)})))
+                     digest (get result :snapshot nil)]
                 (store--execute store "UPDATE grove_progress SET result=?1 WHERE attempt=?2" [digest (get claim :attempt_id)])
-                (store--record-consumption store digest (get f :consumed [])))
+                (runner--event store claim "trained" (json-stringify (get result :metrics {}))))
               (do
                 (coordinator--bill store claim (str (get claim :attempt_id) "-execution") (get f :steps 0))
                 (runner--event store claim "execution" (json-stringify (get f :execution {})))))
-            (runner--finish runner worker "evaluating" (json-stringify (get f :metrics {}))))
+            ;; The run stops at `evaluating`: publication is a separate,
+            ;; human-gated API call, so the owner must not advance the run
+            ;; past evaluation on the worker's say-so.
+            (runner--finish runner worker "evaluating"
+              (json-stringify {:final_loss (get f :loss nil) :val_accuracy (get f :val_accuracy nil)})))
           (if (= type "failed") (runner--finish runner worker "failed" (get f :error "worker failed"))
-            (grove--raise "protocol-violation" (str "unexpected worker frame " type))))))))
+            (grove--raise "protocol-violation" (str "unexpected worker frame " type))))))))))
 
 (defn runner--poll-worker [runner worker]
   (let* [store (get runner :store) claim (get worker :claim) proc (get worker :process)
@@ -171,21 +382,24 @@
         (if (= 1 (grove--get-key intent :pause 0))
           (host/process-write proc {:type "pause" :run_id (get claim :run_id) :attempt_id (get claim :attempt_id)}) nil)
         (let [reply (host/process-read proc 0)]
-          (if (= (get reply :status) :frame) (runner--receive runner worker (get reply :frame))
-            (if (= (get reply :status) :eof)
+          ;; The host returns the envelope status as a string, not a keyword.
+          (if (= (get reply :status) "frame") (runner--receive runner worker (get reply :frame))
+            (if (= (get reply :status) "eof")
               (runner--finish runner worker "failed" "worker exited without a terminal frame")
               (if (> (- (host/clock-ms) (get worker :last_seen)) (get (get runner :config) :deadline-ms 300000))
                 (runner--finish runner worker "failed" "worker deadline exceeded")
                 (do (coordinator--renew store claim (get (get runner :config) :lease-ms 30000)) worker)))))))))
 
 (defn runner--tick [runner]
-  (let* [survivors (filter (fn [w] (not (nil? w)))
+  ;; `filter` yields a list; the worker accumulator below is a vector and
+  ;; `vector-conj` refuses lists, so normalize here.
+  (let* [survivors (into [] (filter (fn [w] (not (nil? w)))
                      (map (fn [worker]
                        (try (runner--poll-worker runner worker)
                          (catch any
                            (do (host/process-kill (get worker :process))
                                (try (runner--finish runner worker "failed" (str *error*)) (catch any nil))
-                               nil)))) (get runner :workers)))
+                               nil)))) (get runner :workers))))
          initial (assoc runner :workers survivors)]
     (loop [owner initial]
       (if (>= (count (get owner :workers)) (get (get owner :config) :worker-count 2)) owner
@@ -200,5 +414,5 @@
 (defn runner--drain [runner]
   (loop [owner (runner--tick runner)]
     (if (empty? (get owner :workers)) owner
-      (do (host/poll (map (fn [w] (get w :process)) (get owner :workers)) 20)
+      (do (host/sleep-ms 20)
           (recur (runner--tick owner))))))

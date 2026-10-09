@@ -254,6 +254,12 @@ impl EvalError {
     }
 
     pub fn wrong_arg_count(expected: usize, got: usize) -> Self {
+        if std::env::var_os("ZIO_PROBE_ARITY").is_some() {
+            eprintln!(
+                "[arity] expected {expected} got {got}\n{}",
+                std::backtrace::Backtrace::force_capture()
+            );
+        }
         EvalError::WrongArgCount {
             expected,
             got,

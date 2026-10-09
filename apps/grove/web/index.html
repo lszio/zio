@@ -215,12 +215,12 @@
     </section>
   </main>
 
-  <!-- WASM bundle (Foundation build): serves /wasm/zio_core.js and
-       /wasm/zio_core_bg.wasm. The bundle exposes ZioSession. -->
+  <!-- WASM bundle (Foundation build): the SITE serves /wasm/zio_core.js and
+       /wasm/zio_core_bg.wasm on the same origin. The bundle exposes ZioSession. -->
   <!-- The bridge is the only JavaScript that touches DOM/storage/timer/
        canvas/SVG/fetch. It boots the WASM session, registers the trusted
        controller source via add_source, forwards DOM events, and
        executes the command list the controller emits. -->
-  <script type="module" src="/bridge.js"></script>
+  <script type="module" src="/grove/app/bridge.js"></script>
 </body>
 </html>

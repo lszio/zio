@@ -1,0 +1,15 @@
+;; The runner writes execution events; `store--append-events` owns the
+;; cap, the schema check and the append-only insert. This wrapper only
+;; allocates the next sequence for a run, because the primary key is
+;; (run_id, sequence) and the store deliberately does not choose it.
+(load "store.zio")
+
+(defn events--next-sequence [store run-id]
+  (let [rows (store--query store "SELECT COALESCE(MAX(sequence),0) AS last FROM execution_events WHERE run_id=?1" [run-id])]
+    (+ (grove--get-key (first rows) :last 0) 1)))
+
+(defn events--append [store event]
+  (let [run-id (str (grove--get-key event :run_id ""))
+        record (assoc event :sequence (events--next-sequence store run-id))]
+    (store--append-events store [record])
+    record))

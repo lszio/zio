@@ -1,8 +1,39 @@
+# Dokploy stacks `zio` and `zio-dev` deploy this file; their domain upstream
+# must point at the `site` service (was `zio`).
 services:
-  zio:
+  site:
     build:
       context: .
       dockerfile: Dockerfile
     restart: unless-stopped
     expose:
       - "80"
+  grove:
+    build:
+      context: .
+      dockerfile: Dockerfile.grove
+    restart: unless-stopped
+    environment:
+      GROVE_ROOT: /srv/grove/data
+      GROVE_BIND: 0.0.0.0:8787
+      GROVE_WORKERS: "2"
+      GROVE_TENSOR_PYTHON: /opt/grove-venv/bin/python
+      GROVE_TOKEN_READER: ${GROVE_TOKEN_READER}
+      GROVE_TOKEN_OPERATOR: ${GROVE_TOKEN_OPERATOR}
+      GROVE_TOKEN_PUBLISHER: ${GROVE_TOKEN_PUBLISHER}
+      GROVE_TOKEN_ANNOTATOR: ${GROVE_TOKEN_ANNOTATOR}
+    expose:
+      - "8787"
+    volumes:
+      - grove-data:/srv/grove/data
+    # Health lives in Dockerfile.grove's HEALTHCHECK; a second definition
+    # here would drift from the image's.
+    # Training needs user namespaces; Docker's default seccomp makes
+    # unshare(CLONE_NEWUSER) fail with EPERM. Lifting only the seccomp
+    # filter (verified: probe passes, no extra capabilities granted) is
+    # narrower than privileged or cap-add SYS_ADMIN.
+    security_opt:
+      - seccomp:unconfined
+
+volumes:
+  grove-data:

@@ -55,7 +55,10 @@ as a thin pass-through over the new store API.
 ## Publication, candidates, approvals, rejections
 - `(store--active-publication store)`
 - `(store--require-deployable store snapshot)` ;
-  `(store--require-resumable store snapshot)`
+  `(store--require-resumable store run snapshot)` — a nil snapshot means
+  the run has no base lineage to check against invalidations; the gate
+  then refuses when the run's `dataset_revision` carried a retracted
+  signal. A non-nil snapshot defers to `store--require-deployable`.
 - `(store--publish store snapshot expected-version)` -> version — publisher
 - `(store--insert-candidate store candidate digest)` ;
   `(store--candidate-state store id)` ;
