@@ -60,6 +60,9 @@ impl Env {
         args: &Vector<Value>,
     ) -> Result<Arc<Env>, EvalError> {
         if params.len() != args.len() {
+            if std::env::var_os("ZIO_PROBE_ARITY").is_some() {
+                eprintln!("[bind] params={params:?} args={args:?}");
+            }
             return Err(EvalError::wrong_arg_count(params.len(), args.len()));
         }
         let env = Arc::new(Env::new(Some(outer.clone())));
