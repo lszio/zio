@@ -246,16 +246,12 @@ fn js_handle(value: &Value) -> Result<JsValue, EvalError> {
                 // Reflect needs an object receiver: box the primitive with
                 // the JS Object() constructor (new String(...) semantics —
                 // length and methods work).
-                let object_fn = js_sys::Reflect::get(
-                    &js_sys::global(),
-                    &JsValue::from_str("Object"),
-                )
-                .ok()
-                .and_then(|f| f.dyn_into::<js_sys::Function>().ok());
+                let object_fn =
+                    js_sys::Reflect::get(&js_sys::global(), &JsValue::from_str("Object"))
+                        .ok()
+                        .and_then(|f| f.dyn_into::<js_sys::Function>().ok());
                 match object_fn {
-                    Some(constructor) => constructor
-                        .call1(&JsValue::NULL, &js)
-                        .or_else(|_| Ok(js)),
+                    Some(constructor) => constructor.call1(&JsValue::NULL, &js).or_else(|_| Ok(js)),
                     None => Ok(js),
                 }
             }
