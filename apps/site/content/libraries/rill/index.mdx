@@ -1,0 +1,50 @@
+---
+title: Rill · 数据驱动的命令行
+description: 用 map 声明选项、子命令与帮助，把参数解析和应用行为分开。
+order: 23
+---
+
+## 一个小型命令解析库
+
+Rill 已有实际 Zio 实现：`libs/rill/cli.zio`。它不是语言解释器的 CLI，而是供应用编写自己的命令行接口的库。规格是普通数据，解析结果也是普通 map；应用再用处理函数决定做什么。
+
+下面声明一个接收位置参数的命令，并把 `--` 后的文本保留为原始参数：
+
+```lisp
+(load "libs/rill/cli.zio")
+
+(def spec
+  {:name "echo"
+   :positionals true
+   :options [{:name "verbose" :short "v"
+              :key :verbose :type :flag}]})
+
+(def parsed (rill-parse spec ["-v" "--" "--literal" "a=b"]))
+[(get (get parsed :options) :verbose) (get parsed :args)]
+;; 得到 [true ["--literal" "a=b"]]
+
+(rill-help spec nil)
+;; 返回帮助文本，而不是直接退出进程
+```
+
+这个调用形式来自 Rill 的源码合同示例。为规格加入字符串键的 `:commands` map 后，可以用 `rill-dispatch` 将解析结果交给对应命令的处理函数；没有注册处理函数会报错。帮助请求返回帮助文本，不执行应用处理函数。
+
+## 可预测的参数规则
+
+支持 `--name value`、`--name=value`、单个短选项、`--` 与 `-h/--help`。选项可以声明字符串、整数或布尔旗标，附带默认值、必填、整数范围和候选值约束。全局选项与所选子命令的选项组合，同名声明由子命令覆盖。
+
+未知选项、重复选项、缺值和非法数值会被拒绝，没有隐式缩写或宽松忽略。若希望帮助里的子命令顺序稳定，应提供 `:command-order`，不要依赖 map 的键遍历顺序。
+
+## 加载与运行条件
+
+在仓库根目录的原生会话中使用上面的 `load`。模块也导出了 `rill-parse`、`rill-help`、`rill-dispatch`、`rill-run` 与 `rill-grove-spec`，可以按语言的模块导入规则选择公开入口。
+
+传入显式 argv 向量的解析、帮助与分派不需要读真实进程参数。`rill-run` 才调用 `host/argv`，因此要求宿主安装该绑定。浏览器若已加载库定义，可以处理给定的参数数据，但不会自动拥有原生命令行参数或本地文件访问。
+
+文件里还提供 Grove 的命令规格；那是实际应用的参数声明，不代表通用解析器拥有其数据库、训练、发布或网络能力。解析成功也不等于获得执行权限，处理函数和宿主仍要承担权限检查。
+
+## 模块参考
+
+- [CLI：规格、解析、帮助与分派](/reference/rill-cli/) — Rill 的全部当前模块文档，也包含 Grove 的规格数据与选项合同。
+
+返回[库目录](/libraries/)，或阅读[语言文档](/docs/)了解函数与模块。

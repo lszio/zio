@@ -1,6 +1,7 @@
 ---
 import { getCollection, render } from 'astro:content';
 import Base from '../../layouts/Base.astro';
+const buildInfo = import.meta.env.ZIO_BUILD_INFO;
 
 export async function getStaticPaths() {
   const sections = ['docs', 'book', 'blog'] as const;
@@ -26,7 +27,7 @@ const base = import.meta.env.BASE_URL.replace(/\/$/, '');
       <div class="hero-cta">
         <a href={`${base}/${section}/`} class="btn btn-secondary">← 返回目录</a>
         <a href={`${base}/playground/`} class="btn btn-primary">在 Playground 运行 Zio</a>
-        <a href={`https://github.com/lszio/zio/blob/main/${section}/${entry.id}.md`} class="btn btn-secondary">仓库源文档</a>
+        <a href={`https://github.com/lszio/zio/blob/${buildInfo.commit ?? 'main'}/${section}/${entry.id}.md`} class="btn btn-secondary">源文档{buildInfo.commit ? '（对应提交）' : ''}</a>
       </div>
     </div>
   </section>

@@ -7,11 +7,11 @@ const base = import.meta.env.BASE_URL.replace(/\/$/, '');
   <section class="hero hero-page-head">
     <div class="container">
       <h1>Zio Playground</h1>
-      <p>编辑下面的源码并执行。真实 WASM 会话保留定义，输出最后一个表达式的值或 reader／求值错误；预设只是可修改的起点。</p>
-      <p>这是语言 Playground，不是 Grove 或学习应用。Future 与 Channel 目前是同步占位能力，不提供真正并发。JS 互操作可以操作当前页面；只执行可信代码，长时间计算可能阻塞页面。</p>
+      <p>编辑多行源码，执行并查看结果。同一会话保留你定义的函数与数据；预设示例可以直接修改。</p>
+      <p>这里运行浏览器版 Zio。原生文件、网络与外部模型能力不在此环境中提供；Future 与 Channel 当前同步执行，不提供异步调度。JavaScript 互操作可访问当前页面，只执行可信代码；长时间计算可能阻塞页面。</p>
       <div class="hero-cta">
         <a href={`${base}/syntax/`} class="btn btn-secondary">语法入门</a>
-        <a href={`${base}/docs/feature-matrix/`} class="btn btn-secondary">当前能力边界</a>
+        <a href={`${base}/libraries/`} class="btn btn-secondary">查阅库文档</a>
       </div>
     </div>
   </section>
