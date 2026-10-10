@@ -11,6 +11,9 @@ COPY apps/site ./
 COPY docs /build/docs
 COPY book /build/book
 COPY blog /build/blog
+# The /reference/ pages are extracted from libs/**.zio `;; doc:` comments at
+# build time (apps/site/src/lib/zio-lib-docs.mjs), so the sources must exist.
+COPY libs /build/libs
 # wasm/ is committed under apps/site/public and rebuilt with tools/build-wasm.sh.
 RUN bun run build
 

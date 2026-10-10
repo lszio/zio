@@ -444,10 +444,8 @@ mod tests {
                         "~" => "unquote",
                         _ => "unquote-splicing",
                     };
-                    let wrapped = Sexp::List(
-                        im::vector![Sexp::Symbol(form.into(), None), inner],
-                        None,
-                    );
+                    let wrapped =
+                        Sexp::List(im::vector![Sexp::Symbol(form.into(), None), inner], None);
                     if let Some(parent) = stack.last_mut() {
                         parent.1.push_back(wrapped);
                     } else {
