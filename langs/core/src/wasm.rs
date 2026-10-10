@@ -157,7 +157,8 @@ fn js_to_value(value: JsValue) -> Value {
 }
 
 /// Pass a Zio value into a JS call. Foreign JS objects unwrap to their
-/// original handle; ZOS objects and other composite values are refused
+/// original handle; composite Zio data (maps, lists, vectors) converts
+/// deeply to plain JS data via the JSON rules; ZOS objects are refused
 /// rather than silently stringified.
 #[cfg(feature = "wasm")]
 fn value_to_js(value: &Value) -> Result<JsValue, EvalError> {
@@ -189,14 +190,45 @@ fn value_to_js(value: &Value) -> Result<JsValue, EvalError> {
                 "cannot pass a ZOS object to JavaScript (only primitives and js handles)",
             )),
         },
-        other => Err(EvalError::custom(format!(
-            "cannot pass a {} to JavaScript",
-            other.value_type()
-        ))),
+        // Composite data converts deeply via the JSON rules, so
+        // (js/JSON.stringify {:a 1}) and passing a vector as an argument
+        // behave like plain data — while opaque ZOS objects above still
+        // refuse, keeping handles and data distinct.
+        other => {
+            let json = crate::builtins::json::to_json(other)?;
+            Ok(json_to_js(json))
+        }
     }
 }
 
-/// Extract the JS handle from a value that must be a JS object.
+#[cfg(feature = "wasm")]
+fn json_to_js(json: serde_json::Value) -> JsValue {
+    use serde_json::Value as Json;
+    match json {
+        Json::Null => JsValue::NULL,
+        Json::Bool(b) => JsValue::from_bool(b),
+        Json::Number(n) => JsValue::from_f64(n.as_f64().unwrap_or(f64::NAN)),
+        Json::String(s) => JsValue::from_str(&s),
+        Json::Array(items) => items
+            .into_iter()
+            .map(json_to_js)
+            .collect::<js_sys::Array>()
+            .into(),
+        Json::Object(map) => {
+            let object = js_sys::Object::new();
+            for (key, value) in map {
+                let _ = js_sys::Reflect::set(&object, &JsValue::from_str(&key), &json_to_js(value));
+            }
+            JsValue::from(object)
+        }
+    }
+}
+
+/// Extract the JS handle from a value. Foreign handles unwrap; primitives
+/// and composite data convert to their JS counterparts (a Zio string is a
+/// JS string with `length` and string methods; `Reflect` needs an object
+/// receiver, so primitives are boxed like `new String(...)`); ZOS objects
+/// are refused.
 #[cfg(feature = "wasm")]
 fn js_handle(value: &Value) -> Result<JsValue, EvalError> {
     match value {
@@ -206,10 +238,72 @@ fn js_handle(value: &Value) -> Result<JsValue, EvalError> {
                 "expected a JS object (from js/eval or js/prop); got a ZOS object",
             )),
         },
-        other => Err(EvalError::custom(format!(
-            "expected a JS object (from js/eval or js/prop); got {}",
-            other.value_type()
-        ))),
+        other => {
+            let js = value_to_js(other)?;
+            if js.is_object() {
+                Ok(js)
+            } else {
+                // Reflect needs an object receiver: box the primitive with
+                // the JS Object() constructor (new String(...) semantics —
+                // length and methods work).
+                let object_fn = js_sys::Reflect::get(
+                    &js_sys::global(),
+                    &JsValue::from_str("Object"),
+                )
+                .ok()
+                .and_then(|f| f.dyn_into::<js_sys::Function>().ok());
+                match object_fn {
+                    Some(constructor) => constructor
+                        .call1(&JsValue::NULL, &js)
+                        .or_else(|_| Ok(js)),
+                    None => Ok(js),
+                }
+            }
+        }
+    }
+}
+
+/// Resolve a dotted `js/<global.path>` symbol against the JS global object,
+/// so `(js/console.log "x")`, `(js/Math.max 1 2)` and `(-> 3.7 js/Math.floor)`
+/// work like ordinary functions. A function found on the path is wrapped with
+/// its parent as `this` (so `console.log` really logs through `console`);
+/// anything else maps through `js_to_value`. Registered builtins (`js/eval`,
+/// `js/prop`, …) win over this path — plain env lookup happens first.
+/// Resolution is interpreter-only: bytecode-compiled bodies resolve symbols
+/// against the env and do not consult this hook.
+#[cfg(feature = "wasm")]
+pub(crate) fn resolve_js_symbol(name: &str) -> Option<Value> {
+    let path = name.strip_prefix("js/")?;
+    if path.is_empty() {
+        return None;
+    }
+    let segments: Vec<&str> = path.split('.').collect();
+    let mut parent = JsValue::from(js_sys::global());
+    for segment in &segments[..segments.len() - 1] {
+        parent = js_sys::Reflect::get(&parent, &JsValue::from_str(segment)).ok()?;
+    }
+    let final_value =
+        js_sys::Reflect::get(&parent, &JsValue::from_str(segments[segments.len() - 1])).ok()?;
+    if final_value.is_instance_of::<js_sys::Function>() {
+        let function: js_sys::Function = final_value.dyn_into().unwrap();
+        let qualified = name.to_string();
+        Some(Value::NativeFunction(NativeFn::new(
+            "js-bound-call",
+            move |args, _| {
+                let call_args: js_sys::Array = args
+                    .iter()
+                    .map(value_to_js)
+                    .collect::<Result<Vec<_>, _>>()?
+                    .into_iter()
+                    .collect();
+                function
+                    .apply(&parent, &call_args)
+                    .map(js_to_value)
+                    .map_err(|err| EvalError::custom(format!("{qualified} call error: {err:?}")))
+            },
+        )))
+    } else {
+        Some(js_to_value(final_value))
     }
 }
 

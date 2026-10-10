@@ -175,6 +175,10 @@ fn eval_inner_observed(
             if let Some(v) = crate::special::module_forms::resolve_qualified(engine, s) {
                 return Ok(TailResult::Value(v));
             }
+            #[cfg(feature = "wasm")]
+            if let Some(v) = crate::wasm::resolve_js_symbol(s) {
+                return Ok(TailResult::Value(v));
+            }
             Err(EvalError::symbol_not_found(s.clone()).with_opt_span(*span))
         }
 

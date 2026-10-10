@@ -1025,14 +1025,25 @@ FFI 表面此前有两种不一致的形态：wasm 侧 `js/eval` 把 JS 结果 D
 2. **FFI 值是一等对象，不是字符串**。wasm 侧 JS 结果映射规则：null/undefined
    → nil，boolean/number/string → 对应原始值（整值浮点归 Integer），其余
    一律包装为不透明 `#<js-object>` ZOS 对象（原子分配 identity）。句柄可用
-   `js/prop`（读）、`js/set`（写）、`js/call`（方法调用，参数按映射规则传入，
-   ZOS 复合值拒绝传入口）操作，`js/eval` 返回映射后的真值而非 Debug 字符串。
-3. **Rust 宿主遵循同一合同**：宿主把 native 句柄包装为 `ZosObject` 实现
+   `js/prop`（读）、`js/set`（写）、`js/call`（方法调用，参数按映射规则传入）
+   操作，`js/eval` 返回映射后的真值而非 Debug 字符串。
+3. **点分全局路径（wasm）**。`js/<global.path>` 符号在 env 查找失败时按
+   JS globalThis 解析：`(js/console.log "x")`、`(js/Math.max 1 2)`、
+   `(-> 3.7 (js/Math.floor))`。路径末端是函数则包装为捕获父对象为 `this`
+   的 native 函数（`console.log` 真经由 `console` 调用）；是数据则按映射
+   规则返回。已注册 builtin（`js/eval` 等）优先于该解析。解释器路径专用；
+   字节码编译体不经过此钩子。接收者为原始值时按 `Object(x)` 语义装箱
+   （`"abc"` 的 `length`/字符串方法可用）；Zio 复合数据（map/vector/list）
+   经 JSON 规则深转换为纯 JS 数据传入，与句柄（不透明引用）明确区分，
+   ZOS 对象仍在边界拒绝。
+4. **Rust 宿主遵循同一合同**：宿主把 native 句柄包装为 `ZosObject` 实现
    （`header`/`as_any`/`clone_box`），操作以命名 native 函数暴露，返回宿主
    对象即可被 `->` 链式消费。不引入新的 Value 变体、不做每对象的调用协议
-   （无 `__call__` 魔法方法），调用面始终是显式命名函数。
-4. **拒绝静默转换**。不支持自动把 ZOS 对象/复合值字符串化后传入 JS 或宿主；
-   类型不符在边界报错并命名实际类型，避免链上某一步悄悄退化为字符串。
+   （无 `__call__` 魔法方法），调用面始终是显式命名函数。点分解析是 `js`
+   命名空间的 wasm 特例；Rust 宿主不获得隐式点分解析，仍以注册函数为准。
+5. **边界拒绝静默损坏**。不支持把 ZOS 对象字符串化后传入 JS 或宿主；类型
+   不符在边界报错并命名实际类型。复合数据的深转换是显式规则（经 JSON
+   语义），不是静默降级——句柄与纯数据的区分因此保持。
 
 ### 后果与边界
 

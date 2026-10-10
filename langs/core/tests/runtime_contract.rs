@@ -617,10 +617,8 @@ fn threading_composes_with_macros_and_zos_calls() {
         .unwrap_or_else(|e| panic!("macro chain failed: {e}"));
     assert_eq!(expanded.to_string(), "3");
     // The ZOS convention (gf obj args) threads the object first.
-    let zos = run(
-        "(defclass pt nil ((x :initarg :x))) \
-         (-> (make-instance pt :x 5) (slot-value :x) (+ 5))",
-    )
+    let zos = run("(defclass pt nil ((x :initarg :x))) \
+         (-> (make-instance pt :x 5) (slot-value :x) (+ 5))")
     .unwrap_or_else(|e| panic!("zos chain failed: {e}"));
     assert_eq!(zos.to_string(), "10");
 }
