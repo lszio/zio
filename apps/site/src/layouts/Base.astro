@@ -18,6 +18,7 @@ const links = [
   { href: `${base}/intro/`, label: '语言介绍' },
   { href: `${base}/docs/`, label: '文档' },
   { href: `${base}/syntax/`, label: '语法' },
+  { href: `${base}/reference/`, label: 'API 参考' },
   { href: `${base}/playground/`, label: 'Playground' },
   { href: `${base}/agent/`, label: 'Agent 模拟' },
   { href: `${base}/grove/`, label: 'Grove APP 方向' },
@@ -72,6 +73,12 @@ const isActive = (href: string) => !href.includes('#') && current.startsWith(hre
   <main>
     <slot />
   </main>
+
+  <!-- Sitewide doc enhancement: rainbow-paren lisp highlighting, paren-pair
+       click/jump, mermaid fences, table scroll wrappers (scripts/doc-rich.js). -->
+  <script>
+    import '../scripts/doc-rich.js';
+  </script>
 
   <footer>
     <div class="container footer-grid">
