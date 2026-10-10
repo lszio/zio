@@ -17,17 +17,23 @@
 ;; Everything is a pure function of its arguments: same signals, same
 ;; view, every time.
 
+;; doc: (feedback--field s) — target field of a signal; nil means the whole output.
 (def feedback--field (fn [s] (get s :target-field nil)))
 
+;; doc: (feedback--human? s) — true for human-correction, human-preference or
+;; doc: demonstration signals.
 (defn feedback--human? [s]
   (let [k (get s :kind nil)]
     (or (= k :human-correction) (= k :human-preference) (= k :demonstration))))
 
+;; doc: (feedback--teacher? s) — true for :teacher-label signals.
 (defn feedback--teacher? [s]
   (= (get s :kind nil) :teacher-label))
 
 ;; A retracted or superseded signal leaves the pool; the host records
 ;; the status, and this layer just filters what it is given.
+;; doc: (feedback--in-force? s) — true when the signal's status is :accepted
+;; doc: (retracted/superseded signals leave the pool).
 (defn feedback--in-force? [s]
   (= (get s :status :accepted) :accepted))
 
@@ -36,9 +42,12 @@
 ;; correction with no field applies to the whole output; anything
 ;; outside that scope is a different target and stays separate.
 
+;; doc: (feedback--scope-key s) — (target field) pair a signal applies to.
 (defn feedback--scope-key [s]
   (list (get s :target nil) (feedback--field s)))
 
+;; doc: (feedback--same-scope? a b) — true when both signals target the same
+;; doc: (target, field) pair.
 (defn feedback--same-scope? [a b]
   (= (feedback--scope-key a) (feedback--scope-key b)))
 
@@ -47,9 +56,11 @@
 ;; so the view's winner is a function of the inputs, not of arrival
 ;; order.
 
+;; doc: (feedback--rank s) — precedence: human 3 > teacher 2 > other 1.
 (defn feedback--rank [s]
   (if (feedback--human? s) 3 (if (feedback--teacher? s) 2 1)))
 
+;; doc: (feedback--outranks? a b) — true when a's rank is strictly above b's.
 (defn feedback--outranks? [a b]
   (> (feedback--rank a) (feedback--rank b)))
 
@@ -58,10 +69,14 @@
 ;; abstain is never a disagreement: "I cannot tell" is a valid
 ;; position that both a human and a teacher may hold.
 
+;; doc: (feedback--agrees? a b) — same content, or both abstain (abstain is an
+;; doc: answer, never a disagreement).
 (defn feedback--agrees? [a b]
   (or (= (get a :content nil) (get b :content nil))
       (and (get a :abstain false) (get b :abstain false))))
 
+;; doc: (feedback--group-disagrees? heads) — true when some member of heads disagrees
+;; doc: with the first; two abstains agree.
 (defn feedback--group-disagrees? [heads]
   ;; true when some member disagrees with the first one. Abstain agrees
   ;; with abstain and is a real position, not a disagreement.
@@ -75,6 +90,9 @@
               false
               (if (nil? tail) '() tail)))))
 
+;; doc: (feedback--conflicts signals) — scope keys where two in-force signals of the
+;; doc: SAME top rank disagree; lower ranks never manufacture a conflict.
+;; doc: → list of [scope-key conflicted?] entries.
 (defn feedback--conflicts [signals]
   (let* [live (filter feedback--in-force? signals)
          ;; group by scope first, then order each group by rank. Sorting the
@@ -99,6 +117,8 @@
 ;; a conflict marker. Abstain flows through as a first-class value so a
 ;; downstream sample builder cannot mistake it for class 0.
 
+;; doc: (feedback--view signals) — map of scope-key → {:signal s :status :resolved|
+;; doc: :conflicted}: the highest-ranked in-force signal per scope, unless contested.
 (defn feedback--view [signals]
   (let* [live (filter feedback--in-force? signals)
          ranked (sort (fn [a b] (> (feedback--rank a) (feedback--rank b))) live)
@@ -120,9 +140,11 @@
                           {} (seq-of heads))]
     resolved))
 
+;; doc: (feedback--present? keys k) — true when k occurs in keys.
 (defn feedback--present? [keys k]
   (reduce (fn [acc x] (if (= x k) true acc)) false keys))
 
+;; doc: (seq-of m) — map → list of [k v] entries.
 (defn seq-of [m]
   ;; map → [k v] entries, the shape the view reducer works on
   (map (fn [k] (list k (get m k nil))) (keys m)))
@@ -132,6 +154,8 @@
 ;; scope, abstains kept as abstains. Conflicted scopes are absent —
 ;; not silently resolved, and not filled with a guess.
 
+;; doc: (feedback--samples signals) — training samples from resolved scopes only;
+;; doc: conflicted scopes are absent, abstains kept as abstains.
 (defn feedback--samples [signals]
   (let* [view (feedback--view signals)
          entries (seq-of view)
@@ -150,6 +174,9 @@
 ;; Membership is computed once and then only read. A later signal does
 ;; not mutate it; it produces the next revision.
 
+;; doc: (feedback--revision signals policy-version revision-id split) — frozen revision
+;; doc: map: id, policy version, split, counts, member sample ids and members.
+;; doc: Pure: same signals always yield the same revision.
 (defn feedback--revision [signals policy-version revision-id split]
   (let* [samples (feedback--samples signals)]
     {:id revision-id
@@ -166,6 +193,8 @@
 ;; Determinism contract: the same signal list always produces the same
 ;; revision, byte for byte — the frozen view is identified by its own
 ;; content, so a rebuilt view is recognisable as identical.
+;; doc: (feedback--revision-key revision) — deterministic content key (policy version,
+;; doc: split, counts, signal ids) so a rebuilt view is recognisable as identical.
 (defn feedback--revision-key [revision]
   (str (get revision :policy-version nil)
        "|" (get revision :split nil)

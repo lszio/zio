@@ -175,6 +175,10 @@ fn eval_inner_observed(
             if let Some(v) = crate::special::module_forms::resolve_qualified(engine, s) {
                 return Ok(TailResult::Value(v));
             }
+            #[cfg(feature = "wasm")]
+            if let Some(v) = crate::wasm::resolve_js_symbol(s) {
+                return Ok(TailResult::Value(v));
+            }
             Err(EvalError::symbol_not_found(s.clone()).with_opt_span(*span))
         }
 
@@ -357,6 +361,21 @@ mod tests {
                     tokens.push(c.to_string());
                     chars.next();
                 }
+                // Mirror the real lexer: backquote and unquote are their
+                // own tokens, with `~@` kept together.
+                '`' => {
+                    tokens.push("`".to_string());
+                    chars.next();
+                }
+                '~' => {
+                    chars.next();
+                    if chars.peek() == Some(&'@') {
+                        chars.next();
+                        tokens.push("~@".to_string());
+                    } else {
+                        tokens.push("~".to_string());
+                    }
+                }
                 '"' => {
                     let mut s = String::new();
                     s.push(chars.next().unwrap());
@@ -420,6 +439,21 @@ mod tests {
                         parent.1.push_back(quoted);
                     } else {
                         return Ok((quoted, tokens.peek().is_some()));
+                    }
+                }
+                "`" | "~" | "~@" => {
+                    let (inner, _) = test_read_tokens(tokens)?;
+                    let form = match token.as_str() {
+                        "`" => "quasiquote",
+                        "~" => "unquote",
+                        _ => "unquote-splicing",
+                    };
+                    let wrapped =
+                        Sexp::List(im::vector![Sexp::Symbol(form.into(), None), inner], None);
+                    if let Some(parent) = stack.last_mut() {
+                        parent.1.push_back(wrapped);
+                    } else {
+                        return Ok((wrapped, tokens.peek().is_some()));
                     }
                 }
                 "(" | "[" | "{" => {

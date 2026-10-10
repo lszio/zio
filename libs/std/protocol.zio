@@ -5,6 +5,11 @@
 ;; Status: Experimental. Both macros are runnable; methods dispatch
 ;; through the ZOS generic function machinery.
 
+;; doc: `defprotocol` — 将每个方法签名声明为同名的 ZOS 泛型函数。
+;; doc:
+;; doc: (defprotocol name (method [args])...) 展开为一串
+;; doc: (defgeneric method args)，方法分发依赖 ZOS 泛型函数机制。
+;; doc: 实验性功能。
 (defmacro defprotocol [name & sigs]
   (let [gf-forms (map (fn [sig]
                         (let [fname (car sig)
@@ -13,6 +18,11 @@
                       sigs)]
     (cons 'do gf-forms)))
 
+;; doc: `extend-type` — 为 type-name 实现 protocol 的各个方法。
+;; doc:
+;; doc: 每个方法实现 (method [this & args] body...) 展开为
+;; doc: (defmethod method [(this type-name) ...] body...)，即在第一个
+;; doc: 参数的类型上特化，其余参数保持不变。
 (defmacro extend-type [type-name protocol-name & method-impls]
   (let [method-forms (map (fn [impl]
                             ;; let* : spec-args depends on first-arg/rest-args.

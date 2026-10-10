@@ -1,34 +1,47 @@
+;; ── zio.numa.numeric — pure numerical policy ───────────────────
 ;; Pure numerical policy over coordinate vectors and row-major matrices.
 ;; Tensor kernels live behind the separate generic tensor host interface.
 (load "libs/numa/vector.zio")
 
+;; doc: (numa-abs x) — absolute value of finite x as a float; rejects NaN/inf.
 (defn numa-abs [x]
   (vector--finite x)
   (if (< x 0) (- 0.0 x) (+ 0.0 x)))
 
+;; doc: (numa-sum values) — sum of a finite coordinate vector, as a float.
 (defn numa-sum [values]
   (vector--validate values)
   (vector--finite (reduce (fn [acc x] (+ acc x)) 0.0 values)))
 
+;; doc: (numa-mean values) — arithmetic mean of a finite coordinate vector;
+;; doc: shape-error when values is empty.
 (defn numa-mean [values]
   (if (= (count values) 0) (error "shape-error: mean requires at least one value")
     (/ (numa-sum values) (+ 0.0 (count values)))))
 
+;; doc: (numa-vector-add a b) — element-wise a+b; equal dimensions required,
+;; doc: result coordinates checked finite.
 (defn numa-vector-add [a b]
   (vector--same-shape a b)
   (apply vector (map (fn [i] (vector--finite (+ (+ 0.0 (get a i)) (get b i)))) (range 0 (count a)))))
 
+;; doc: (numa-vector-sub a b) — element-wise a-b; equal dimensions required.
 (defn numa-vector-sub [a b]
   (vector--same-shape a b)
   (apply vector (map (fn [i] (vector--finite (- (+ 0.0 (get a i)) (get b i)))) (range 0 (count a)))))
 
+;; doc: (numa-vector-scale a scalar) — element-wise a*scalar with a finite
+;; doc: scalar; result coordinates checked finite.
 (defn numa-vector-scale [a scalar]
   (vector--validate a)
   (vector--finite scalar)
   (apply vector (map (fn [x] (vector--finite (* (+ 0.0 x) scalar))) a)))
 
+;; doc: (numa-vector-dot a b) — dot product of same-shape finite vectors.
 (defn numa-vector-dot [a b] (vector--dot a b))
 
+;; doc: (numa-vector-length a) — Euclidean length, computed via max-abs
+;; doc: rescaling to avoid overflow/underflow; 0.0 for a zero vector.
 (defn numa-vector-length [a]
   (vector--validate a)
   (let* [scale (vector--max-abs a)]
@@ -36,6 +49,8 @@
       (let* [scaled (apply vector (map (fn [x] (/ x scale)) a))]
         (vector--finite (* scale (sqrt (vector--norm scaled))))))))
 
+;; doc: (numa-vector-normalize a) — a scaled to unit length; a zero vector
+;; doc: is returned scaled by 0.0 (all zeros).
 (defn numa-vector-normalize [a]
   (vector--validate a)
   (let* [scale (vector--max-abs a)]
@@ -44,6 +59,8 @@
              length (sqrt (vector--norm scaled))]
         (numa-vector-scale scaled (/ 1.0 length))))))
 
+;; doc: (numa-matrix-shape matrix) — validates a row-major matrix (vector of
+;; doc: equal-length rows) and returns [rows cols]; errors on ragged rows.
 (defn numa-matrix-shape [matrix]
   (if (vector? matrix) true (error "shape-error: matrix must be a vector of rows"))
   (let* [rows (count matrix)
@@ -53,12 +70,16 @@
            (if (= (count row) cols) true (error "shape-error: ragged matrix"))) matrix)
     [rows cols]))
 
+;; doc: (numa-matrix-transpose matrix) — transpose of a validated row-major
+;; doc: matrix, as a new vector of row vectors.
 (defn numa-matrix-transpose [matrix]
   (let* [shape (numa-matrix-shape matrix)]
     (apply vector (map (fn [j]
                          (apply vector (map (fn [i] (get (get matrix i) j)) (range 0 (get shape 0)))))
                        (range 0 (get shape 1))))))
 
+;; doc: (numa-matmul a b) — matrix product a·b; errors when inner
+;; doc: dimensions differ. Result entries are finite dot products.
 (defn numa-matmul [a b]
   (let* [sa (numa-matrix-shape a)
          sb (numa-matrix-shape b)]

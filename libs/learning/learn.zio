@@ -29,15 +29,21 @@
 ;; Deterministic: same samples + config (+ same mock recording for LLM
 ;; proposers) always produce the same function.
 
+;; doc: (learn--worst-loss) — sentinel loss returned when a candidate crashes eval.
 (def learn--worst-loss 1000000)
+;; doc: (learn--worst-score) — sentinel score above any achievable score.
 (def learn--worst-score 1000000000)
+;; doc: (learn--base-ops) — ops always present in the canonicalization vocabulary.
 (def learn--base-ops '(+ - * / mod))
 
 ;; ── scoring ─────────────────────────────────────────────────────
 
+;; doc: (learn--abs x) — absolute value of x.
 (defn learn--abs [x]
   (if (< x 0) (- 0 x) x))
 
+;; doc: (learn--loss samples expr) — total absolute error of expr evaluated with x
+;; doc: bound per sample. Errors (division by zero, non-numeric) propagate.
 (defn learn--loss [samples expr]
   ;; total absolute error of expr evaluated with x bound per sample
   (reduce (fn [acc s]
@@ -46,6 +52,8 @@
                        (get s 1)))))
           0 samples))
 
+;; doc: (learn--safe-loss samples expr) — like learn--loss but returns learn--worst-loss
+;; doc: on any eval error, so a crashing candidate cannot kill the run.
 (defn learn--safe-loss [samples expr]
   ;; candidate-level error isolation: a candidate that crashes eval
   ;; (division by zero, arity, non-numeric) scores worst and the run
@@ -54,39 +62,50 @@
     (learn--loss samples expr)
     (catch any learn--worst-loss)))
 
+;; doc: (learn--scale samples) — normalizer for display scores: 1 + sum of |y|.
 (defn learn--scale [samples]
   ;; normalizer for display scores: 1 + Σ|y|
   (+ 1 (reduce (fn [acc s] (+ acc (learn--abs (get s 1)))) 0 samples)))
 
+;; doc: (learn--size expr) — AST node count; the complexity penalty signal.
 (defn learn--size [expr]
   ;; node count — the complexity penalty signal
   (if (list? expr)
     (+ 1 (reduce (fn [acc sub] (+ acc (learn--size sub))) 0 expr))
     1))
 
+;; doc: (learn--score-pairs samples exprs) — list of [score expr] pairs where
+;; doc: score = 1000 * safe-loss + size (integer math).
 (defn learn--score-pairs [samples exprs]
   ;; decorate with [score expr]; score = loss*1000 + size (int math)
   (map (fn [e] (list (+ (* 1000 (learn--safe-loss samples e)) (learn--size e)) e))
        exprs))
 
+;; doc: (learn--sorted-pairs pairs) — [score expr] pairs sorted ascending by score.
 (defn learn--sorted-pairs [pairs]
   (sort (fn [a b] (< (get a 0) (get b 0))) pairs))
 
+;; doc: (learn--rank samples exprs) — score then sort exprs best-first.
 (defn learn--rank [samples exprs]
   (learn--sorted-pairs (learn--score-pairs samples exprs)))
 
+;; doc: (learn--display-score score scale) — normalized relative error (loss / scale)
+;; doc: fed to the history feed; score is a compound learn--score-pairs score.
 (defn learn--display-score [score scale]
   ;; normalized relative error for the history feed: loss / scale
   (/ (/ (- score (mod score 1000)) 1000) scale))
 
 ;; ── closed-world whitelist (gate two; gate one is the reader) ──────
 
+;; doc: (learn--mem? x items) — linear membership test (avoids the core-eval or/defect).
 (defn learn--mem? [x items]
   (loop [items (apply list items)]
     (if (nil? items)
       nil
       (if (= (car items) x) true (recur (cdr items))))))
 
+;; doc: (learn--allowed-walk e ops constants depth nodes) — remaining node budget, or
+;; doc: nil when e uses an undeclared op/constant, exceeds depth or exhausts nodes.
 (defn learn--allowed-walk [e ops constants depth nodes]
   ;; → remaining node budget, or nil when the form is out of bounds.
   ;; Every symbol must be the variable x or a declared op; every number
@@ -114,6 +133,8 @@
             (- nodes 1)
             nil))))))
 
+;; doc: (learn--allowed? form task) — true when form is inside the task's closed-world
+;; doc: whitelist (ops, constants, depth, node cap); nil otherwise.
 (defn learn--allowed? [form task]
   (if (nil? (learn--allowed-walk form
                                  (get task :ops nil)
@@ -125,6 +146,7 @@
 
 ;; ── canonical form: identity elimination + commutative ordering ────
 
+;; doc: (learn--vocab-index sym vocab) — index of sym in vocab; 0 when absent.
 (defn learn--vocab-index [sym vocab]
   (loop [i 0 items (apply list vocab)]
     (if (nil? items)
@@ -133,6 +155,8 @@
         i
         (recur (+ i 1) (cdr items))))))
 
+;; doc: (learn--fp e vocab) — deterministic structural fingerprint of e over the vocab.
+;; doc: Collisions can only miss a dedup; the dedup key is the full canonical string.
 (defn learn--fp [e vocab]
   ;; deterministic structural fingerprint over the closed vocabulary.
   ;; Collisions can only lose a dedup; they can never merge distinct
@@ -146,6 +170,8 @@
       (+ 7 e)
       (* 1009 (+ 1 (learn--vocab-index e vocab))))))
 
+;; doc: (learn--canon-comm op a b id vocab) — canonical (op a b) for a commutative op:
+;; doc: drop the identity element id, order remaining args by fingerprint.
 (defn learn--canon-comm [op a b id vocab]
   ;; commutative op: drop the identity, order args by fingerprint
   (if (= a id)
@@ -156,6 +182,8 @@
         (list op a b)
         (list op b a)))))
 
+;; doc: (learn--canon e vocab) — canonical form of e: identity elimination for + * -
+;; doc: (x+0, x*1, x-0) and commutative arg ordering; recurses over the whole tree.
 (defn learn--canon [e vocab]
   (if (not (list? e))
     e
@@ -172,10 +200,13 @@
 
 ;; ── parse + batch check (the loop's gates, for every proposer) ─────
 
+;; doc: (learn--parse-candidate s) — read-string the candidate; nil on malformed text.
 (defn learn--parse-candidate [s]
   ;; gate one is the reader: malformed text dies here, quietly
   (try (read-string s) (catch any nil)))
 
+;; doc: (learn--check-batch raw seen task) — parse, whitelist and canonical-dedup the
+;; doc: raw candidate strings (within batch and against seen); → vector of fresh forms.
 (defn learn--check-batch [raw seen task]
   ;; parse → whitelist → canonical dedup (within batch and vs history)
   ;; → vector of fresh valid forms. Guard the empty batch: `(apply list
@@ -195,6 +226,8 @@
                   (recur (cdr items) out seen)))
               (recur (cdr items) out seen))))))))
 
+;; doc: (learn--mark-seen seen fresh task) — seen map extended with canonical keys of the
+;; doc: fresh forms, so later generations cannot resubmit them.
 (defn learn--mark-seen [seen fresh task]
   (reduce (fn [acc form]
             (put acc (str (learn--canon form (get task :vocab nil))) true))
@@ -203,6 +236,8 @@
 
 ;; ── recording (the history feed) ────────────────────────────────
 
+;; doc: (learn--record gen scored scale beam-width) — history entry for generation gen:
+;; doc: best-first candidate strings plus normalized scores, capped at beam-width.
 (defn learn--record [gen scored scale beam-width]
   ;; best-first candidates + normalized scores for the next prompt
   (let* [n (if (< beam-width (count scored)) beam-width (count scored))
@@ -213,6 +248,7 @@
 
 ;; ── proposers ───────────────────────────────────────────────────
 
+;; doc: (learn--pairs ops pool) — all (op a b) ordered combinations of ops over the pool.
 (defn learn--pairs [ops pool]
   ;; all (op a b) ordered combinations over the pool of forms
   (reduce (fn [acc-a a]
@@ -224,6 +260,9 @@
           '()
           pool))
 
+;; doc: (make-enum-proposer config) — the default proposer: each generation enumerates
+;; doc: (op a b) over atoms ∪ the previous beam (reconstructed statelessly from the
+;; doc: history feed). → fn [task history] → list of candidate strings.
 (defn make-enum-proposer [config]
   ;; the original beam enumerator, demoted to a proposer: each
   ;; generation pairs everything over (last beam ∪ atoms); the pool is
@@ -240,6 +279,8 @@
                     (into forms atoms)))]
       (map (fn [p] (str p)) (learn--pairs (apply list ops) (apply list pool))))))
 
+;; doc: (make-hybrid-proposer a b) — proposer that merges the batches of proposers
+;; doc: a and b each generation.
 (defn make-hybrid-proposer [a b]
   ;; every generation asks both proposers and merges the batches
   (fn [task history]
@@ -247,6 +288,8 @@
 
 ;; ── the loop ────────────────────────────────────────────────────
 
+;; doc: (learn--make-task samples config) — the task map handed to proposers: samples,
+;; doc: ops, constants, depth/beam/node caps and the canonicalization vocabulary.
 (defn learn--make-task [samples config]
   {:samples samples
    :ops (get config :ops nil)
@@ -258,6 +301,8 @@
                       (apply list (get config :ops nil)))
                 '(x))})
 
+;; doc: (learn--zero-in? scored) — true when the top scored pair's loss is below 1000
+;; doc: (i.e. zero absolute error on every sample).
 (defn learn--zero-in? [scored]
   (if (nil? scored)
     nil
@@ -266,6 +311,9 @@
         nil
         (< (get top 0) 1000)))))
 
+;; doc: (learn--run samples task proposer max-generations max-evals beam-width) — the
+;; doc: generation loop: propose → gate → score → record, honoring the generation and
+;; doc: eval budgets; stops early on exact fit. → best expr, or nil when none found.
 (defn learn--run [samples task proposer max-generations max-evals beam-width]
   (let* [scale (learn--scale samples)]
     (loop [gen 0 history [] seen {} evals 0 best-pair nil]
@@ -291,6 +339,9 @@
               (if (nil? best-pair2) nil (get best-pair2 1))
               (recur (+ gen 1) history2 seen2 evals2 best-pair2))))))))
 
+;; doc: (learn-function samples config) — synthesize a program from [x y] sample pairs.
+;; doc: Uses config :proposer, or the enumerator by default; honors :max-generations
+;; doc: and :max-evals budgets. → the winning expr, or nil when nothing was found.
 (defn learn-function [samples config]
   (let* [task (learn--make-task samples config)
          proposer (get config :proposer nil)
@@ -301,6 +352,8 @@
     (learn--run samples task prop max-generations max-evals
                 (get task :beam-width 16))))
 
+;; doc: (learn--wrap-function expr) — eval the synthesized expr into a real single-arg
+;; doc: function; the homoiconic payoff of the loop.
 (defn learn--wrap-function [expr]
   ;; the homoiconic payoff: synthesized DATA becomes a real function
   (eval (list 'fn '[x] expr)))

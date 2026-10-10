@@ -7,14 +7,21 @@
 
 ;; ── Basic Combinators ─────────────────────────────────────────
 
+;; doc: (identity x) — returns x unchanged.
 (defn identity [x] x)
+;; doc: (constantly x) — returns a function that ignores its arguments and always returns x.
 (defn constantly [x] (fn [_] x))
 
+;; doc: (inc x) — x plus 1.
 (defn inc [x] (+ x 1))
+;; doc: (dec x) — x minus 1.
 (defn dec [x] (- x 1))
 
 ;; ── Data Structures ───────────────────────────────────────────
 
+;; doc: (defstruct name field...) — defines a constructor and accessors.
+;; doc: Fields may be given as [x y] or (x y). Expands to (defn name [fields...])
+;; doc: returning {:x x :y y ...} plus (defn name-field [obj]) per field.
 (defmacro defstruct [name fields]
   ;; Accept [x y] or (x y); convert to list for uniform processing
   (let* [flds (if (vector? fields) (apply list fields) fields)
@@ -34,6 +41,8 @@
           flds)]
     ;; (cons 'do (cons defn-form accessor-forms)) → (do defn-form acc1 acc2 ...)
     (cons 'do (cons defn-form accessor-forms))))
+;; doc: (assoc m & kvs) — map with each key/value pair from kvs put in.
+;; doc: Raises an error when the number of kvs arguments is odd.
 (defn assoc [m & kvs]
   (if (not (= 0 (mod (count kvs) 2)))
     (error "assoc requires an even number of key-value arguments")
@@ -42,16 +51,26 @@
         (recur (+ i 2) (put acc (nth kvs i) (nth kvs (+ i 1))))
         acc))))
 
+;; doc: (set & items) → map-backed set; the reader expands #{a b c} to (set a b c).
+;; doc: Membership is (get s item nil); conj/disj/merge and friends live in libs/std/persistent.zio.
+(defn set [& items]
+  (reduce (fn [acc item] (put acc item true)) {} items))
+
+;; doc: (reduce-kv f init m) — reduces map m with f taking (acc key val).
+;; doc: Iteration order follows (keys m) and is not defined.
 (defn reduce-kv [f init m]
   ;; (reduce-kv f init map) — f takes (acc key val). Iteration order
   ;; follows (keys m) and is not defined.
   (reduce (fn [acc k] (f acc k (get m k))) init (keys m)))
 
+;; doc: (get-in m ks) — value at the nested key path ks, nil if any level is missing.
 (defn get-in [m ks]
   (if (or (nil? ks) (= (count ks) 0))
     m
     (get-in (get m (first ks)) (rest ks))))
 
+;; doc: (assoc-in m ks v) — map with v placed at the nested key path ks;
+;; doc: missing intermediate levels are created as empty maps.
 (defn assoc-in [m ks v]
   (if (= (count ks) 1)
     (assoc m (first ks) v)
@@ -59,8 +78,12 @@
 
 ;; ── Logical ──────────────────────────────────────────────────
 
+;; doc: (not x) — true when x is falsy, false otherwise.
 (defn not [x] (if x false true))
 
+;; doc: (and & args) — false on the first falsy argument, else the last
+;; doc: argument; returns true with no arguments. Not short-circuit at the
+;; doc: reader level — all arguments are evaluated before the call.
 (defn and [& args]
   (if (= (count args) 0)
     true
@@ -70,6 +93,8 @@
         (apply and (rest args)))
       false)))
 
+;; doc: (or & args) — first truthy argument, else nil; returns nil with no
+;; doc: arguments. All arguments are evaluated before the call.
 (defn or [& args]
   (if (= (count args) 0)
     nil
@@ -79,15 +104,21 @@
 
 ;; ── Sequence ─────────────────────────────────────────────────
 
+;; doc: (first coll) — first element: car of a list, index 0 of a vector.
 (defn first [coll]
   (if (list? coll) (car coll) (get coll 0)))
 
+;; doc: (second coll) — second element of coll, nil when absent.
 (defn second [coll]
   (first (rest coll)))
 
+;; doc: (rest coll) — coll without its first element: cdr of a list,
+;; doc: otherwise a slice from index 1 to the end.
 (defn rest [coll]
   (if (list? coll) (cdr coll) (slice coll 1 (count coll))))
 
+;; doc: (last coll) — last element: index count-1 of a vector, otherwise
+;; doc: the final element via list traversal.
 (defn last [coll]
   (if (vector? coll)
     (get coll (dec (count coll)))
@@ -95,6 +126,8 @@
       (car coll)
       (last (cdr coll)))))
 
+;; doc: (nth coll n) — n-th element of coll (0-based), nil when coll is nil.
+;; doc: Errors implicitly when n exceeds the collection length.
 (defn nth [coll n]
   (if (nil? coll)
     nil
@@ -102,39 +135,52 @@
 
 ;; ── Higher-order ─────────────────────────────────────────────
 
+;; doc: (partial f & args) — function that calls f with args prepended to
+;; doc: the arguments it receives.
 (defn partial [f & args]
   (fn [& more-args]
     (apply f (apply list (apply list args more-args)))))
 
 ;; ── Predicate ────────────────────────────────────────────────
 
+;; doc: (zero? x) — true when x equals 0.
 (defn zero? [x] (= x 0))
+;; doc: (pos? x) — true when 0 < x.
 (defn pos? [x] (< 0 x))
+;; doc: (neg? x) — true when x < 0.
 (defn neg? [x] (< x 0))
+;; doc: (even? x) — true when x mod 2 is 0.
 (defn even? [x] (= (mod x 2) 0))
+;; doc: (odd? x) — true when x is not even.
 (defn odd? [x] (not (even? x)))
 
+;; doc: (empty? coll) — true when coll is nil or has zero elements.
 (defn empty? [coll]
   (or (nil? coll)
       (= (count coll) 0)))
 
+;; doc: (some? x) — true when x is not nil.
 (defn some? [x] (not (nil? x)))
 
 ;; ── Sequence Operations ──────────────────────────────────────
 
-;; (take n coll) → first n elements as a list
+;; doc: (take n coll) — first n elements of coll as a list; nil when coll
+;; doc: is nil or n is 0.
 (defn take [n coll]
   (if (or (nil? coll) (= n 0))
     nil
     (cons (first coll) (take (dec n) (rest coll)))))
 
-;; (drop n coll) → coll without first n elements
+;; doc: (drop n coll) — coll without its first n elements; coll unchanged
+;; doc: when coll is nil or n is 0.
 (defn drop [n coll]
   (if (or (nil? coll) (= n 0))
     coll
     (drop (dec n) (rest coll))))
 
-;; (into to from) → add elements of from to to, converting type if needed
+;; doc: (into to from) — to with every element of from added: lists get
+;; doc: elements appended in order, vectors get them conjed; returns to
+;; doc: unchanged when from is nil.
 (defn into [to from]
   (if (nil? from)
     to
@@ -147,6 +193,49 @@
       ;; For vectors, append each element of from
       (reduce vector-conj to from))))
 
+
+;; ── Threading ────────────────────────────────────────────────
+;; Chaining for every value kind: ZOS objects, maps, JS host objects
+;; (wasm), plain functions. (-> p (slot-value :x) inc) reads as
+;; (inc (slot-value p :x)); the ZOS call convention (gf obj args) plus
+;; -> is the supported chaining story — see ADR-020.
+
+;; doc: (core--snoc coll x) — coll with x appended in last position.
+;; doc: Internal helper for ->>; nil is the empty list here.
+(defn core--snoc [coll x]
+  (if (nil? coll)
+    (list x)
+    (cons (car coll) (core--snoc (cdr coll) x))))
+
+;; doc: (-> x & forms) — thread x as the FIRST argument of each form.
+;; doc: (-> p (slot-value :x) inc) → (inc (slot-value p :x)); a bare form
+;; doc: is called with x: (-> coll first) → (first coll). No forms → x.
+(defmacro -> [x & forms]
+  (if (or (nil? forms) (= (count forms) 0))
+    x
+    (let* [form (car forms)
+           more (cdr forms)
+           stepped (if (list? form)
+                     (cons (car form) (cons x (cdr form)))
+                     (list form x))]
+      (if (nil? more)
+        stepped
+        (cons '-> (cons stepped more))))))
+
+;; doc: (->> x & forms) — thread x as the LAST argument of each form.
+;; doc: (->> [1 2 3] (map inc) (reduce + 0)); bare forms append x as the
+;; doc: sole argument. No forms → x.
+(defmacro ->> [x & forms]
+  (if (or (nil? forms) (= (count forms) 0))
+    x
+    (let* [form (car forms)
+           more (cdr forms)
+           stepped (if (list? form)
+                     (core--snoc form x)
+                     (list form x))]
+      (if (nil? more)
+        stepped
+        (cons '->> (cons stepped more))))))
 
 ;; ── Module export marker ─────────────────────────────────────
 ;; All defs above are implicitly exported.

@@ -22,13 +22,20 @@ Rust 保留语言运行时、可信宿主与必要原语；领域组合、策略
 | 语言站点 | `apps/site/` | 语言介绍、文档与 WASM playground；不是 Grove 产品 |
 | Grove 应用 | `apps/grove/` | `main.zio` 是实际 Zio 入口，组合 Loom 通用 agent 循环；`selection.zio` 决定 accuracy 与质量／成本候选筛选；其他 Rust 业务仍在 `native/app/` 与 `native/learning/`，CPU 后端在 `workers/torch/` |
 
-```text
-apps/grove/  →  libs/（Zio 领域组合） → langs/（语言语义）
-     ↓                    ↓
-contribs/（可信宿主、通用 native/transport adapters）
-
-apps/site/ → 语言介绍 / 文档 / playground
+```mermaid
+flowchart TD
+    grove["apps/grove/<br/>Grove 产品"]
+    libs["libs/<br/>Zio 领域组合"]
+    langs["langs/<br/>语言语义"]
+    contribs["contribs/<br/>可信宿主 · 通用 native/transport adapters"]
+    site["apps/site/<br/>语言介绍 · 文档 · playground"]
+    grove --> libs --> langs
+    grove -.-> contribs
+    libs -.-> contribs
 ```
+
+> 应用业务用 Zio 表达，`libs/` 组合领域能力，`langs/` 定义语言语义；
+> 可信宿主与传输适配器留在 `contribs/`，站点独立承载语言文档与 playground。
 
 核心不反向依赖 Grove 业务或通用 harness。普通 `zio-cli` 只装配语言环境，
 不提供 `--llm-replay`；模型与 replay 合同仍由 `contribs/native/loom/`

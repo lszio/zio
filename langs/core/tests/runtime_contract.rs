@@ -540,3 +540,85 @@ fn virtual_require_shares_io_cache_cycles_and_cleans_failures() {
     assert!(eval_source(&ctx, "main", "(require :inherited)").is_err());
     assert!(eval_source(&ctx, "main", "(require :../secret)").is_err());
 }
+
+// ── reader literals: sets and quasiquote ──────────────────────────
+
+#[test]
+fn set_literal_is_a_map_backed_set_from_the_bootstrap() {
+    for (src, expected) in [
+        ("(count #{1 2 3})", "3"),
+        ("(count #{1 1 2})", "2"),
+        ("(get #{:a :b} :a)", "true"),
+        ("(get #{:a :b} :z nil)", "nil"),
+        ("(str #{})", "\"{}\""),
+        // Map-backed equality is order-insensitive: the same members are
+        // the same set, however the literal was written.
+        ("(= #{1 2 3} #{3 2 1})", "true"),
+        ("(= #{1 2} #{1 2 3})", "false"),
+    ] {
+        let value = run(src).unwrap_or_else(|e| panic!("{src} failed: {e}"));
+        assert_eq!(value.to_string(), expected, "{src} produced {value}");
+    }
+}
+
+#[test]
+fn quasiquote_evaluates_unquote_and_splices() {
+    for (src, expected) in [
+        ("(str `(a b))", "\"(a b)\""),
+        ("(let [x 5] (str `(a ~x)))", "\"(a 5)\""),
+        ("(str `(~@(list 1 2) 3))", "\"(1 2 3)\""),
+        ("(str `[0 ~@(vector :a)])", "\"[0 :a]\""),
+        ("(get `{:k ~(+ 2 2)} :k)", "4"),
+        ("(defmacro twice [e] `(inc ~e)) (twice 1)", "2"),
+        // A nested backquote protects its own unquotes.
+        ("(str `(a `(b ~c)))", "\"(a (quasiquote (b (unquote c))))\""),
+    ] {
+        let value = run(src).unwrap_or_else(|e| panic!("{src} failed: {e}"));
+        assert_eq!(value.to_string(), expected, "{src} produced {value}");
+    }
+}
+
+#[test]
+fn misplaced_unquote_and_bad_splice_are_refused() {
+    let bare = run("(unquote 1)").unwrap_err().to_string();
+    assert!(bare.contains("outside quasiquote"), "{bare}");
+    let spliced = run("`(a ~@5)").unwrap_err().to_string();
+    assert!(spliced.contains("sequential"), "{spliced}");
+    let dangling = run("`(a ~)").unwrap_err().to_string();
+    assert!(!dangling.is_empty());
+}
+
+// ── threading macros (chaining) ───────────────────────────────────
+
+#[test]
+fn threading_threads_first_and_last_arguments() {
+    for (src, expected) in [
+        ("(-> 5 inc inc)", "7"),
+        ("(-> {:a 1} (get :a) inc)", "2"),
+        ("(-> [1 2 3] first)", "1"),
+        // A bare form is called with the threaded value.
+        ("(-> [1 2 3] rest (first))", "2"),
+        // ->> threads as the last argument.
+        ("(->> [1 2 3] (map inc) (reduce + 0))", "9"),
+        ("(->> 10 (- 3))", "-7"),
+        // Zero forms is identity.
+        ("(-> 7)", "7"),
+        ("(->> 7)", "7"),
+    ] {
+        let value = run(src).unwrap_or_else(|e| panic!("{src} failed: {e}"));
+        assert_eq!(value.to_string(), expected, "{src} produced {value}");
+    }
+}
+
+#[test]
+fn threading_composes_with_macros_and_zos_calls() {
+    // A macro call in the chain expands before threading continues.
+    let expanded = run("(defmacro twice [e] `(inc ~e)) (-> 1 twice twice)")
+        .unwrap_or_else(|e| panic!("macro chain failed: {e}"));
+    assert_eq!(expanded.to_string(), "3");
+    // The ZOS convention (gf obj args) threads the object first.
+    let zos = run("(defclass pt nil ((x :initarg :x))) \
+         (-> (make-instance pt :x 5) (slot-value :x) (+ 5))")
+    .unwrap_or_else(|e| panic!("zos chain failed: {e}"));
+    assert_eq!(zos.to_string(), "10");
+}

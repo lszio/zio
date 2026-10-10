@@ -18,8 +18,11 @@
 ;; Similarity is signed integer basis points (-10000..10000), rounded
 ;; to the nearest basis point. Zero vectors have similarity zero.
 
+;; doc: vector--scale — basis-point scale factor: similarity 1.0 = 10000.
 (def vector--scale 10000)
 
+;; doc: (vector--check-space records space-version) — true, or a non-empty
+;; doc: refusal string when any record's :memory/space-version differs.
 (defn vector--check-space [records space-version]
   ;; Refuse a mixed space outright. Silent reinterpretation of old
   ;; coordinates is exactly the failure this guards.
@@ -34,6 +37,8 @@
         (str "refuse: vector space version is " space-version
              " but index holds " (json-stringify bad))))))
 
+;; doc: (vector--check-encoder records encoder) — true, or a non-empty
+;; doc: refusal string when any record's :memory/encoder differs.
 (defn vector--check-encoder [records encoder]
   (if (= (count records) 0)
     true
@@ -46,17 +51,23 @@
         (str "refuse: encoder " (json-stringify encoder)
              " does not match indexed records " (json-stringify bad))))))
 
+;; doc: (vector--finite x) — x when it is a finite number (ordering
+;; doc: `(<= x x)` rejects NaN/inf); error otherwise.
 (defn vector--finite [x]
   (if (number? x)
     ;; Ordering rejects NaN/infinity in the shared numeric primitive.
     (do (<= x x) x)
     (error "invalid-input: vector coordinates must be finite numbers")))
 
+;; doc: (vector--validate a) — a when it is a vector of finite coordinates;
+;; doc: shape-error otherwise.
 (defn vector--validate [a]
   (if (vector? a)
     (do (map vector--finite a) a)
     (error "shape-error: expected a coordinate vector")))
 
+;; doc: (vector--same-shape a b) — validates both vectors and errors with
+;; doc: shape-error when their dimensions differ.
 (defn vector--same-shape [a b]
   (vector--validate a)
   (vector--validate b)
@@ -64,21 +75,28 @@
     true
     (error "shape-error: coordinate dimensions differ")))
 
+;; doc: (vector--dot a b) — dot product of same-shape vectors, checked finite.
 (defn vector--dot [a b]
   (vector--same-shape a b)
   (vector--finite
     (reduce (fn [acc i] (+ acc (* (+ 0.0 (get a i)) (get b i))))
             0.0 (range 0 (count a)))))
 
+;; doc: (vector--norm a) — squared Euclidean norm of a (kept as the public
+;; doc: contract despite the name).
 (defn vector--norm [a]
   ;; Squared norm, preserving the existing public contract.
   (vector--dot a a))
 
+;; doc: (vector--max-abs a) — largest absolute coordinate of a, 0.0 when
+;; doc: all coordinates are zero.
 (defn vector--max-abs [a]
   (reduce (fn [acc x]
             (let* [m (if (< x 0) (- 0.0 x) (+ 0.0 x))]
               (if (> m acc) m acc))) 0.0 a))
 
+;; doc: (vector--round-bp x) — rounds x to signed integer basis points,
+;; doc: clamped to ±vector--scale, via binary search on the magnitude.
 (defn vector--round-bp [x]
   (let* [negative (< x 0)
          magnitude (if negative (- x) x)
@@ -94,6 +112,9 @@
                    (recur lo mid))))))]
     (if negative (- rounded) rounded)))
 
+;; doc: (vector--cosine-bp a b) — cosine similarity of same-shape vectors as
+;; doc: integer basis points; 0 for a zero vector. Both vectors are rescaled
+;; doc: by max-abs before squaring to avoid float overflow/underflow.
 (defn vector--cosine-bp [a b]
   (vector--same-shape a b)
   ;; Rescale before squaring to avoid integer overflow, floating overflow
@@ -110,6 +131,11 @@
                          (* (sqrt (vector--norm x)) (sqrt (vector--norm y))))]
           (vector--round-bp (* cosine vector--scale)))))))
 
+;; doc: (vector--nearest records query space-version) — [similarity-bp record]
+;; doc: for the record most similar to query, or nil when records is empty.
+;; doc: Refuses (returning the refusal string) when the query's space version
+;; doc: differs from space-version, the index mixes versions, or the encoder
+;; doc: mismatches; the caller must test the result with (string? ...).
 (defn vector--nearest [records query space-version]
   ;; The semantic search. Two refusals live here, not in the caller:
   ;; a space-version mismatch and an encoder mismatch. Returns the
@@ -135,9 +161,15 @@
             ok-enc))
         ok-space))))
 
+;; doc: (vector--threshold-bp bp threshold-bp) — true when similarity bp
+;; doc: meets or exceeds threshold-bp.
 (defn vector--threshold-bp [bp threshold-bp]
   (if (>= bp threshold-bp) true false))
 
+;; doc: (vector--migrate record new-space re-encoder) — the only sanctioned
+;; doc: path across a space change: re-encodes via re-encoder, validates the
+;; doc: new coordinates, and stamps :memory/space-version/:memory/encoder from
+;; doc: new-space plus :memory/migrated-from with the old version.
 (defn vector--migrate [record new-space re-encoder]
   ;; The ONLY sanctioned way across a space change: re-encode explicitly
   ;; and record both the old and the new space so the index knows what
@@ -150,6 +182,8 @@
               :memory/encoder (get new-space :encoder))
          :memory/migrated-from (get record :memory/space-version))))
 
+;; doc: (vector--invalidate records) — always returns an empty vector: the
+;; doc: sanctioned way to drop an index after a space change.
 (defn vector--invalidate [records]
   ;; Dropping an index is a real option and is always available: the
   ;; records go, the space id stays, and nothing pretends the old

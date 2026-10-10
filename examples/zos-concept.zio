@@ -22,4 +22,11 @@
 
 (def c (make-instance circle :x 1 :y 2 :radius 5))
 (println "circle-via-point:" (describe c))
+
+;; ── Chaining with -> ─────────────────────────────────────────
+
+;; Method chaining is the threading macro over the ZOS call convention
+;; (gf obj args): each step receives the previous value first.
+(println "chained:" (-> p (slot-value :x) (+ 5)))
+(println "chained-describe:" (-> c describe))
 (println "ZOS capability probe completed.")

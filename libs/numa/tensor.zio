@@ -1,16 +1,25 @@
+;; ── zio.numa.tensor — generic CPU tensor client ────────────────
 ;; Generic CPU tensor client. Explicit caller-owned reference names identify
 ;; tensors only inside an opaque backend handle; they confer no host authority.
 ;; Operations use the zio.tensor.state/1 and RPC v1 backend contract.
 ;; No datasets, objectives, teachers or Grove operation is hidden here.
 ;; Results from the JSON backend have STRING keys; tensor-ref normalizes them.
 
+;; doc: (tensor-start config) — starts a tensor backend with config via the
+;; doc: host bindings; returns an opaque backend handle.
 (defn tensor-start [config] (host/tensor-start config))
+;; doc: (tensor-close backend) — closes a backend opened by tensor-start.
 (defn tensor-close [backend] (host/tensor-close backend))
 
+;; doc: (tensor-call backend operation) — sends an operation map to the
+;; doc: backend over the RPC v1 contract; errors when operation is not a map.
 (defn tensor-call [backend operation]
   (if (map? operation) (host/tensor-call backend operation)
     (error "invalid-input: tensor operation must be a map")))
 
+;; doc: (tensor-ref tensor) — normalizes a tensor reference: strings pass
+;; doc: through, maps yield the "tensor"/:tensor key; anything else is an
+;; doc: invalid-input error. Needed because JSON backend results use string keys.
 (defn tensor-ref [tensor]
   (if (string? tensor) tensor
     (if (map? tensor)
@@ -18,56 +27,89 @@
         (if (string? name) name (error "invalid-input: expected tensor descriptor")))
       (error "invalid-input: expected tensor reference"))))
 
+;; doc: (tensor-create backend out data shape dtype requires-grad) — creates
+;; doc: tensor `out` from data with the given shape and dtype.
 (defn tensor-create [backend out data shape dtype requires-grad]
   (tensor-call backend {:op "create" :out out :data data :shape shape
                         :dtype dtype :requires_grad requires-grad}))
 
+;; doc: (tensor-full backend out shape value dtype requires-grad) — creates
+;; doc: tensor `out` filled with value in the given shape and dtype.
 (defn tensor-full [backend out shape value dtype requires-grad]
   (tensor-call backend {:op "full" :out out :shape shape :value value
                         :dtype dtype :requires_grad requires-grad}))
 
+;; doc: (tensor-kernel backend op out inputs attributes) — generic kernel
+;; doc: dispatch: sends {:op op :out out :inputs refs} merged over attributes,
+;; doc: where inputs are normalized via tensor-ref. Attributes cannot override
+;; doc: op, out or inputs.
 (defn tensor-kernel [backend op out inputs attributes]
   ;; Attributes cannot replace the selected operation, output or inputs.
   (tensor-call backend (put (put (put attributes :op op) :out out)
                             :inputs (apply vector (map tensor-ref inputs)))))
 
+;; doc: (tensor-unary backend op out input) — element-wise unary kernel on
+;; doc: one input tensor.
 (defn tensor-unary [backend op out input]
   (tensor-kernel backend op out [input] {}))
 
+;; doc: (tensor-binary backend op out left right) — element-wise binary
+;; doc: kernel over two input tensors.
 (defn tensor-binary [backend op out left right]
   (tensor-kernel backend op out [left right] {}))
 
+;; doc: (tensor-matmul backend out left right) — matrix multiply of left
+;; doc: and right into out.
 (defn tensor-matmul [backend out left right]
   (tensor-binary backend "matmul" out left right))
 
+;; doc: (tensor-linear backend out input weight bias) — affine layer
+;; doc: input·weight (+ bias when bias is non-nil) into out.
 (defn tensor-linear [backend out input weight bias]
   (tensor-kernel backend "linear" out (if (nil? bias) [input weight] [input weight bias]) {}))
 
+;; doc: (tensor-reduce backend op out input dim keepdim) — reduction kernel
+;; doc: (e.g. sum/max) over input, optionally restricted to dim and keeping
+;; doc: or dropping that dimension per keepdim.
 (defn tensor-reduce [backend op out input dim keepdim]
   (tensor-kernel backend op out [input]
                  (if (nil? dim) {:keepdim keepdim} {:dim dim :keepdim keepdim})))
 
+;; doc: (tensor-reshape backend out input shape) — reshapes input to shape.
 (defn tensor-reshape [backend out input shape]
   (tensor-kernel backend "reshape" out [input] {:shape shape}))
 
+;; doc: (tensor-transpose backend out input dim0 dim1) — transposes input,
+;; doc: swapping dimensions dim0 and dim1.
 (defn tensor-transpose [backend out input dim0 dim1]
   (tensor-kernel backend "transpose" out [input] {:dim0 dim0 :dim1 dim1}))
 
+;; doc: (tensor-value backend input) — the concrete data values of input.
 (defn tensor-value [backend input]
   (tensor-call backend {:op "value" :input (tensor-ref input)}))
 
+;; doc: (tensor-info backend input) — metadata (shape, dtype, grad status)
+;; doc: of input.
 (defn tensor-info [backend input]
   (tensor-call backend {:op "info" :input (tensor-ref input)}))
 
+;; doc: (tensor-freeze backend input frozen) — marks input frozen (or
+;; doc: unfrozen) so gradient tracking skips it.
 (defn tensor-freeze [backend input frozen]
   (tensor-call backend {:op "freeze" :input (tensor-ref input) :frozen frozen}))
 
+;; doc: (tensor-assign backend input data) — overwrites input's data in place.
 (defn tensor-assign [backend input data]
   (tensor-call backend {:op "assign" :input (tensor-ref input) :data data}))
 
+;; doc: (tensor-drop backend inputs) — releases the referenced tensors from
+;; doc: the backend.
 (defn tensor-drop [backend inputs]
   (tensor-call backend {:op "drop" :inputs (apply vector (map tensor-ref inputs))}))
 
+;; doc: (tensor-backward backend loss gradient retain-graph) — backpropagates
+;; doc: from loss; gradient optionally seeds the loss gradient, and
+;; doc: retain-graph keeps the graph for further backward passes.
 (defn tensor-backward [backend loss gradient retain-graph]
   (tensor-call backend
                (if (nil? gradient)
@@ -75,30 +117,47 @@
                  {:op "backward" :input (tensor-ref loss) :gradient (tensor-ref gradient)
                   :retain_graph retain-graph})))
 
+;; doc: (tensor-grad backend out input) — stores input's gradient in out.
 (defn tensor-grad [backend out input]
   (tensor-call backend {:op "grad" :out out :input (tensor-ref input)}))
 
+;; doc: (tensor-zero-grad backend inputs) — zeroes the gradients of the
+;; doc: referenced tensors.
 (defn tensor-zero-grad [backend inputs]
   (tensor-call backend {:op "zero-grad" :inputs (apply vector (map tensor-ref inputs))}))
 
+;; doc: (tensor-adam backend name parameters config) — creates an Adam
+;; doc: optimizer named `name` over the referenced parameters with config
+;; doc: options (e.g. learning rate) merged in.
 (defn tensor-adam [backend name parameters config]
   (tensor-call backend (put (put (put config :op "adam-create") :name name)
                             :parameters (apply vector (map tensor-ref parameters)))))
 
+;; doc: (tensor-step backend optimizer) — applies one Adam update step.
 (defn tensor-step [backend optimizer]
   (tensor-call backend {:op "adam-step" :optimizer optimizer}))
 
+;; doc: (tensor-drop-optimizer backend optimizer) — releases the optimizer
+;; doc: and its state from the backend.
 (defn tensor-drop-optimizer [backend optimizer]
   (tensor-call backend {:op "adam-drop" :optimizer optimizer}))
 
+;; doc: (tensor-seed backend seed) — seeds the backend's random generator
+;; doc: (used by sampling ops).
 (defn tensor-seed [backend seed]
   (tensor-call backend {:op "seed" :seed seed}))
 
+;; doc: (tensor-sample backend operation out attributes) — runs a sampling
+;; doc: operation writing into out; attributes are merged under the op/out keys.
 (defn tensor-sample [backend operation out attributes]
   (tensor-call backend (put (put attributes :op operation) :out out)))
 
+;; doc: (tensor-state-export backend) — exports the backend's full tensor
+;; doc: state as a serializable value.
 (defn tensor-state-export [backend]
   (tensor-call backend {:op "state-export"}))
 
+;; doc: (tensor-state-import backend state strict) — imports state produced
+;; doc: by tensor-state-export; strict mode rejects partial/unknown entries.
 (defn tensor-state-import [backend state strict]
   (tensor-call backend {:op "state-import" :state state :strict strict}))

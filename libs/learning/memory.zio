@@ -27,10 +27,21 @@
 ;; Numbers are integers; similarity is returned in basis points
 ;; (0..10000) because zio comparison primitives are integer-only.
 
+;; doc: `memory--vector-scale` — 整数相似度的基点（basis point）刻度上限。
+;; doc:
+;; doc: 相似度一律以 0..10000 的整数基点表示，因为 zio 的比较原语只支持
+;; doc: 整数；所有语义相似度换算都经过此常量。
 (def memory--vector-scale 10000)
 
 ;; ── structural index ────────────────────────────────────────────
 
+;; doc: `memory--ast-shape` — 计算 AST 的规范形状串：算子/元数骨架，抹去名字与字面量。
+;; doc:
+;; doc: 形状递归定义：列表是 "(" 加各子形状按序以 "," 连接加 ")"，原子一律
+;; doc: 为 "atom"，因此 `(+ (* 2 x) 1)` 与 `(+ (* 7 y) 3)` 同形。
+;; doc:
+;; doc:   (memory--ast-shape '(+ (* 2 x) 1))
+;; doc:   ;; => "((atom,atom,atom),atom)"
 (defn memory--ast-shape [ast]
   ;; canonical shape string: operator/arity skeleton with names and
   ;; literals erased, so `(+ (* 2 x) 1)` and `(+ (* 7 y) 3)` share it.
@@ -40,14 +51,24 @@
     (str "(" (str-join "," (map (fn [f] (memory--ast-shape f)) ast)) ")")
     "atom"))
 
+;; doc: `memory--structural-key` — 记录的结构索引键：其 :memory/ast-shape。
+;; doc:
+;; doc: 键由 memory--ast-shape 生成；索引与检索只依赖这个键。
 (defn memory--structural-key [record]
   (get record :memory/ast-shape))
 
+;; doc: `memory--index-structural` — 把记录序列转为结构索引：每条记录一个 [形状键 记录] 条目。
+;; doc:
+;; doc: 保持输入顺序使索引确定；条目为二元素 list，用 get 0 / get 1 访问。
 (defn memory--index-structural [records]
   ;; → vector of [shape-key record], one entry per record. Insertion
   ;; order is preserved so the index is deterministic.
   (map (fn [r] (list (memory--structural-key r) r)) records))
 
+;; doc: `memory--structural-neighbours` — 结构检索：只返回形状与 ast 完全一致的记录。
+;; doc:
+;; doc: 这是复用/去重路径；返回的记录是否可取用仍由调用方做许可检查
+;; doc: （见 memory--retrievable?）。
 (defn memory--structural-neighbours [index ast]
   ;; exact-shape retrieval: only records whose *shape* matches are
   ;; candidates. This is the reuse/dedup path; the returned records are
@@ -57,16 +78,30 @@
 
 ;; ── behavioural index ───────────────────────────────────────────
 
+;; doc: `memory--probe-set` — 记录指纹所属的 probe-set id。
+;; doc:
+;; doc: 指纹离开 probe-set id 没有意义，因此 id 随指纹一同存储，永不裸存。
 (defn memory--probe-set [record]
   ;; the probe-set id travels WITH the fingerprint. A fingerprint is
   ;; meaningless without it, so it is never stored bare.
   (get record :memory/probes))
 
+;; doc: `memory--fingerprint-compatible?` — 两条记录是否属于同一 probe set。
+;; doc:
+;; doc: 只有 :memory/probes 相同才返回 true；跨集合的指纹不可比较。
 (defn memory--fingerprint-compatible? [a b]
   (if (= (memory--probe-set a) (memory--probe-set b))
     true
     false))
 
+;; doc: `memory--behavioural-match?` — 同一 probe set 内的指纹相等比较。
+;; doc:
+;; doc: 两记录同集合时返回指纹是否相等；跨集合返回 nil —— 表示"无可比性"，
+;; doc: 而不是回答一个虚构的相似度。
+;; doc:
+;; doc:   (memory--behavioural-match? {:memory/probes "p1" :memory/fingerprint "f"}
+;; doc:                              {:memory/probes "p2" :memory/fingerprint "f"})
+;; doc:   ;; => nil
 (defn memory--behavioural-match? [a b]
   ;; Comparing under different probe sets is refused (nil = "no claim"),
   ;; never answered with a similarity that would be a fiction.
@@ -74,6 +109,10 @@
     (= (get a :memory/fingerprint) (get b :memory/fingerprint))
     nil))
 
+;; doc: `memory--index-behavioural` — 按 probe-set id 把记录分桶成 map。
+;; doc:
+;; doc: 先按集合分组，使跨集合比较在索引层面根本无法表达；桶内为
+;; doc: vector-conj 追加的向量，保持插入顺序。
 (defn memory--index-behavioural [records]
   ;; group by probe set first, so a cross-set comparison is not even
   ;; representable in the index.
@@ -83,11 +122,19 @@
               (put acc ps (vector-conj bucket r))))
           {} records))
 
+;; doc: `memory--behavioural-bucket` — 取某 probe-set id 的记录桶。
+;; doc:
+;; doc: 集合未知时返回空向量，不报错。
 (defn memory--behavioural-bucket [index probes]
   (get index probes []))
 
 ;; ── licence ─────────────────────────────────────────────────────
 
+;; doc: `memory--sources-ok?` — 记录的每个来源观察是否都允许训练。
+;; doc:
+;; doc: `sources` 是观察 id → 是否允许训练 的 map；对 :memory/sources 逐项
+;; doc: 检查，全部为 true 才返回 true。用嵌套 if 而非 or（缘由见 learn.zio
+;; doc: 的 core-eval 缺陷注记）。
 (defn memory--sources-ok? [record sources]
   ;; every source observation must permit training. Nested ifs, not
   ;; `or`, per the core-eval defect note in learn.zio.
@@ -98,6 +145,13 @@
           true
           (get record :memory/sources '[])))
 
+;; doc: `memory--retrievable?` — 记录能否取用：返回 true 或拒绝字符串。
+;; doc:
+;; doc: 要求 :memory/usage-permitted 为 true 且所有来源观察允许训练；拒绝
+;; doc: 以字符串显式报出，绝不从结果中静默过滤。
+;; doc:
+;; doc:   (memory--retrievable? {:memory/id "s-1" :memory/usage-permitted false} {})
+;; doc:   ;; => "refuse: record s-1 forbids usage"
 (defn memory--retrievable? [record sources]
   ;; → true, or a refusal STRING (never a filtered-out row). `sources` is
   ;; the map of observation id → training-permitted?. A record is
@@ -112,6 +166,10 @@
 
 ;; ── merge ───────────────────────────────────────────────────────
 
+;; doc: `memory--merge-structural` — 结构索引唯一的合并：仅当两条记录 :memory/ast 完全相同。
+;; doc:
+;; doc: 合并即 (put a :memory/id (get b :memory/id))，返回更新后的 a；AST
+;; doc: 不同则返回拒绝字符串 —— 语义近邻是不同程序，不能凭相似度断言等价。
 (defn memory--merge-structural [a b]
   ;; The only merge the structural index performs. Semantic similarity
   ;; is irrelevant: a near-neighbour with a different AST is a different
@@ -123,6 +181,13 @@
 
 ;; ── abstraction extraction ──────────────────────────────────────
 
+;; doc: `memory--call-spine` — 沿一元程序的第一参数脊柱收集算子名。
+;; doc:
+;; doc: 从整体形式开始，每次取第 2 个子表单（get form 1）下钻并收集各层
+;; doc: 头部算子，遇非列表或空列表停止。
+;; doc:
+;; doc:   (memory--call-spine '(+ (* 2 x) 1))
+;; doc:   ;; => ["+" "*"]
 (defn memory--call-spine [ast]
   ;; the chain of operator names along a unary program's spine:
   ;; `(+ (* 2 x) 1)` → ["+" "*"]. Parameter position is encoded as "·".
@@ -133,11 +198,20 @@
         (recur (get form 1) (vector-conj acc (str (car form)))))
       acc)))
 
+;; doc: `memory--spine-key` — 调用脊柱以 "/" 连接成的键。
+;; doc:
+;; doc: 分隔符必须作为独立参数传给 str-join；把集合作为单一参数传入会
+;; doc: 字符串化集合自身的显示形式而非连接元素。
 (defn memory--spine-key [ast]
   ;; join needs the separator as its own argument; a single collection
   ;; argument would stringify the list's own display form.
   (apply str-join "/" (memory--call-spine ast)))
 
+;; doc: `memory--common-abstraction` — 全体程序共享的最长公共调用脊柱（按序）。
+;; doc:
+;; doc: 输入为空返回 nil；无公共前缀返回 []；单程序即其自身脊柱。用索引
+;; doc: 访问而非 cdr 走访，因为调用方既传 quoted list 也传 vector，而 cdr
+;; doc: 只能走访 list。
 (defn memory--common-abstraction [programs]
   ;; Minimal common abstraction: the longest call spine shared by EVERY
   ;; program, in order. Returns the shared spine, or nil when there is
@@ -165,12 +239,21 @@
                               acc))))]
             (recur kept (+ i 1))))))))
 
+;; doc: `memory--abstraction-dl` — 抽象的描述长度：随附定义的节点数。
+;; doc:
+;; doc: 代价是定义本身而非名字；这里以 spine 长度计。
 (defn memory--abstraction-dl [abstraction]
   ;; description length of a candidate abstraction: the function
   ;; definition that must ship with it. A name is not the cost — the
   ;; definition is.
   (count abstraction))
 
+;; doc: `memory--description-length` — 引入抽象后的总描述长度：各调用点节点数之和 + 定义长度。
+;; doc:
+;; doc: 定义只计一次，无论多少程序使用 —— 这是诚实的压缩账：更短的调用点
+;; doc: 若隐藏一份很长的库定义，并不构成压缩。
+;; doc:
+;; doc:   (memory--description-length [call-1 call-2] (memory--abstraction-dl spine))
 (defn memory--description-length [calls dl]
   ;; Total description length under an abstraction: the length of every
   ;; call site PLUS the abstraction's own definition, paid once. This is
@@ -183,6 +266,10 @@
   ;; exactly once, no matter how many programs use it.
   (+ (reduce (fn [acc c] (+ acc (count c))) 0 calls) dl))
 
+;; doc: `memory--macro-candidate` — 宏候选：共享脊柱长于 2 个算子时生成，否则 nil。
+;; doc:
+;; doc: 返回 [defmacro 形式 名字] 二元素列表；宏是刻意次选 —— 只有脊柱深到
+;; doc: 普通函数写起来更啰嗦时才值得。生成的宏即 memory--apply-spine。
 (defn memory--macro-candidate [programs]
   ;; Macro route, and it is second choice on purpose: a macro is only
   ;; justified when the shared spine is deeper than a plain function
@@ -199,10 +286,18 @@
               'memory--apply-spine)
         nil))))
 
+;; doc: `memory--apply-spine` — 宏：用 params 中的算子从内向外层层包裹 body。
+;; doc:
+;; doc: 即 (reduce (fn [acc op] (list op acc)) body params)；保持为真实宏，
+;; doc: 让展开后复检走的是真实的展开路径。
 (defmacro memory--apply-spine [body params]
   ;; a real macro, so the re-check below expands a genuine invocation
   (reduce (fn [acc op] (list op acc)) body params))
 
+;; doc: `memory--expanded-body` — 对宏调用做 macroexpand，供展开后复检。
+;; doc:
+;; doc: 展开可能重新引入表面形式隐藏的依赖与权限，因此复检读的是展开
+;; doc: 结果，而不是只看表面形式。
 (defn memory--expanded-body [invocation]
   ;; The post-expansion re-check the plan requires: once a macro is in
   ;; play, its expanded form is re-read for dependencies and permissions,

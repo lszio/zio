@@ -1,0 +1,36 @@
+---
+import { getCollection } from 'astro:content';
+import Base from '../../layouts/Base.astro';
+
+const entries = (await getCollection('api')).sort((a, b) => a.data.file.localeCompare(b.data.file));
+const base = import.meta.env.BASE_URL.replace(/\/$/, '');
+const total = entries.reduce((n, e) => n + e.data.symbolCount, 0);
+---
+<Base title="库参考 — Zio" description="从仓库 Zio 源码的文档注释直接生成的库与函数参考。">
+  <section class="hero hero-page-head">
+    <div class="container">
+      <h1>库参考</h1>
+      <p>
+        {entries.length} 个库文件、{total} 个公开符号，全部提取自仓库
+        <code>libs/</code> 源码中的文档注释——源码注释是唯一的文档来源，
+        页面随源码构建自动更新。
+      </p>
+      <div class="hero-cta">
+        <a href={`${base}/syntax/`} class="btn btn-secondary">语法入门</a>
+        <a href={`${base}/docs/`} class="btn btn-secondary">文档</a>
+        <a href={`${base}/playground/`} class="btn btn-primary">Playground</a>
+      </div>
+    </div>
+  </section>
+  <article class="section prose container">
+    {entries.map((entry) => (
+      <section>
+        <h2><a href={`${base}/reference/${entry.id}/`}>{entry.data.title}</a></h2>
+        <p>
+          <code>{entry.data.file}</code> · {entry.data.symbolCount} 个符号：
+          {entry.data.symbols.map((s) => <code class="symbol-chip">{s.name}</code>)}
+        </p>
+      </section>
+    ))}
+  </article>
+</Base>

@@ -13,6 +13,18 @@
 ;; MVP stages: filter, map, aggregate (count), emit. Unknown stages
 ;; raise an error at expansion time.
 
+;; doc: `pipeline` — 将流水线阶段宏展开为对 src 的嵌套 filter/map/count 调用。
+;; doc:
+;; doc: 支持的阶段：(filter pred)、(map f)、(aggregate count)、
+;; doc: (emit f)（展开为 (f src)）。未知阶段或非 count 的聚合展开为
+;; doc: (error ...) 调用，在运行时报错。DSL 自身不拥有引擎、数据类型
+;; doc: 或副作用权限，能力属于其展开目标函数。
+;; doc:
+;; doc:   (pipeline xs
+;; doc:     (filter pred?)
+;; doc:     (map transform)
+;; doc:     (aggregate count)
+;; doc:     (emit printer))
 (defmacro pipeline [src & stages]
   (reduce (fn [acc stage]
             (let* [op (car stage)

@@ -1,3 +1,4 @@
+;; ── zio.datalog — deterministic set-of-datoms query engine ─────
 ;; Deterministic set-of-datoms query engine. Transactions use [e a v]
 ;; or [e a v :db/add|:db/retract]; add is idempotent, retract removes the
 ;; exact triple. No implicit cardinality-one/schema policy is imposed.
@@ -9,19 +10,35 @@
 ;; Rules, recursive calls, predicates, aggregates, negation and collection
 ;; inputs are explicitly unsupported and rejected, not silently ignored.
 
+;; doc: `datalog--sequence` — 判断 x 是否为序列（向量或列表）。
 (defn datalog--sequence [x]
   (if (vector? x) true (if (list? x) true false)))
 
+;; doc: `create-db` — 返回空数据库 {:datalog/datoms []}。
+;; doc:
+;; doc: 不支持 schema 声明：携带任意参数调用时以 unsupported-query
+;; doc: 错误失败。
 (defn create-db [& schema]
   (if (= (count schema) 0)
     {:datalog/datoms []}
     (error "unsupported-query: schema declarations are not supported")))
 
+;; doc: `datalog--triple=` — 判断两个 datom 的 e、a、v 是否逐位相等。
+;; doc:
+;; doc: 第 4 位操作字段（:db/add / :db/retract）不参与比较。
 (defn datalog--triple= [a b]
   (if (= (get a 0) (get b 0))
     (if (= (get a 1) (get b 1)) (= (get a 2) (get b 2)) false)
     false))
 
+;; doc: `transact` — 顺序应用事务 tx-data，返回更新后的数据库。
+;; doc:
+;; doc: 每个 datom 为 [e a v] 或 [e a v op]；op 缺省为 :db/add，且
+;; doc: 幂等（已存在的相同三元组不重复追加，保持原顺序）；:db/retract
+;; doc: 删除所有 e/a/v 完全匹配的 datom。tx-data 非序列、datom 少于
+;; doc: 3 项或超过 4 项、操作符未知时抛出 invalid-input。
+;; doc:
+;; doc:   (transact {:datalog/datoms []} [[:1 :name "a"] [:1 :age 30]])
 (defn transact [db tx-data]
   (if (datalog--sequence tx-data) true (error "invalid-input: transaction must be sequential"))
   (loop [i 0 datoms (get db :datalog/datoms [])]
@@ -42,9 +59,14 @@
              (recur (+ i 1) (apply vector (filter (fn [d] (not (datalog--triple= d item))) datoms))))
             (else (error "invalid-input: transaction operation must be :db/add or :db/retract"))))))))
 
+;; doc: `datalog--variable?` — 判断 x 是否为名字以 ? 开头的符号（查询变量）。
 (defn datalog--variable? [x]
   (if (symbol? x) (str-starts-with? (str x) "?") false))
 
+;; doc: `datalog--term` — 校验查询单项，合法时原样返回。
+;; doc:
+;; doc: 以 ? 开头的变量与通配 _ 直接通过；非序列、非映射的常量也
+;; doc: 通过。裸符号、嵌套序列与映射以 unsupported-query 拒绝。
 (defn datalog--term [x]
   (if (symbol? x)
     (if (= x '_) x
@@ -53,6 +75,10 @@
     (if (datalog--sequence x) (error "unsupported-query: nested query terms")
       (if (map? x) (error "unsupported-query: map query terms") x))))
 
+;; doc: `datalog--unify` — 将 3 项子句 clause 与 datom 逐位合一，扩展绑定。
+;; doc:
+;; doc: _ 为通配；binding 中已绑定的变量必须与 datom 对应值相等。
+;; doc: 匹配成功返回扩展后的绑定映射，失配返回 nil。
 (defn datalog--unify [binding clause datom]
   (loop [i 0 result binding]
     (if (= i 3)
@@ -66,16 +92,29 @@
               (if (= (get result term) value) (recur (+ i 1) result) nil))
             (if (= term value) (recur (+ i 1) result) nil)))))))
 
+;; doc: `datalog--clause` — 校验 where 子句为恰好 3 项的 [e a v] 模式。
+;; doc:
+;; doc: 对每个位置调用 datalog--term 校验；合法时原样返回 clause，
+;; doc: 否则以 unsupported-query 报错。
 (defn datalog--clause [clause]
   (if (datalog--sequence clause)
     (if (= (count clause) 3) (do (map datalog--term clause) clause)
       (error "unsupported-query: where clauses must be entity/attribute/value triples"))
     (error "unsupported-query: expected a datom pattern")))
 
+;; doc: `match-clause` — 返回 datoms 中能与子句 clause 合一成功的 datom。
+;; doc:
+;; doc: 子句先经 datalog--clause 校验；结果保持 datom 的原有顺序。
 (defn match-clause [datoms clause]
   (datalog--clause clause)
   (filter (fn [d] (not (nil? (datalog--unify {} clause d)))) datoms))
 
+;; doc: `datalog--parse` — 校验并切分查询向量，返回
+;; doc: {:find find :in inputs :where clauses}。
+;; doc:
+;; doc: 查询必须以 :find 开头，:find 与 :where 均不能为空；:in 必须位于
+;; doc: :where 之前，仅接受首个 $ 与互不重复的标量变量；:rules、重复的
+;; doc: :in/:where、投影通配 _ 均报错。
 (defn datalog--parse [query]
   (if (datalog--sequence query) true (error "invalid-input: query must be sequential"))
   (if (= (get query 0) :find) true (error "invalid-input: query must begin with :find"))
@@ -111,6 +150,13 @@
           (else (recur (+ i 1) section find inputs
                        (vector-conj clauses (datalog--clause term)) seen-in seen-where)))))))
 
+;; doc: `datalog-query` — 对 db 执行合取查询，返回去重后的结果向量。
+;; doc:
+;; doc: :where 各三元组跨全部 datom 逐步合一连接；args 按序绑定 :in
+;; doc: 中的标量变量（数量不符报错），:find 投影未绑定变量报错。
+;; doc: 结果按 datom/输入顺序去重；:find 中的常量原样出现在每行。
+;; doc:
+;; doc:   (datalog-query '[:find ?name :where [?e :name ?name]] db)
 (defn datalog-query [query db & args]
   (let* [parsed (datalog--parse query)
          inputs (filter (fn [v] (not (= v '$))) (get parsed :in))
@@ -141,5 +187,11 @@
                     (vector-conj rows row) rows)))
               [] joined))))
 
+;; doc: `q` — datalog-query 的字面查询语法糖。
+;; doc:
+;; doc: 展开为 (datalog-query 'query-form db inputs...)，query-form
+;; doc: 在宏展开时自动加 quote，无需手写引号。
+;; doc:
+;; doc:   (q [:find ?name :in $ ?age :where [?e :age ?age] [?e :name ?name]] db 30)
 (defmacro q [query-form db & inputs]
   (cons 'datalog-query (cons (list 'quote query-form) (cons db inputs))))

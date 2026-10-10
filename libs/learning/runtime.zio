@@ -1,35 +1,71 @@
 ;; Learning policy; the backend only owns tensors, autodiff, Adam and RNG.
 (load "libs/learning/learn/recipes.zio")
 
+;; doc: `learn--get` — 宽容键查找：先按原键取，再按其名字（字符串形式）取，均缺失返回 fallback。
+;; doc:
+;; doc: 后端结果可能用字符串键，这里对 keyword 与 name 两种形态都兜住。
 (defn learn--get [m k fallback]
   (get m k (get m (name k) fallback)))
+;; doc: `learn--require` — 运行时断言：ok 为真返回 true，否则抛 "learning: <message>" 错误。
+;; doc:
+;; doc: 所有策略拒绝（坏输入、越权来源、合同不符）统一经此报错。
 (defn learn--require [ok message]
   (if ok true (error (str "learning: " message))))
+;; doc: `learn--contains` — 线性成员测试：xs 中存在等于 x 的元素即 true。
+;; doc:
+;; doc: 用 reduce 累积布尔实现，兼容 list 与 vector；找到后保持 true。
 (defn learn--contains [xs x]
   (reduce (fn [found v] (if found true (= v x))) false xs))
+;; doc: `learn--flat` — 把行的集合按序拼接成一个向量（逐行 into 累积）。
+;; doc:
+;; doc: 常用于把批量行的特征或状态摊平成一维数据数组。
 (defn learn--flat [rows] (reduce (fn [a r] (into a r)) [] rows))
+;; doc: `learn--counter` — 从 8 字节缓冲按 u64-le 解码计数器值。
+;; doc:
+;; doc: 模型的 :counter 与 :step-counter 都以这种缓冲存储。
 (defn learn--counter [b] (host/binary-decode "u64-le" b 0))
+;; doc: `learn--set-counter` — 把 8 字节缓冲按 u64-le 原位写入 n，返回 n。
+;; doc:
+;; doc: 逐字节 buffer-set! 覆写，不新建缓冲。
 (defn learn--set-counter [b n]
   (let* [raw (host/binary-encode "u64-le" n)]
     (map (fn [i] (buffer-set! b i (buffer-get raw i))) (range 8)) n))
+;; doc: `learn--call` — 向 model 的张量后端原样发送一个操作 map（host/tensor-call）。
 (defn learn--call [model op] (host/tensor-call (get model :tensor) op))
+;; doc: `learn--temp` — 分配下一个临时张量名 "t.<n>"，并使计数器自增。
 (defn learn--temp [model]
   (let* [b (get model :counter) n (learn--counter b)]
     (learn--set-counter b (+ n 1)) (str "t." n)))
+;; doc: `learn--op` — 发出一个核操作，返回其输出引用名。
+;; doc:
+;; doc: attrs 合上 :op :inputs 与自动分配的 :out（learn--temp 的新临时名）；
+;; doc: 返回 :out，供后续操作按名引用。
 (defn learn--op [model op inputs attrs]
   (let* [out (learn--temp model)]
     (learn--call model (assoc attrs :op op :inputs inputs :out out)) out))
+;; doc: `learn--create` — 在后端创建张量 out：data/shape/dtype 一并发送，返回 out。
 (defn learn--create [model data shape dtype]
   (let* [out (learn--temp model)]
     (learn--call model {:op "create" :out out :data data :shape shape :dtype dtype}) out))
+;; doc: `learn--scalar` — 创建 0 维 float32 标量张量，值为 n。
 (defn learn--scalar [model n] (learn--create model [n] [] "float32"))
+;; doc: `learn--value` — 请求 :op "value" 读回张量数据，返回结果 :data（缺省 []）。
 (defn learn--value [model ref] (learn--get (learn--call model {:op "value" :input ref}) :data []))
+;; doc: `learn--number` — 张量数据的第一个元素（标量值），常用于读回损失。
 (defn learn--number [model ref] (first (learn--value model ref)))
+;; doc: `learn--drop-since` — 释放 start 之后分配的所有临时张量。
+;; doc:
+;; doc: 向后端发 :op "drop"，输入为 t.<start>..t.<end-1>；end 不大于 start 时不发任何操作。
 (defn learn--drop-since [model start]
   (let* [end (learn--counter (get model :counter))]
     (if (> end start)
       (learn--call model {:op "drop" :inputs (map (fn [n] (str "t." n)) (range start end))}) nil)))
 
+;; doc: `learn--features` — 观察行 → 特征向量。
+;; doc:
+;; doc: 256 像素各除以 255，2 个读数各除以 (|r|+1)，共 258 维基向量；空间
+;; doc: "grove.fused/260@1" 再追加两个 presence 标志（1.0/0.0）。像素/读数
+;; doc: 数量不是 256/2、或空间未声明时报错。
 (defn learn--features [row space]
   (let* [pixels (learn--get row :pixels []) readings (learn--get row :readings [])
          image (learn--get row :image_present (learn--get row :image-present false))
@@ -41,16 +77,21 @@
           ((= space "grove.fused/258@1") base)
           (else (error "learning: undeclared feature space")))))
 
-;; The historic width-258 / width-260 spaces are TWO DISTINCT versioned
-;; spaces, not the same space at different lengths. A model built
-;; against one will refuse to import a snapshot built against the
-;; other. Width, encoder id and version all travel together.
+;; doc: `learn--space-specs` — 特征空间注册表：空间 id → 规格 的 map。
+;; doc:
+;; doc: "grove.fused/258@1" 与 "grove.fused/260@1" 是两个不同的版本化空间，
+;; doc: 而非同一空间的不同长度：宽度、encoder id、版本三者一同旅行，对着
+;; doc: 其一构建的模型会拒绝导入另一空间的快照。
 (def learn--space-specs
   {"grove.fused/258@1" {:width 258 :encoder-id "grove.pixel@1" :space-version "258@1"
                          :description "256 image pixels + 2 sensor readings, no presence flags"}
    "grove.fused/260@1" {:width 260 :encoder-id "grove.pixel@1" :space-version "260@1"
                          :description "256 image pixels + 2 sensor readings + 2 presence flags"}})
 
+;; doc: `learn--space-spec` — 查特征空间规格，未声明返回 nil。
+;; doc:
+;; doc: nil 即拒绝：输入宽度与 encoder 身份是工件的一部分，模型不能对着
+;; doc: 未知空间构建。
 (defn learn--space-spec [space]
   ;; Returns the spec for `space`, or nil when the space is undeclared.
   ;; A nil spec is a refusal: the model cannot be built against an
@@ -58,6 +99,10 @@
   ;; part of the artifact.
   (get learn--space-specs space nil))
 
+;; doc: `learn--spaces-equal?` — 两个空间 id 是否指同一（已声明的）空间。
+;; doc:
+;; doc: 要求双方规格存在且宽度、encoder id、space-version 全部相等；
+;; doc: 近似匹配不算匹配。
 (defn learn--spaces-equal? [a b]
   ;; Two feature spaces are equal only when they share the same id and
   ;; version. A near-match is not a match: a 258 vs 260 swap would feed
@@ -67,9 +112,17 @@
          (= (get spec-a :width 0) (get spec-b :width 0))
          (= (get spec-a :encoder-id "") (get spec-b :encoder-id ""))
          (= (get spec-a :space-version "") (get spec-b :space-version "")))))
+;; doc: `learn--decidable` — 行是否可判定：image_present 与 numeric_present 同时为真。
+;; doc:
+;; doc: 两种键形（:image_present / :image-present）都接受；监督与评估只统计可判定行。
 (defn learn--decidable [row]
   (and (learn--get row :image_present (learn--get row :image-present false))
        (learn--get row :numeric_present (learn--get row :numeric-present false))))
+;; doc: `learn--read-gvd1` — 解析 GVD1 二进制数据集为行向量。
+;; doc:
+;; doc: 校验 magic "GVD1"、头长不越界、stride ≥ 272 且记录区域按 stride 整除；
+;; doc: 每条记录解码出 :observation-id（"gvd1:路径:序号"）、:scene_id、双
+;; doc: presence、:label、:flags、2 个 f32 读数与 256 个像素。
 (defn learn--read-gvd1 [path]
   (let* [blob (host/fs-read path) size (host/byte-length blob)
          magic (host/bytes-utf8 (host/byte-slice blob 0 4))
@@ -94,6 +147,11 @@
                 :pixels (map (fn [j] (host/binary-decode "u8" blob (+ p 16 j))) (range 256))}))
            (range (/ (- size start) stride))))))
 
+;; doc: `learn--linear-init` — 初始化一个线性层，返回 {:w :b :in :out :trainable}。
+;; doc:
+;; doc: params 中已有该层（键为层名 keyword）则校验输入/输出宽度后原样装载，
+;; doc: bias 缺省全 0；否则以后端 rand 均匀初始化到 ±1/√input-width。权重是否
+;; doc: requires_grad 由 trainable 决定。
 (defn learn--linear-init [model layer input-width output-width params trainable]
   (let* [key (str layer) w (str key ".weight") b (str key ".bias")
          entry (learn--get params (keyword key) nil)
@@ -115,6 +173,14 @@
         (learn--call model {:op "create" :out b :data bias :shape [output-width] :requires_grad trainable})))
     {:w w :b b :in input-width :out output-width :trainable trainable}))
 
+;; doc: `learn--build` — 在张量后端上构建完整模型。
+;; doc:
+;; doc: 解析 feature-space 规格定输入宽度（默认空间随有无 graph 取 260@1 或
+;; doc: 258@1）；无显式 graph 时用默认三层 linear→relu→linear（输出 "h1"），
+;; doc: 有 graph 时按 :ops 逐算子构建（支持 linear/concat/normalize/relu/
+;; doc: softmax/input）。trainable 列表校验后决定各层 requires_grad，seed 播种，
+;; doc: adam-create 建优化器，最后 drop 构建期临时张量。返回含 :layers :ops
+;; doc: :fused :output :parameters :optimizer 与空间三元组的 model map。
 (defn learn--build [tensor config]
   (let* [graph (learn--get config :graph nil)
          space (learn--get config :feature-space (if (nil? graph) "grove.fused/260@1" "grove.fused/258@1"))
@@ -162,6 +228,10 @@
       (learn--call complete {:op "adam-create" :name optimizer :parameters parameters :lr (learn--get config :lr 0.02)})
       (learn--drop-since complete 0) complete)))
 
+;; doc: `learn--forward-values` — 按 :ops 逐算子前向，返回各节点输出引用的 map。
+;; doc:
+;; doc: 初始为 {fused 引用 x}；linear/relu/softmax 有实现，其余 kind 原样跳过，
+;; doc: 返回 map 只含有实现节点的输出。
 (defn learn--forward-values [model x]
   (reduce (fn [values o]
             (let* [kind (learn--get o :kind nil) key (learn--get o :output nil)
@@ -172,13 +242,22 @@
                     ((= kind "softmax") (put values key (learn--op model "softmax" [input] {:dim 1})))
                     (else values))))
           {(get model :fused) x} (get model :ops)))
+;; doc: `learn--forward` — 前向到模型输出节点：返回 :output 层的输出张量引用。
 (defn learn--forward [model x] (get (learn--forward-values model x) (get model :output)))
+;; doc: `learn--input` — 把一批行特征化，建成 [行数, input-width] 的 float32 批量输入张量。
 (defn learn--input [model rows]
   (learn--create model (learn--flat (map (fn [r] (learn--features r (get model :feature-space))) rows))
                  [(count rows) (get model :input-width)] "float32"))
+;; doc: `learn--pick` — 从 n 个候选中随机抽样，返回至多 cap 个索引。
+;; doc:
+;; doc: 用后端 randperm 生成随机排列后取前 min(n, cap) 个。
 (defn learn--pick [model n cap]
   (let* [order (learn--op model "randperm" [] {:n n})]
     (slice (learn--value model order) 0 (if (< n cap) n cap))))
+;; doc: `learn--weighted-ce` — 掩码加权交叉熵：sum(ce·mask) / clamp(sum(mask), min=1)。
+;; doc:
+;; doc: targets/mask 转为 int64/float32 张量；ce 按 "none" 归约逐元素取出，
+;; doc: mask=0 的行（不可判定）不计入。
 (defn learn--weighted-ce [model logits targets mask]
   (let* [y (learn--create model targets [(count targets)] "int64")
          m (learn--create model mask [(count mask)] "float32")
@@ -186,27 +265,45 @@
          total (learn--op model "sum" [(learn--op model "mul" [ce m] {})] {})
          divisor (learn--op model "clamp" [(learn--op model "sum" [m] {})] {:min 1.0})]
     (learn--op model "div" [total divisor] {})))
+;; doc: `learn--source-id` — 行的来源 id：:signal-id 优先，缺省用 :observation-id。
 (defn learn--source-id [row]
   (learn--get row :signal-id (learn--get row :observation-id nil)))
+;; doc: `learn--source-allowed` — 训练来源许可闸门：不通过即报错，通过原样返回 row。
+;; doc:
+;; doc: 拒绝三类来源：:retracted 为真、:licence 为 "forbidden" 或 "display-only"
+;; doc: （:licence 缺省 "train-student"）。
 (defn learn--source-allowed [row]
   (learn--require (not (learn--get row :retracted false)) "retracted training source")
   (learn--require (not (= "forbidden" (learn--get row :licence "train-student"))) "forbidden training source")
   (learn--require (not (= "display-only" (learn--get row :licence "train-student"))) "display-only training source") row)
+;; doc: `learn--temper` — 温度软化：概率 p^(1/温度) 后按行归一化。
+;; doc:
+;; doc: p 先 clamp 到 ≥1e-12 避免零底数；温度必须为正（由调用方校验）。
 (defn learn--temper [model soft temperature]
   (let* [p (learn--op model "clamp" [soft] {:min 0.000000000001})
          power (learn--scalar model (/ 1.0 temperature))
          scaled (learn--op model "pow" [p power] {})
          total (learn--op model "sum" [scaled] {:dim 1 :keepdim true})]
     (learn--op model "div" [scaled total] {})))
+;; doc: `learn--soft-loss` — 软蒸馏损失：各行 sum(软化教师分布 · log-softmax(logits)) 的均值取负。
+;; doc:
+;; doc: 教师分数先经 learn--temper 按 temperature 软化；即温度化 KL 的逐行
+;; doc: 交叉熵项（KL 常数项对梯度无贡献而省去）。
 (defn learn--soft-loss [model logits scores temperature]
   (let* [target (learn--create model (learn--flat scores) [(count scores) (count (first scores))] "float32")
          tempered (learn--temper model target temperature)
          logq (learn--op model "log-softmax" [logits] {:dim 1})]
     (learn--op model "neg" [(learn--op model "mean" [(learn--op model "sum" [(learn--op model "mul" [tempered logq] {})] {:dim 1})] {})] {})))
+;; doc: `learn--chosen` — 所选动作的平均 log 概率：log-softmax 后按动作索引 gather 再取均值。
+;; doc:
+;; doc: actions 是各行所选动作下标，建成 [n,1] int64 索引张量。
 (defn learn--chosen [model logits actions]
   (let* [logp (learn--op model "log-softmax" [logits] {:dim 1})
          indexes (learn--create model actions [(count actions) 1] "int64")]
     (learn--op model "mean" [(learn--op model "gather" [logp indexes] {:dim 1})] {})))
+;; doc: `learn--trajectory-loss` — 单条轨迹的 REINFORCE 损失：-advantage × 平均选中动作 log 概率。
+;; doc:
+;; doc: 轨迹非空且 states/actions 等长，否则报错；advantage 已由调用方减去基线。
 (defn learn--trajectory-loss [model trajectory advantage]
   (let* [states (learn--get trajectory :states []) actions (learn--get trajectory :actions [])]
     (learn--require (> (count states) 0) "empty trajectory")
@@ -215,10 +312,20 @@
            selected (learn--chosen model (learn--forward model x) actions)]
       (learn--op model "mul" [selected (learn--scalar model (- 0.0 advantage))] {}))))
 
+;; doc: `learn--env-state` — lineworld 单步状态编码为输入宽度向量。
+;; doc:
+;; doc: 下标 = 当前位置处 1.0；下标 = width 处为归一化位置 position/(width-1)
+;; doc: （width≤1 时除以 1）；下标 = width+1 处到达目标为 1.0 否则 0；其余 0。
 (defn learn--env-state [model position env]
   (let* [width (learn--get env :width 6) goal (learn--get env :goal (- width 1))]
     (map (fn [i] (cond ((= i position) 1.0) ((= i width) (/ position (if (> width 1) (- width 1) 1.0)))
                       ((= i (+ width 1)) (if (= position goal) 1.0 0.0)) (else 0.0))) (range (get model :input-width)))))
+;; doc: `learn--rollout` — 在 lineworld 中走一条轨迹，返回 {:states :actions :return :steps :terminated}。
+;; doc:
+;; doc: 环境校验：width>1、width+2 ≤ 输入宽度、goal 在界内、max_steps>0。
+;; doc: greedy 为真用 argmax 选动作，否则按 softmax 采样；每步奖励为
+;; doc: :step_reward（缺省 -0.05）加到达目标的 :goal_reward（缺省 1.0），
+;; doc: 到达 goal 或步数用尽即终止，每步后 drop 当步临时张量。
 (defn learn--rollout [model env greedy]
   (let* [width (learn--get env :width 6) goal (learn--get env :goal (- width 1)) max-steps (learn--get env :max_steps 20)]
     (learn--require (and (> width 1) (<= (+ width 2) (get model :input-width)) (>= goal 0) (< goal width) (> max-steps 0)) "invalid lineworld environment")
@@ -237,6 +344,18 @@
           (learn--drop-since model start)
           (recur next-position (vector-conj states state) (vector-conj actions action) (+ total reward) (+ step 1)))))))
 
+;; doc: `learn--objective` — 按配方构建损失图，返回 {:loss :consumed :metrics}。
+;; doc:
+;; doc: 各配方：supervised@1 与 hard-distill@1 用掩码加权 CE（标签取切分
+;; doc: :label 或教师 :hard，255 视为不可判定），soft-distill@1 校验词表/
+;; doc: 温度/概率和后用温度化 KL；preference@1 过滤弃权对后做 logsigmoid
+;; doc: 成对损失（abstain-is-loss 被拒绝）；demonstration@1 只在合同
+;; doc: :legal-actions 内做掩码 CE；self-supervised@1 随机掩码像素重建 MSE
+;; doc: （合同 :task-gate 必在，解码器固定不可训练）；environment-feedback@1
+;; doc: 校验延迟结果的轨迹归属后按轨迹汇回报酬做 REINFORCE；policy-gradient@1
+;; doc: 在受限 lineworld（动作集/奖励/终止合同逐一校验）做减基线 REINFORCE。
+;; doc: 监督/偏好/示范批量抽样至多 64 行，环境反馈至多 32 条轨迹。未知配方
+;; doc: 或合同不符一律报错。
 (defn learn--objective [model request contract]
   (let* [recipe (learn--get request :recipe "supervised@1") rows (learn--get request :rows [])
          out (get (get (get model :layers) (get model :output)) :out 0)]
@@ -334,12 +453,23 @@
             :metrics {:batch_return baseline :actions actions :termination (learn--get contract :termination nil) :reward (learn--get contract :reward nil)}})))
       (else (error (str "learning: unsupported recipe " recipe))))))
 
+;; doc: `learn--ensure-decoder` — 保证 self-supervised 所需的重建解码器存在。
+;; doc:
+;; doc: 模型无 :decoder 时以 "h0" 层输出宽为输入、模型输入宽为输出建一个
+;; doc: 不可训练的线性层（历史上的固定种子解码器：只动表示，投影固定），
+;; doc: 并 assoc 进模型。
 (defn learn--ensure-decoder [model]
   (if (nil? (get model :decoder nil))
     (let* [hidden (get (get (get model :layers) "h0") :out)
            decoder (learn--linear-init model "reconstruction" hidden (get model :input-width) {} false)]
       ;; Historic reconstruction uses a fixed seeded decoder; only the representation moves.
       (assoc model :decoder decoder)) model))
+;; doc: `learn--train-step` — 执行一次完整训练步，返回 {:model :step :loss :metrics :consumed :source-records}。
+;; doc:
+;; doc: 流程：从注册表装入配方 contract（request 未带时）→ 校验步数预算 →
+;; doc: self-supervised 先 ensure-decoder → learn--objective 建损失并读回数值
+;; doc: → zero-grad/backward/adam-step → 步数 +1 → drop 本步临时张量。
+;; doc: :consumed 为消费行的来源 id（剔除 nil），:source-records 保留原始行。
 (defn learn--train-step [model request]
   (let* [recipe (learn--get request :recipe "supervised@1")
          contract (learn--get request :contract (recipes--lookup (recipes--load-registry) recipe))
@@ -357,6 +487,10 @@
     {:model active :step (learn--counter (get active :step-counter)) :loss loss :metrics (get objective :metrics)
      :consumed (filter (fn [id] (not (nil? id))) (map learn--source-id (get objective :consumed)))
      :source-records (get objective :consumed)}))
+;; doc: `learn--evaluate` — 批量前向评估，返回 {:predictions :logits :decidable :correct :accuracy}。
+;; doc:
+;; doc: :predictions 为 argmax 结果；只在可判定行上与 :label 比对计准确率，
+;; doc: 无可判定行时 :accuracy 为 nil。评估期临时张量随后 drop。
 (defn learn--evaluate [model rows]
   (let* [start (learn--counter (get model :counter)) x (learn--input model rows)
          logits (learn--forward model x) predictions (learn--value model (learn--op model "argmax" [logits] {:dim 1}))
@@ -365,6 +499,11 @@
          n (count indexes) values (learn--value model logits)]
     (learn--drop-since model start)
     {:predictions predictions :logits values :decidable n :correct correct :accuracy (if (= n 0) nil (/ correct (* n 1.0)))}))
+;; doc: `learn--export` — 导出快照 map，schema "zio.learning.state/1"。
+;; doc:
+;; doc: 携带 config、特征空间三元组（id/宽度/encoder id/版本）、layers/ops/
+;; doc: fused/output/parameters/optimizer/decoder、步数与张量计数器，以及
+;; doc: 张量后端整体状态 :tensor_state。
 (defn learn--export [model]
   {:schema "zio.learning.state/1" :config (get model :config)
    :feature-space (get model :feature-space)
@@ -376,6 +515,11 @@
    :optimizer (get model :optimizer) :decoder (get model :decoder nil)
    :step (learn--counter (get model :step-counter)) :counter (learn--counter (get model :counter))
    :tensor_state (learn--call model {:op "state-export"})})
+;; doc: `learn--import` — 从快照恢复模型，返回可用 model。
+;; doc:
+;; doc: 校验 schema 与特征空间：空间必须已注册，且快照的宽度/encoder id/版本
+;; doc: 与注册表逐一相符 —— 异空间快照是外来快照，拒绝而不静默重定输入宽度。
+;; doc: 随后导入张量状态、按快照重建 model map 并恢复两个计数器。
 (defn learn--import [tensor snapshot]
   (learn--require (= "zio.learning.state/1" (learn--get snapshot :schema nil)) "unsupported learning state")
   ;; The feature-space width, encoder id and space version travel with
