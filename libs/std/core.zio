@@ -194,5 +194,48 @@
       (reduce vector-conj to from))))
 
 
+;; ── Threading ────────────────────────────────────────────────
+;; Chaining for every value kind: ZOS objects, maps, JS host objects
+;; (wasm), plain functions. (-> p (slot-value :x) inc) reads as
+;; (inc (slot-value p :x)); the ZOS call convention (gf obj args) plus
+;; -> is the supported chaining story — see ADR-020.
+
+;; doc: (core--snoc coll x) — coll with x appended in last position.
+;; doc: Internal helper for ->>; nil is the empty list here.
+(defn core--snoc [coll x]
+  (if (nil? coll)
+    (list x)
+    (cons (car coll) (core--snoc (cdr coll) x))))
+
+;; doc: (-> x & forms) — thread x as the FIRST argument of each form.
+;; doc: (-> p (slot-value :x) inc) → (inc (slot-value p :x)); a bare form
+;; doc: is called with x: (-> coll first) → (first coll). No forms → x.
+(defmacro -> [x & forms]
+  (if (or (nil? forms) (= (count forms) 0))
+    x
+    (let* [form (car forms)
+           more (cdr forms)
+           stepped (if (list? form)
+                     (cons (car form) (cons x (cdr form)))
+                     (list form x))]
+      (if (nil? more)
+        stepped
+        (cons '-> (cons stepped more))))))
+
+;; doc: (->> x & forms) — thread x as the LAST argument of each form.
+;; doc: (->> [1 2 3] (map inc) (reduce + 0)); bare forms append x as the
+;; doc: sole argument. No forms → x.
+(defmacro ->> [x & forms]
+  (if (or (nil? forms) (= (count forms) 0))
+    x
+    (let* [form (car forms)
+           more (cdr forms)
+           stepped (if (list? form)
+                     (core--snoc form x)
+                     (list form x))]
+      (if (nil? more)
+        stepped
+        (cons '->> (cons stepped more))))))
+
 ;; ── Module export marker ─────────────────────────────────────
 ;; All defs above are implicitly exported.

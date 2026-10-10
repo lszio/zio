@@ -587,3 +587,40 @@ fn misplaced_unquote_and_bad_splice_are_refused() {
     let dangling = run("`(a ~)").unwrap_err().to_string();
     assert!(!dangling.is_empty());
 }
+
+// ── threading macros (chaining) ───────────────────────────────────
+
+#[test]
+fn threading_threads_first_and_last_arguments() {
+    for (src, expected) in [
+        ("(-> 5 inc inc)", "7"),
+        ("(-> {:a 1} (get :a) inc)", "2"),
+        ("(-> [1 2 3] first)", "1"),
+        // A bare form is called with the threaded value.
+        ("(-> [1 2 3] rest (first))", "2"),
+        // ->> threads as the last argument.
+        ("(->> [1 2 3] (map inc) (reduce + 0))", "9"),
+        ("(->> 10 (- 3))", "-7"),
+        // Zero forms is identity.
+        ("(-> 7)", "7"),
+        ("(->> 7)", "7"),
+    ] {
+        let value = run(src).unwrap_or_else(|e| panic!("{src} failed: {e}"));
+        assert_eq!(value.to_string(), expected, "{src} produced {value}");
+    }
+}
+
+#[test]
+fn threading_composes_with_macros_and_zos_calls() {
+    // A macro call in the chain expands before threading continues.
+    let expanded = run("(defmacro twice [e] `(inc ~e)) (-> 1 twice twice)")
+        .unwrap_or_else(|e| panic!("macro chain failed: {e}"));
+    assert_eq!(expanded.to_string(), "3");
+    // The ZOS convention (gf obj args) threads the object first.
+    let zos = run(
+        "(defclass pt nil ((x :initarg :x))) \
+         (-> (make-instance pt :x 5) (slot-value :x) (+ 5))",
+    )
+    .unwrap_or_else(|e| panic!("zos chain failed: {e}"));
+    assert_eq!(zos.to_string(), "10");
+}

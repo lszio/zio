@@ -49,15 +49,19 @@ const presets = {
 // langs/cli/tests/site_presets.rs covers the original native programs;
 // js/* builtins are WASM-only (langs/core/src/wasm.rs).
 const snippets = {
-  jsinterop: `;; Real-time JavaScript & Web Interoperability in WASM
-;; Execute arbitrary JS expressions directly from Zio:
-(js/eval "document.querySelector('.hero h1').style.color = '#00f2fe'")
+  jsinterop: `;; JS 互操作：JS 对象是一等值，用 -> 链式调用
+;; js/eval 返回真值：字符串/数字直接映射，对象成为 #<js-object> 句柄
 
-;; Manipulate DOM elements natively:
-(js/dom-set-text ".terminal-title" "⚡ Zio WASM Engine Active")
+;; 链式读取：window → document → title
+(-> (js/eval "window")
+    (js/prop "document")
+    (js/prop "title")
+    js/console-log)
 
-;; Output to browser console:
-(js/console-log "Hello from real Zio WASM engine in browser!")`,
+;; 句柄存变量后属性写入 + 方法调用
+(def hero (js/eval "document.querySelector('.hero h1')"))
+(js/set hero "textContent" "⚡ Zio WASM Engine Active")
+(-> hero (js/call "getAttribute" "class") js/console-log)`,
 
   syntax: `;; syntax-rules hygiene subset
 (def x 1)

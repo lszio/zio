@@ -73,6 +73,146 @@ fn js_error(error: EvalError) -> JsValue {
     )
 }
 
+// ── First-class JS values ─────────────────────────────────────────
+// Any JsValue without a natural Zio primitive mapping becomes an opaque
+// ZOS object (`#<js-object>`), so a handle returned by one call can feed
+// the next: (-> (js/eval "window") (js/prop "document") (js/prop "title")).
+// Threading is the ONLY chaining machinery — the objects themselves are
+// inert, and every operation is an ordinary namespaced function.
+
+#[cfg(feature = "wasm")]
+static NEXT_JS_IDENTITY: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+#[cfg(feature = "wasm")]
+thread_local! {
+    static JS_OBJECT_CLASS: std::sync::Arc<crate::zos::object::Class> = std::sync::Arc::new(
+        crate::zos::object::Class {
+            name: "js-object".into(),
+            superclasses: vec![],
+            slots: vec![],
+            cpl: vec!["js-object".into()],
+        },
+    );
+}
+
+#[cfg(feature = "wasm")]
+struct ForeignJs {
+    header: crate::zos::object::ObjectHeader,
+    value: JsValue,
+}
+
+#[cfg(feature = "wasm")]
+impl ForeignJs {
+    fn new(value: JsValue) -> Self {
+        ForeignJs {
+            header: crate::zos::object::ObjectHeader {
+                class: JS_OBJECT_CLASS.with(|c| c.clone()),
+                flags: crate::zos::object::ObjectFlags::NONE,
+                identity: Some(NEXT_JS_IDENTITY.fetch_add(1, std::sync::atomic::Ordering::Relaxed)),
+            },
+            value,
+        }
+    }
+}
+
+#[cfg(feature = "wasm")]
+impl std::fmt::Debug for ForeignJs {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "ForeignJs({self:?})")
+    }
+}
+
+#[cfg(feature = "wasm")]
+impl crate::zos::object::ZosObject for ForeignJs {
+    fn header(&self) -> &crate::zos::object::ObjectHeader {
+        &self.header
+    }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+    fn clone_box(&self) -> Box<dyn crate::zos::object::ZosObject> {
+        Box::new(ForeignJs::new(self.value.clone()))
+    }
+}
+
+/// Map a JS result into a Zio value: primitives become primitives,
+/// everything else stays an opaque first-class object.
+#[cfg(feature = "wasm")]
+fn js_to_value(value: JsValue) -> Value {
+    if value.is_null() || value.is_undefined() {
+        Value::Nil
+    } else if let Some(b) = value.as_bool() {
+        Value::Boolean(b)
+    } else if let Some(n) = value.as_f64() {
+        if n.fract() == 0.0 && n >= i64::MIN as f64 && n <= i64::MAX as f64 {
+            Value::Integer(n as i64)
+        } else {
+            Value::Float(n)
+        }
+    } else if let Some(s) = value.as_string() {
+        Value::String(s)
+    } else {
+        Value::Object(Box::new(ForeignJs::new(value)))
+    }
+}
+
+/// Pass a Zio value into a JS call. Foreign JS objects unwrap to their
+/// original handle; ZOS objects and other composite values are refused
+/// rather than silently stringified.
+#[cfg(feature = "wasm")]
+fn value_to_js(value: &Value) -> Result<JsValue, EvalError> {
+    match value {
+        Value::Nil => Ok(JsValue::NULL),
+        Value::Boolean(b) => Ok(JsValue::from_bool(*b)),
+        Value::Integer(i) => {
+            if (*i as f64).is_finite() {
+                Ok(JsValue::from_f64(*i as f64))
+            } else {
+                Err(EvalError::custom(format!(
+                    "integer {i} is not a finite JS number"
+                )))
+            }
+        }
+        Value::Float(f) => {
+            if f.is_finite() {
+                Ok(JsValue::from_f64(*f))
+            } else {
+                Err(EvalError::custom(format!(
+                    "float {f} is not a finite JS number"
+                )))
+            }
+        }
+        Value::String(s) => Ok(JsValue::from_str(s)),
+        Value::Object(o) => match o.as_any().downcast_ref::<ForeignJs>() {
+            Some(foreign) => Ok(foreign.value.clone()),
+            None => Err(EvalError::custom(
+                "cannot pass a ZOS object to JavaScript (only primitives and js handles)",
+            )),
+        },
+        other => Err(EvalError::custom(format!(
+            "cannot pass a {} to JavaScript",
+            other.value_type()
+        ))),
+    }
+}
+
+/// Extract the JS handle from a value that must be a JS object.
+#[cfg(feature = "wasm")]
+fn js_handle(value: &Value) -> Result<JsValue, EvalError> {
+    match value {
+        Value::Object(o) => match o.as_any().downcast_ref::<ForeignJs>() {
+            Some(foreign) => Ok(foreign.value.clone()),
+            None => Err(EvalError::custom(
+                "expected a JS object (from js/eval or js/prop); got a ZOS object",
+            )),
+        },
+        other => Err(EvalError::custom(format!(
+            "expected a JS object (from js/eval or js/prop); got {}",
+            other.value_type()
+        ))),
+    }
+}
+
 #[cfg(feature = "wasm")]
 #[wasm_bindgen]
 pub fn parse_zio(source: &str, name: &str) -> Result<String, JsValue> {
@@ -91,7 +231,8 @@ pub fn parse_zio(source: &str, name: &str) -> Result<String, JsValue> {
 
 #[cfg(feature = "wasm")]
 fn register_js_builtins(env: &std::sync::Arc<Env>) {
-    // (js/eval code_str)
+    // (js/eval code_str) — result maps to Zio values; JS objects stay
+    // first-class handles so -> can chain into them.
     env.set(
         "js/eval".into(),
         Value::NativeFunction(NativeFn::new("js/eval", |args, _| {
@@ -103,9 +244,97 @@ fn register_js_builtins(env: &std::sync::Arc<Env>) {
                 other => return Err(EvalError::type_error("string", other.value_type())),
             };
             match js_sys::eval(code) {
-                Ok(val) => Ok(Value::String(format!("{val:?}"))),
+                Ok(val) => Ok(js_to_value(val)),
                 Err(err) => Err(EvalError::custom(format!("js/eval error: {err:?}"))),
             }
+        })),
+    );
+
+    // (js/prop obj name) — property read; objects stay first-class.
+    env.set(
+        "js/prop".into(),
+        Value::NativeFunction(NativeFn::new("js/prop", |args, _| {
+            if args.len() != 2 {
+                return Err(EvalError::wrong_arg_count(2, args.len()));
+            }
+            let target = js_handle(&args[0])?;
+            let name = match &args[1] {
+                Value::String(s) => JsValue::from_str(s),
+                other => {
+                    return Err(EvalError::type_error(
+                        "property name string",
+                        other.value_type(),
+                    ));
+                }
+            };
+            js_sys::Reflect::get(&target, &name)
+                .map(js_to_value)
+                .map_err(|err| EvalError::custom(format!("js/prop error: {err:?}")))
+        })),
+    );
+
+    // (js/set obj name value) — property write; returns true on success.
+    env.set(
+        "js/set".into(),
+        Value::NativeFunction(NativeFn::new("js/set", |args, _| {
+            if args.len() != 3 {
+                return Err(EvalError::wrong_arg_count(3, args.len()));
+            }
+            let target = js_handle(&args[0])?;
+            let name = match &args[1] {
+                Value::String(s) => JsValue::from_str(s),
+                other => {
+                    return Err(EvalError::type_error(
+                        "property name string",
+                        other.value_type(),
+                    ));
+                }
+            };
+            let payload = value_to_js(&args[2])?;
+            js_sys::Reflect::set(&target, &name, &payload)
+                .map(Value::Boolean)
+                .map_err(|err| EvalError::custom(format!("js/set error: {err:?}")))
+        })),
+    );
+
+    // (js/call obj method & args) — invoke a method on a JS object with
+    // Zio-typed arguments; the result maps back through js_to_value.
+    env.set(
+        "js/call".into(),
+        Value::NativeFunction(NativeFn::new("js/call", |args, _| {
+            if args.len() < 2 {
+                return Err(EvalError::wrong_arg_count(2, args.len()));
+            }
+            let target = js_handle(&args[0])?;
+            let method = match &args[1] {
+                Value::String(s) => JsValue::from_str(s),
+                other => {
+                    return Err(EvalError::type_error(
+                        "method name string",
+                        other.value_type(),
+                    ));
+                }
+            };
+            let function: js_sys::Function = js_sys::Reflect::get(&target, &method)
+                .map_err(|err| EvalError::custom(format!("js/call error: {err:?}")))?
+                .dyn_into()
+                .map_err(|_| {
+                    EvalError::custom(format!(
+                        "js/call: {} is not a function",
+                        method.as_string().unwrap_or_default()
+                    ))
+                })?;
+            let call_args: js_sys::Array = args
+                .iter()
+                .skip(2)
+                .map(value_to_js)
+                .collect::<Result<Vec<_>, _>>()?
+                .into_iter()
+                .collect();
+            function
+                .apply(&target, &call_args)
+                .map(js_to_value)
+                .map_err(|err| EvalError::custom(format!("js/call error: {err:?}")))
         })),
     );
 
