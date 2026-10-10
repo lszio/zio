@@ -5,31 +5,46 @@ import Base from '../../layouts/Base.astro';
 const entries = (await getCollection('api')).sort((a, b) => a.data.file.localeCompare(b.data.file));
 const base = import.meta.env.BASE_URL.replace(/\/$/, '');
 const total = entries.reduce((n, e) => n + e.data.symbolCount, 0);
+const libraryNames: Record<string, string> = {
+  std: 'Std · 标准库',
+  numa: 'Numa · 数值与张量',
+  rill: 'Rill · 命令行',
+  loom: 'Loom · Agent 与会话',
+  learning: 'Learning · 搜索与训练',
+};
+const libraries = [...new Set(entries.map((entry) => entry.data.file.split('/')[0]))];
 ---
-<Base title="库参考 — Zio" description="从仓库 Zio 源码的文档注释直接生成的库与函数参考。">
+<Base title="库参考 — Zio" description="按库阅读从 Zio 源码注释生成的模块与符号参考。">
   <section class="hero hero-page-head">
     <div class="container">
       <h1>库参考</h1>
       <p>
-        {entries.length} 个库文件、{total} 个公开符号，全部提取自仓库
-        <code>libs/</code> 源码中的文档注释——源码注释是唯一的文档来源，
-        页面随源码构建自动更新。
+        {entries.length} 个模块、{total} 个源码定义，按库归类。
+        详细签名和说明提取自 <code>libs/</code> 的源码注释；
+        先读库介绍了解用途与运行条件，再查阅具体模块。
       </p>
       <div class="hero-cta">
-        <a href={`${base}/syntax/`} class="btn btn-secondary">语法入门</a>
+        <a href={`${base}/libraries/`} class="btn btn-secondary">选择一个库</a>
         <a href={`${base}/docs/`} class="btn btn-secondary">文档</a>
         <a href={`${base}/playground/`} class="btn btn-primary">Playground</a>
       </div>
     </div>
   </section>
   <article class="section prose container">
-    {entries.map((entry) => (
+    {libraries.map((library) => (
       <section>
-        <h2><a href={`${base}/reference/${entry.id}/`}>{entry.data.title}</a></h2>
-        <p>
-          <code>{entry.data.file}</code> · {entry.data.symbolCount} 个符号：
-          {entry.data.symbols.map((s) => <code class="symbol-chip">{s.name}</code>)}
-        </p>
+        <h2>{libraryNames[library] ?? library}</h2>
+        {library in libraryNames && (
+          <p><a href={`${base}/libraries/${library}/`}>阅读用途、加载方式与示例 →</a></p>
+        )}
+        <ul>
+          {entries.filter((entry) => entry.data.file.split('/')[0] === library).map((entry) => (
+            <li>
+              <a href={`${base}/reference/${entry.id}/`}>{entry.data.title}</a>
+              {' — '}<code>{entry.data.file}</code> · {entry.data.symbolCount} 个源码定义
+            </li>
+          ))}
+        </ul>
       </section>
     ))}
   </article>

@@ -1,0 +1,109 @@
+---
+title: 参与 Zio 开发
+description: 搭建本地环境、找到源码与测试、改进库文档，并了解语言设计的背景。
+order: 10
+---
+
+## 从一个可复现的问题开始
+
+欢迎改进语言、库、工具和文档。先在 [GitHub](https://github.com/lszio/zio) 查找已有 issue；报告问题时附上最小 Zio 程序、运行方式、预期与实际结果，以及使用的版本和平台。提交改动时说明行为变化，并补充能够覆盖它的测试或示例。设计方向较大的改动，先讨论语义与兼容性，再展开实现。
+
+如果只是学习和使用语言，请从[学习路线](/docs/)与[库介绍](/libraries/)开始；这里的实现手册、决策记录和计划面向贡献者，不是用户必须阅读的前置课程。
+
+## 获取源码并运行 CLI
+
+准备 Git、stable Rust 工具链与 Cargo。站点开发另需 Bun；完整产品测试还需要 Python 与 CPU worker 环境。
+
+```sh
+git clone https://github.com/lszio/zio.git
+cd zio
+cargo build -p zio-cli
+cargo run -p zio-cli
+```
+
+REPL 中输入 `(+ 1 2 3)`，或用 `(load "examples/basics.zio")` 加载示例。源码示例目录与 `examples/manifest.tsv` 是寻找现有用法的入口。
+
+## 构建站点与浏览器引擎
+
+```sh
+cd apps/site
+bun install
+bun run dev
+# 静态构建与本地预览
+bun run build
+bun run preview
+```
+
+站点使用已提交的 WASM 引擎。修改 `langs/core/src/` 或 `libs/std/core.zio` 后，在仓库根目录重新生成引擎，然后构建站点，不能只更新页面而继续运行旧引擎：
+
+```sh
+rustup target add wasm32-unknown-unknown
+cargo install wasm-bindgen-cli --version 0.2.126 --locked
+./tools/build-wasm.sh
+cd apps/site
+bun run build
+```
+
+## 按改动范围运行检查
+
+语言与库改动先运行相关合同测试；提交前以仓库 CI 为准检查更完整的范围。以下命令在仓库根目录运行：
+
+```sh
+cargo build --workspace --all-targets
+cargo test -p zio-cli --test lib_contract
+cargo test -p zio-core --test self_hosting
+cargo fmt --all -- --check
+```
+
+完整 workspace 测试包含真实 worker 隔离合同。CI 使用以下 CPU 环境，并设置较大的 Rust 测试线程栈：
+
+```sh
+python3 -m venv .venv
+.venv/bin/python -m pip install \
+  --index-url https://download.pytorch.org/whl/cpu \
+  -r apps/grove/workers/torch/requirements.txt
+RUST_MIN_STACK=134217728 cargo test --workspace
+```
+
+相关隔离测试要求 Linux 用户、网络、PID 与挂载命名空间可用。缺失环境时的跳过不能当作完整产品验证。Clippy 的目标、排除项与允许列表以 [CI 配置](https://github.com/lszio/zio/blob/main/.github/workflows/ci.yml)为准，不另维护一份容易漂移的命令。站点改动运行 `bun run build`，并在浏览器检查改动页面和 Playground；构建通过不代表交互行为已经验证。
+
+## 找到应该修改的位置
+
+| 位置 | 用途 |
+| --- | --- |
+| `langs/core/` | 语言 reader、求值器与运行时 |
+| `langs/cli/` | 原生语言命令行入口 |
+| `libs/` | 用 Zio 编写的标准库与领域库 |
+| `contribs/native/` | 原生宿主能力与适配器 |
+| `apps/site/` | 本站、文档展示与 Playground |
+| `apps/grove/` | 独立应用与 worker；不是语言入门必需项 |
+| `examples/` | 可运行的语言示例 |
+| `docs/`、`book/`、`blog/` | 规范、实现手册与开发记录 |
+| `tools/` | 构建、安装与合同检查脚本 |
+
+先复用附近的实现模式与测试，再增加新接口。涉及能力授权、宿主调用或不可信代码的改动，需要同时检查安全边界，而不只检查返回值。
+
+## 库文档跟随源码
+
+库参考由 `libs/**/*.zio` 中的注释生成，**源码注释是库 API 文档的唯一来源**。文件顶部连续的 `;;` 块介绍模块；符号文档放在顶层定义的正上方，中间不要留空行。用 `;; doc:` 写签名、用途、参数、返回值、边界与真实示例；缩进的示例会形成代码块。
+
+```lisp
+;; doc: (double x) — 返回 x 的两倍。
+;; doc:
+;; doc:   (double 3)
+(defn double [x] (* x 2))
+```
+
+更新注释后构建站点，检查对应参考页。详细格式见[库文档注释约定](/docs/libdoc-convention/)。不要手写第二份同名 API 说明，让它与源码逐渐分叉。
+
+## 设计背景与开发档案
+
+- [实现手册](/book/)：从 reader、求值循环到宏与对象系统的深入阅读。
+- [架构决策记录](/docs/adrs/)：理解重要设计选择及其约束。
+- [系统架构](/docs/zio-architecture/)与[求值管线](/docs/eval-pipeline/)：定位组件和执行路径。
+- [路线图](/docs/roadmap/)与[批准的目录计划](/docs/superpowers/plans/2026-10-07-language-first-layout/)：了解方向；计划不是现有能力的保证。
+- [设计与计划目录](https://github.com/lszio/zio/tree/main/docs/superpowers)：浏览其他规格和工作计划。
+- [开发札记](/blog/)与[全部文档源文件](https://github.com/lszio/zio/tree/main/docs)：查找历史讨论和档案。
+- [当前能力说明](/docs/feature-matrix/)：提交文档与示例前核对可用能力，避免把设计目标写成实现承诺。
+
+提交 pull request 时附上问题背景、改动范围、实际运行的检查及结果；无法运行的检查说明原因，不用推测代替证据。

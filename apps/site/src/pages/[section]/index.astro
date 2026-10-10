@@ -7,25 +7,52 @@ export async function getStaticPaths() {
 }
 
 const section = Astro.params.section as 'docs' | 'book' | 'blog';
-const titles = { docs: 'Zio 文档', book: 'Zio 语言与实现手册', blog: 'Zio 开发札记' };
+const titles = { docs: 'Zio 学习路线', book: 'Zio 语言与实现手册', blog: 'Zio 开发札记' };
 const entries = (await getCollection(section)).sort((a, b) => a.id.localeCompare(b.id));
 const base = import.meta.env.BASE_URL.replace(/\/$/, '');
 ---
-<Base title={`${titles[section]} — Zio`} description="从语言介绍和语法开始，阅读仓库中的语言设计、实现手册与开发记录。">
+<Base title={`${titles[section]} — Zio`} description={section === 'docs' ? '从表达式和函数开始，逐步学习宏、对象与库。' : '面向贡献者的语言实现手册与开发记录。'}>
   <section class="hero hero-page-head">
     <div class="container">
       <h1>{titles[section]}</h1>
-      <p>文档直接来自仓库根目录。历史设计与阶段记录不等于当前实现承诺；当前边界见能力矩阵。</p>
+      <p>{section === 'docs' ? '先写一个表达式，再把函数、数据与库组合成程序。按下面的顺序学习，也可以随时进入 Playground 实验。' : '这里保留语言实现的深入讲解与开发记录。历史设计和计划有自己的上下文，不代表当前能力承诺。'}</p>
       <div class="hero-cta">
         <a href={`${base}/intro/`} class="btn btn-primary">语言介绍</a>
         <a href={`${base}/syntax/`} class="btn btn-secondary">语法入门</a>
-        <a href={`${base}/book/`} class="btn btn-secondary">手册</a>
-        <a href={`${base}/blog/`} class="btn btn-secondary">札记</a>
+        <a href={`${base}/libraries/`} class="btn btn-secondary">库介绍</a>
         <a href={`${base}/playground/`} class="btn btn-secondary">Playground</a>
       </div>
     </div>
   </section>
   <article class="section prose container">
-    <ul>{entries.map((entry) => <li><a href={`${base}/${section}/${entry.id}/`}>{entry.body?.match(/^#\s+(.+)$/m)?.[1] ?? entry.id}</a></li>)}</ul>
+    {section === 'docs' ? (
+      <>
+        <h2>从这里开始</h2>
+        <ol>
+          <li><a href={`${base}/intro/`}>认识 Zio</a>：了解 Lisp 的表达式、函数、数据与宏。</li>
+          <li><a href={`${base}/syntax/`}>语法入门</a>：逐步练习绑定、调用、条件与顺序求值。</li>
+          <li><a href={`${base}/playground/`}>Playground</a>：修改示例，观察结果和错误。</li>
+          <li><a href={`${base}/libraries/`}>选择库</a>：按问题找到模块与使用场景。</li>
+          <li><a href={`${base}/reference/`}>查阅库参考</a>：阅读签名、参数、语义与源码示例。</li>
+        </ol>
+        <h2>深入语言</h2>
+        <ul>
+          <li><a href={`${base}/book/03-Lisp语言入门/`}>Lisp 语言入门</a>：更多基础练习。</li>
+          <li><a href={`${base}/book/08-特殊形式详解/`}>特殊形式</a>：理解求值与控制结构。</li>
+          <li><a href={`${base}/book/10-宏系统与代码生成/`}>宏与代码生成</a>：从代码即数据走向语法扩展。</li>
+          <li><a href={`${base}/docs/zos-spec/`}>ZOS 对象系统规范</a>：类、通用函数与多分派；包含设计目标。</li>
+          <li><a href={`${base}/book/12-模块系统与包管理/`}>模块系统</a>：深入阅读模块组织与实现背景。</li>
+          <li><a href={`${base}/docs/zio-philosophy/`}>语言哲学</a>与<a href={`${base}/docs/glossary/`}>术语参考</a>：理解设计词汇。</li>
+          <li><a href={`${base}/docs/feature-matrix/`}>当前能力说明</a>：核对实验能力与尚未实现的目标。</li>
+        </ul>
+        <h2>参与开发与查找档案</h2>
+        <p>搭建本地环境、修改实现或库文档，请进入<a href={`${base}/contribute/`}>贡献指南</a>。完整<a href={`${base}/book/`}>实现手册</a>、<a href={`${base}/blog/`}>开发札记</a>、架构与计划集中在贡献入口，不作为使用语言的必修内容。</p>
+      </>
+    ) : (
+      <>
+        <p><a href={`${base}/contribute/`}>贡献指南与设计档案</a> · <a href={`${base}/docs/`}>返回语言学习路线</a></p>
+        <ul>{entries.map((entry) => <li><a href={`${base}/${section}/${entry.id}/`}>{entry.body?.match(/^#\s+(.+)$/m)?.[1] ?? entry.id}</a></li>)}</ul>
+      </>
+    )}
   </article>
 </Base>

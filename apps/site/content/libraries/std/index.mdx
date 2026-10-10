@@ -1,0 +1,50 @@
+---
+title: Std · 标准库
+description: 用集合、宏与数据模型组织日常程序，从数据变换到小型事实查询。
+order: 21
+---
+
+## 从普通数据开始
+
+Std 提供日常 Lisp 编程的组合工具：序列变换、集合操作、控制与线程宏，以及可以按需引入的协议、实体和查询模块。它不要求使用 Agent 或学习系统，也不规定应用架构。
+
+例如，把一批数字筛选后变换，不必搭建流水线引擎；`pipeline` 宏会展开为普通函数调用：
+
+```lisp
+(load "libs/std/pipeline.zio")
+
+(def nums [1 2 3 4 5 6])
+(pipeline nums
+  (filter (fn [x] (> x 2)))
+  (map (fn [x] (* x 10))))
+;; 得到 (30 40 50 60)
+
+(pipeline nums
+  (filter (fn [x] (> x 2)))
+  (aggregate count))
+;; 得到 4
+```
+
+这个例子采用仓库 `examples/pipeline-demo.zio` 的调用形式。当前流水线阶段为 `filter`、`map`、`aggregate count` 和 `emit`；它没有独立调度器，也不会赋予展开目标函数额外权限。
+
+## 加载与运行条件
+
+`core.zio` 由标准启动流程加载；其他文件在原生会话中用 `(load "libs/std/<模块>.zio")` 按需引入。以上路径以仓库根目录为工作目录。浏览器没有这些文件路径的原生读取能力；只有相关定义已进入会话，才能调用对应宏或函数。
+
+集合、流水线和 datom 查询不依赖外部服务。协议依赖语言的 ZOS 泛型函数分发；实体默认身份只在当前加载上下文内唯一，不等于密码学身份。需要跨进程的安全身份时，调用者必须显式提供身份生成器。持久化集合操作不会改变输入；map 迭代顺序未定义，不应把遍历顺序作为业务协议。
+
+## 详细文档：按任务阅读
+
+### 基础表达式与集合
+
+- [Core：基本组合子、序列与类型工具](/reference/std-core/) — 标准启动的基础定义，先从这里理解日常表达式的组合方式。
+- [Persistent：不可变集合操作](/reference/std-persistent/) — 向量、列表、map 与 map-backed set 的增删与合并；注意不同集合的加入位置和顺序约定。
+- [Pipeline：可展开的数据变换](/reference/std-pipeline/) — 适合可读地串联筛选、映射、计数与输出，详细页说明阶段语法。
+
+### 对象与事实
+
+- [Protocol：协议宏与泛型方法](/reference/std-protocol/) — 通过 `defprotocol` 与 `extend-type` 组织按类型分发的行为；这是实验性宏接口，不是完整 MOP 保证。
+- [Entity：身份与元数据](/reference/std-entity/) — 实体类、构造与身份获取；默认本地身份与可选身份源各有边界。
+- [Datalog：确定性的 datom 查询](/reference/std-datalog/) — 在 `[e a v]` 事实集合上做事务与合取连接。重复添加幂等，撤回删除精确三元组；不隐含 cardinality-one 或 schema 策略。规则、递归、谓词、聚合、否定与集合输入不受支持，调用会被拒绝。
+
+返回[库目录](/libraries/)，或在[完整参考索引](/reference/)查找模块。

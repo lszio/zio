@@ -82,3 +82,34 @@ publish scope should not stop the GitHub release from happening.
 - a real stdio language-server session, including the check that a
   document containing `(eval (spit ...))` is analyzed as text and never
   runs
+
+## Site version and build provenance
+
+The site reads its language version from `[workspace.package].version` in
+`Cargo.toml`; there is no separately maintained page version. A build is
+labelled a release only when its commit has the matching `v<version>` tag
+and its working tree is clean. Untagged, modified or unverifiable builds
+are labelled development builds. The footer shows the documentation build's
+branch, commit link and whether it includes uncommitted changes.
+
+Local builds read Git metadata. Source archives and Docker builds without
+Git show unavailable provenance unless CI supplies these build variables:
+
+| Variable | Value |
+|---|---|
+| `ZIO_BUILD_COMMIT` | Full hexadecimal commit SHA |
+| `ZIO_BUILD_BRANCH` | Branch name; empty for detached HEAD |
+| `ZIO_BUILD_TAG` | Exact tag on the built commit, such as `v0.2.0` |
+| `ZIO_BUILD_DIRTY` | `true` or `false`; omit if cleanliness is unknown |
+
+CI must derive these values from the checkout it actually builds, not from
+the latest branch tip or a requested tag. The site Dockerfile accepts the
+same names as build arguments and copies `Cargo.toml` for the version.
+Metadata is embedded at build time; rebuilding is required to update it.
+Historical documentation-version switching is not provided.
+
+Check release classification with:
+
+```sh
+node --test apps/site/src/lib/build-info.test.mjs
+```

@@ -1,100 +1,70 @@
 ---
 import Base from '../layouts/Base.astro';
 import Repl from '../components/Repl.astro';
-import CodeTabs from '../components/CodeTabs.astro';
-import { theorems, archLayers, roadmap } from '../data/content';
 const base = import.meta.env.BASE_URL.replace(/\/$/, '');
+const features = [
+  { title: '表达式组成程序', body: '用统一的 S 表达式描述计算。函数调用、条件判断和局部绑定可以自然组合。' },
+  { title: '函数与数据', body: '函数可以传递和返回；列表、向量、映射与集合帮助你组织数据，构建转换流程。' },
+  { title: '代码也是数据', body: '引用保留程序结构，宏在求值前变换表达式，让重复的写法成为可复用的语言表达。' },
+  { title: '对象与多分派', body: '用类描述对象，用通用函数和方法表达行为；根据参数类型选择合适的方法。' },
+  { title: '按需使用库', body: '从标准库出发，按任务选择数值计算、命令行、Agent 会话或学习策略库。' },
+  { title: '原生与浏览器', body: '在命令行运行脚本，或在浏览器使用 Playground。文件、网络和 JavaScript 能力由运行环境提供。' },
+];
+const scenes = [
+  { title: '脚本自动化', body: '组合函数、读写数据，用命令行参数连接日常任务。文件操作需要原生宿主。', href: '/libraries/rill/', label: 'Rill 命令行库' },
+  { title: '数据处理', body: '用集合操作、流水线和数据规则整理结构化信息。先从语言集合与标准库开始。', href: '/libraries/std/', label: '标准库' },
+  { title: '浏览器交互', body: '通过 JavaScript 互操作访问页面对象，在 Playground 修改代码并观察结果。', href: '/playground/', label: '打开 Playground' },
+  { title: '数值计算', body: '表达向量与张量计算。纯数值函数与依赖原生张量宿主的操作在库文档中分别说明。', href: '/libraries/numa/', label: 'Numa 数值库' },
+  { title: 'Agent 编排', body: '组织模型调用、工具和会话；需要相应模型、网络或进程宿主，不由浏览器自动提供。', href: '/libraries/loom/', label: 'Loom 会话库' },
+  { title: '学习与应用', body: '使用学习策略库组织评估与迭代，或了解建立在 Zio 之上的 Grove 应用。', href: '/libraries/learning/', label: 'Learning 库' },
+];
 ---
-<Base title="Zio — 现代通用 Lisp（Rust + WASM）" description="了解 Zio 语言与语法，阅读文档，在浏览器 Playground 编辑并运行真实 Zio WASM 程序。">
+<Base title="Zio — 通用 Lisp 编程语言" description="Zio 是 Lisp 家族的通用编程语言。从表达式、函数与数据开始，探索库与使用场景，在 Playground 运行代码。">
   <section class="hero">
     <div class="container hero-grid">
       <div class="hero-content">
-        <div class="eyebrow">
-          <span class="eyebrow-dot"></span>
-          General-Purpose Lisp • ZOS • Real WASM Runtime
-        </div>
-        <h1>A Modern General-Purpose Lisp.</h1>
-        <p>
-          Zio 是一门以同像性（Homoiconicity）为基石的现代通用脚本语言：一门语言覆盖从自动化脚本、服务编排到 Agent 应用的完整光谱。
-          当前由 Rust 实现并提供 WebAssembly，具备 CLOS/AMOP 方向的 ZOS 子集、syntax-rules 卫生子集与 JS / DOM 互操作；完整 MOP 为 Planned。
-        </p>
+        <div class="eyebrow">Lisp 家族 · 通用编程语言</div>
+        <h1>从一个表达式，<br />写出你的程序。</h1>
+        <p>Zio 是一门通用 Lisp 语言。以表达式组合计算，以函数处理数据，以宏扩展表达方式；从脚本与数据处理，到浏览器交互和建立自己的应用。</p>
         <div class="hero-cta">
-          <a href={`${base}/intro/`} class="btn btn-primary">认识 Zio 语言</a>
-          <a href={`${base}/syntax/`} class="btn btn-secondary">语法与文档 →</a>
-          <a href={`${base}/playground/`} class="btn btn-secondary">编辑并运行 Zio →</a>
+          <a href={`${base}/intro/`} class="btn btn-primary">认识 Zio</a>
+          <a href={`${base}/docs/`} class="btn btn-secondary">开始学习 →</a>
         </div>
       </div>
       <Repl />
     </div>
   </section>
-
-
-  <section class="section" id="philosophy">
+  <section class="section" id="language">
     <div class="container">
-      <div class="section-header">
-        <h2>正交严密的核心设计定理</h2>
-        <p>一门通用语言的设计原则——同样适用于脚本、服务与 Agent 编排</p>
-      </div>
+      <div class="section-header"><h2>小而一致的表达方式</h2><p>先理解语言，再选择解决问题的库。</p></div>
       <div class="grid-3">
-        {theorems.map((t) => (
-          <div class="card">
-            <div class="card-icon">{t.icon}</div>
-            <h3>{t.n}. {t.title}</h3>
-            <p set:html={t.body} />
-          </div>
-        ))}
+        {features.map((feature) => <div class="card"><h3>{feature.title}</h3><p>{feature.body}</p></div>)}
       </div>
+      <p class="section-link"><a href={`${base}/syntax/`}>阅读语法与示例 →</a></p>
     </div>
   </section>
-
-  <section class="section" id="architecture" style="background: rgba(0, 0, 0, 0.2);">
+  <section class="section" id="scenes">
     <div class="container">
-      <div class="section-header">
-        <h2>正交分层系统架构</h2>
-        <p>langs 是语言工具链，libs 是 Zio 库，contribs 是宿主基础设施，apps 是独立应用；Grove 的 Rust legacy 不代表 Zio 应用目标已完成</p>
-      </div>
-      <div class="arch-box">
-        {archLayers.map((l) => (
-          <div class="arch-layer">
-            <div class="arch-title">{l.title}</div>
-            <div class="arch-desc" set:html={l.desc} />
-          </div>
-        ))}
-      </div>
-    </div>
-  </section>
-
-  <section class="section" id="features">
-    <div class="container">
-      <div class="section-header">
-        <h2>核心特性与 JS 互操作演示</h2>
-        <p>体验 Zio 在 WASM 环境下的全量求值与 JavaScript 交互能力</p>
-      </div>
-      <CodeTabs />
-    </div>
-  </section>
-
-  <section class="section" id="roadmap">
-    <div class="container">
-      <div class="section-header">
-        <h2>路线图一览</h2>
-        <p>历史语言交付与 Planned 产品主线分开；编译器自举不等于编辑器或 APP 的 Zio 化</p>
-      </div>
+      <div class="section-header"><h2>用 Zio 做什么？</h2><p>同一门语言，不同的任务与运行环境。</p></div>
       <div class="grid-3">
-        {roadmap.map((r) => (
-          <div class="card" style={`border-left: 3px solid var(--accent-${r.accent});`}>
-            <div class="card-icon">{r.icon}</div>
-            <h3>{r.title}</h3>
-            <p>{r.body}</p>
-          </div>
-        ))}
+        {scenes.map((scene) => <div class="card"><h3>{scene.title}</h3><p>{scene.body}</p><a href={`${base}${scene.href}`}>{scene.label} →</a></div>)}
       </div>
     </div>
   </section>
-
+  <section class="section section-tight">
+    <div class="container section-header">
+      <h2>从阅读到运行</h2>
+      <p>按顺序学习语言，按任务查阅库，每个库都有独立介绍和详细 API 文档。</p>
+      <div class="hero-cta learning-links">
+        <a href={`${base}/docs/`} class="btn btn-primary">语言文档</a>
+        <a href={`${base}/libraries/`} class="btn btn-secondary">浏览库</a>
+        <a href={`${base}/playground/`} class="btn btn-secondary">运行示例</a>
+        <a href={`${base}/grove/`} class="btn btn-secondary">应用案例：Grove</a>
+      </div>
+    </div>
+  </section>
   <script>
-    import { initRepl, initCodeTabs } from '../scripts-repl.js';
-    initCodeTabs();
+    import { initRepl } from '../scripts-repl.js';
     initRepl();
   </script>
 </Base>
