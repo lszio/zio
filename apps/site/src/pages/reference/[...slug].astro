@@ -1,6 +1,7 @@
 ---
 import { getCollection, render } from 'astro:content';
 import Base from '../../layouts/Base.astro';
+const buildInfo = import.meta.env.ZIO_BUILD_INFO;
 
 export async function getStaticPaths() {
   const entries = await getCollection('api');
@@ -18,7 +19,8 @@ const base = import.meta.env.BASE_URL.replace(/\/$/, '');
       <p><code>{entry.data.file}</code> · {entry.data.symbolCount} 个符号</p>
       <div class="hero-cta">
         <a href={`${base}/reference/`} class="btn btn-secondary">← 返回库参考</a>
-        <a href={`https://github.com/lszio/zio/blob/main/libs/${entry.data.file}`} class="btn btn-secondary">仓库源码</a>
+        <a href={`${base}/libraries/${entry.data.file.split('/')[0]}/`} class="btn btn-secondary">库介绍与用法</a>
+        <a href={`https://github.com/lszio/zio/blob/${buildInfo.commit ?? 'main'}/libs/${entry.data.file}`} class="btn btn-secondary">仓库源码{buildInfo.commit ? '（对应提交）' : ''}</a>
         <a href={`${base}/playground/`} class="btn btn-primary">在 Playground 运行</a>
       </div>
     </div>

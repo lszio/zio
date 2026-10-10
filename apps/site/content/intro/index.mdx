@@ -1,30 +1,70 @@
 ---
 title: 认识 Zio 语言
-description: Zio 是现代通用 Lisp；从表达式、数据和函数开始，在浏览器运行真实 WASM 求值器。
+description: 一门通用 Lisp：用表达式组合程序，用数据描述问题，用函数与宏构建自己的语言。
 order: 0
 ---
 
-## 一门语言，不是某个应用的模式
+## 从一个表达式开始
 
-Zio 用 S 表达式统一表示程序与数据。当前解释器由 Rust 实现，提供原生 CLI 与 WebAssembly 会话；可以定义函数、操作集合、展开宏，并在浏览器使用 JS 互操作原语。完整宏卫生性、完整 MOP、编译器自举与异步调度仍是目标，不是现有保证。
+Zio 属于 Lisp 家族，是一门通用编程语言。你可以用它计算、处理数据、编写脚本，也可以把反复出现的业务规则组织成函数与库。括号不是额外的装饰：`(函数 参数...)` 就是最基本的组合方式，内层表达式的结果成为外层表达式的输入。
 
 ```lisp
 (defn square [x] (* x x))
-(square 7) ;; => 49
+(+ (square 3) (square 4)) ;; => 25
 ```
 
-从[语法入门](/syntax/)开始，在 [Playground](/playground/) 修改并执行代码，或阅读[实现手册](/book/)和[语言文档](/docs/)。浏览器会话保留定义，显示最后一个表达式的值或求值错误；本地 CLI 的文件、网络和宿主能力不等于浏览器能力。
+不必先搭建项目。打开 [Playground](/playground/)，修改数字、增加表达式，马上观察结果；再沿着[语法入门](/syntax/)学习绑定、函数与条件。
 
-## 语言优先的仓库边界
+## 用数据与函数描述问题
 
-- `langs/core` 与 `langs/cli`：语言实现和命令行工具；没有 `langs/zio` 包装层。
-- `libs/std`：Zio 核心宏、集合、协议、实体与数据逻辑。
-- `libs/numa`：现有 Zio 向量代码；完整类型化数组、矩阵与数值后端尚未完成。
-- `libs/loom`：现有 Zio Agent／proposer 代码；完整模型、工具、会话、预算、取消和 ACP harness 尚未完成。
-- `libs/learning`：Zio 学习策略、模型表示与配方代码。
-- `contribs/native/loom`：现有 Rust 宿主／LLM 基础设施，不冒充 Zio 库。Rill 当前没有实现，CLI 不等于 Rill。
-- `apps/site` 是本站；[Grove](/grove/) 是独立应用目标。现有 Rust legacy 留在 `apps/grove/native`，目标 Zio 应用没有完成，也不是 Playground 的预设或学习模式。
+列表、向量、映射和集合让你直接表达一组值、一条记录或一组成员。关键字如 `:name` 常用作记录的字段名。函数也是值：可以传给另一个函数、从函数返回，或者捕获局部绑定形成闭包。
 
-## 求值和安全边界
+```lisp
+(def readings [18 21 24 19])
+(def warm (filter (fn [n] (> n 20)) readings))
+(reduce + 0 warm) ;; => 45
 
-`future-call` 当前同步求值并包装结果；`chan / send! / recv!` 是同步队列占位能力，不是并发任务调度器。WASM 上的 `js/eval` 和 DOM 原语可访问当前页面；只执行你信任的代码。浏览器 Playground 不提供超时、进程隔离或对任意代码的安全保证。
+(def profile {:name "Lin" :language "Zio"})
+(get profile :name) ;; => "Lin"
+```
+
+把集合交给 `map`、`filter`、`reduce`，让每一步都对应一个清楚的变换。常用函数和领域能力可以从[库介绍](/libraries/)找到，再进入对应的[源码参考](/reference/)查看参数、语义和示例。
+
+## 代码也是数据，宏扩展表达方式
+
+引用的列表不会当作调用执行，而是一个可操作的数据值。宏接收尚未求值的代码，返回新的代码，让重复的控制结构可以拥有自己的名字。
+
+```lisp
+(defmacro unless [test body]
+  (list 'if test nil body))
+
+(unless false 42) ;; => 42
+(macroexpand-1 '(unless false 42)) ;; => (if false nil 42)
+```
+
+先用普通函数组织计算，再在确实需要改变求值方式时使用宏。Zio 提供 `defmacro`、准引用与 `syntax-rules` 卫生子集；不要把它们理解成完整宏卫生性的保证。
+
+## 对象与多分派
+
+当数据具有稳定的结构，可以定义类、创建实例，并用通用函数描述操作。方法根据参数的类选择，而不只依附于某一个接收者；这让同一个操作能够针对不同类型提供不同实现。
+
+```lisp
+(defclass point nil
+  ((x :initarg :x)
+   (y :initarg :y)))
+(def p (make-instance point :x 10 :y 20))
+(defgeneric describe (shape))
+(defmethod describe ((shape point))
+  (str "Point(" (slot-value shape :x) ", " (slot-value shape :y) ")"))
+(describe p) ;; => "Point(10, 20)"
+```
+
+现有 ZOS 支持类、实例、通用函数与多分派子集。更完整的对象模型协议并非当前保证；[ZOS 规范](/docs/zos-spec/)同时包含设计目标，阅读时需区分规范与已有能力。
+
+## 在浏览器试写，在原生环境运行
+
+浏览器 Playground 使用真实 WASM 求值器，会话保留定义，输出最后一个表达式的值或错误。适合学习表达式、实验函数和检查数据变换。原生 CLI 提供 REPL、脚本加载与模块使用；文件、网络等能力取决于运行环境和宿主授权，不能由浏览器实验推断。
+
+**只执行你信任的代码。** WASM 中的 `js/eval` 与 DOM 原语可以访问当前页面。Playground 不提供超时、进程隔离或任意代码的安全保证；它不是运行不可信代码的沙箱。`future-call` 当前同步求值并包装结果，`chan / send! / recv!` 是同步队列，不能据此推断并发调度、阻塞或取消能力。
+
+下一步：按[学习路线](/docs/)继续，去 [Playground](/playground/)实践；需要本地环境或希望参与开发时，阅读[贡献指南](/contribute/)。

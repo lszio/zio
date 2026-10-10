@@ -14,6 +14,16 @@ COPY blog /build/blog
 # The /reference/ pages are extracted from libs/**.zio `;; doc:` comments at
 # build time (apps/site/src/lib/zio-lib-docs.mjs), so the sources must exist.
 COPY libs /build/libs
+COPY Cargo.toml /build/Cargo.toml
+# Git is not copied into this build. CI may supply verified provenance.
+ARG ZIO_BUILD_COMMIT
+ARG ZIO_BUILD_BRANCH
+ARG ZIO_BUILD_TAG
+ARG ZIO_BUILD_DIRTY
+ENV ZIO_BUILD_COMMIT=$ZIO_BUILD_COMMIT \
+    ZIO_BUILD_BRANCH=$ZIO_BUILD_BRANCH \
+    ZIO_BUILD_TAG=$ZIO_BUILD_TAG \
+    ZIO_BUILD_DIRTY=$ZIO_BUILD_DIRTY
 # wasm/ is committed under apps/site/public and rebuilt with tools/build-wasm.sh.
 RUN bun run build
 
