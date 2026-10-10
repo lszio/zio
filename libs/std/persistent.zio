@@ -4,6 +4,8 @@
 ;; Status: Experimental. All functions are runnable; map iteration
 ;; order (and therefore merge/set ordering) is not defined.
 
+;; doc: (conj coll x) → collection with x added: vector → append, map →
+;; doc: (put coll k v) from a [k v] entry, list → prepend.
 (defn conj [coll x]
   (if (vector? coll)
     (vector-conj coll x)
@@ -12,6 +14,8 @@
       (put coll (get x 0) (get x 1))
       (cons x coll))))
 
+;; doc: (pop coll) → collection without its last/first element:
+;; doc: vector drops the tail, list drops the head, other values pass through.
 (defn pop [coll]
   (if (vector? coll)
     (slice coll 0 (dec (count coll)))
@@ -19,6 +23,7 @@
       (cdr coll)
       coll)))
 
+;; doc: (peek coll) → last element of a vector or first of a list, else nil.
 (defn peek [coll]
   (if (vector? coll)
     (get coll (dec (count coll)))
@@ -26,6 +31,8 @@
       (car coll)
       nil)))
 
+;; doc: (merge & maps) → left-to-right key merge; later maps override
+;; doc: earlier ones; non-map arguments are ignored.
 (defn merge [& maps]
   (reduce (fn [acc m]
             (if (map? m)
@@ -33,16 +40,15 @@
               acc))
           {} maps))
 
-(defn set [& items]
-  (reduce (fn [acc item] (put acc item true)) {} items))
-
+;; doc: (contains? s item) → true when the map-backed set holds item.
+;; doc: The set literal #{...} and (set ...) come from the bootstrap stdlib.
 (defn contains? [s item]
   (if (map? s)
     (not (nil? (get s item nil)))
     false))
 
+;; doc: (disj s & items) → set with each item removed; non-sets pass through.
 (defn disj [s & items]
   (if (map? s)
     (apply dissoc (cons s items))
     s))
-

@@ -540,3 +540,50 @@ fn virtual_require_shares_io_cache_cycles_and_cleans_failures() {
     assert!(eval_source(&ctx, "main", "(require :inherited)").is_err());
     assert!(eval_source(&ctx, "main", "(require :../secret)").is_err());
 }
+
+// ── reader literals: sets and quasiquote ──────────────────────────
+
+#[test]
+fn set_literal_is_a_map_backed_set_from_the_bootstrap() {
+    for (src, expected) in [
+        ("(count #{1 2 3})", "3"),
+        ("(count #{1 1 2})", "2"),
+        ("(get #{:a :b} :a)", "true"),
+        ("(get #{:a :b} :z nil)", "nil"),
+        ("(str #{})", "\"{}\""),
+        // Map-backed equality is order-insensitive: the same members are
+        // the same set, however the literal was written.
+        ("(= #{1 2 3} #{3 2 1})", "true"),
+        ("(= #{1 2} #{1 2 3})", "false"),
+    ] {
+        let value = run(src).unwrap_or_else(|e| panic!("{src} failed: {e}"));
+        assert_eq!(value.to_string(), expected, "{src} produced {value}");
+    }
+}
+
+#[test]
+fn quasiquote_evaluates_unquote_and_splices() {
+    for (src, expected) in [
+        ("(str `(a b))", "\"(a b)\""),
+        ("(let [x 5] (str `(a ~x)))", "\"(a 5)\""),
+        ("(str `(~@(list 1 2) 3))", "\"(1 2 3)\""),
+        ("(str `[0 ~@(vector :a)])", "\"[0 :a]\""),
+        ("(get `{:k ~(+ 2 2)} :k)", "4"),
+        ("(defmacro twice [e] `(inc ~e)) (twice 1)", "2"),
+        // A nested backquote protects its own unquotes.
+        ("(str `(a `(b ~c)))", "\"(a (quasiquote (b (unquote c))))\""),
+    ] {
+        let value = run(src).unwrap_or_else(|e| panic!("{src} failed: {e}"));
+        assert_eq!(value.to_string(), expected, "{src} produced {value}");
+    }
+}
+
+#[test]
+fn misplaced_unquote_and_bad_splice_are_refused() {
+    let bare = run("(unquote 1)").unwrap_err().to_string();
+    assert!(bare.contains("outside quasiquote"), "{bare}");
+    let spliced = run("`(a ~@5)").unwrap_err().to_string();
+    assert!(spliced.contains("sequential"), "{spliced}");
+    let dangling = run("`(a ~)").unwrap_err().to_string();
+    assert!(!dangling.is_empty());
+}

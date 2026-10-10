@@ -25,6 +25,8 @@
 ;; convention, and reading them with string keys returns the default
 ;; every time, which is how a failed turn ends up looking like it
 ;; carried no error at all.
+;; doc: (source-of reply) — extracts the model's program source string from a harness-complete
+;; doc: reply map, or nil when the reply carries no :source. Reads keyword keys only.
 (defn source-of [reply]
   (let* [source (get reply :source "")]
     (if (= source "")
@@ -34,6 +36,8 @@
 ;; The feedback the next turn sees. The error is carried whole, not
 ;; summarized: a revision that is shown a paraphrase of why it failed
 ;; is a revision guessing.
+;; doc: (feedback-of outcome) — builds the feedback map the next turn sees from a
+;; doc: harness-execute-zio outcome: {:status :error :turns}. The error text is carried whole.
 (defn feedback-of [outcome]
   {:status (get outcome :status "failed")
    :error (get outcome :error "no error detail was reported")
@@ -44,6 +48,11 @@
 ;; `max-turns` is the ceiling the host passed in from the grant, not a
 ;; number this function decided: the call count is also metered there,
 ;; so a program that ignored this argument would still be stopped.
+;; doc: (agent-run task max-turns) — the agent loop: each turn asks the harness-complete host
+;; doc: binding for source (requires loom host bindings), executes it via harness-execute-zio,
+;; doc: and feeds execution failures back for revision. Returns {:status "candidate"
+;; doc: :turns :execution} on success or {:status "exhausted" :turns :last} when max-turns
+;; doc: is hit. max-turns is the host-granted ceiling; the host meters calls independently.
 (defn agent-run [task max-turns]
   (loop [turn 0 feedback nil]
     (if (>= turn max-turns)

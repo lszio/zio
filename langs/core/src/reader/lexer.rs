@@ -30,6 +30,21 @@ pub fn tokenize(input: &str) -> Vec<Token> {
                 tokens.push(Token::new(c.to_string(), start));
                 chars.next();
             }
+            // Quasiquote: `x → (quasiquote x)
+            '`' => {
+                tokens.push(Token::new("`".to_string(), start));
+                chars.next();
+            }
+            // Unquote: ~x → (unquote x), ~@x → (unquote-splicing x)
+            '~' => {
+                chars.next();
+                if chars.peek().map(|&(_, c)| c) == Some('@') {
+                    chars.next();
+                    tokens.push(Token::new("~@".to_string(), start));
+                } else {
+                    tokens.push(Token::new("~".to_string(), start));
+                }
+            }
             // Dispatch macro: #( `#{` `#\` etc.
             '#' => {
                 chars.next(); // consume the '#'

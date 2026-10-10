@@ -4,24 +4,46 @@
 ;; Default ids are unique only within this loaded library context. A host
 ;; may explicitly supply a cryptographic identity generator.
 
+;; doc: `defentity` — 定义名为 entity-<name> 的实体类。
+;; doc:
+;; doc: 每个字段生成以对应关键字为 :initarg 的构造参数；在原生与
+;; doc: 浏览器会话中均可用。
 (defmacro defentity [name fields]
   (let [entity-class-name (symbol (str "entity-" name))]
     (list 'defclass entity-class-name nil
           (map (fn [f] (list f :initarg (keyword f))) fields))))
 
 ;; No implicit host dependency: browser pure use retains local identity.
+;; doc: `entity--counter` — 默认实体 id 的进程内计数器。
 (def entity--counter 0)
+;; doc: `entity--identity-source` — 可选的身份生成器 (fn [] id)。
+;; doc:
+;; doc: 非 nil 时 make-entity 改用它生成 id；nil 表示退回
+;; doc: entity--counter 计数。
 (def entity--identity-source nil)
 
+;; doc: `entity-set-identity-source!` — 安装 make-entity 使用的身份生成器。
+;; doc:
+;; doc: source 必须可调用（fn?），否则抛出 invalid-input。
 (defn entity-set-identity-source! [source]
   (if (fn? source)
     (set! entity--identity-source source)
     (error "invalid-input: entity identity source must be callable")))
 
+;; doc: `entity-use-host-identity!` — 将身份源设为宿主加密随机 id。
+;; doc:
+;; doc: 即 (host/sha256 (host/random-bytes 32))；需要宿主提供
+;; doc: host/sha256 与 host/random-bytes 绑定。
 (defn entity-use-host-identity! []
   (entity-set-identity-source!
     (fn [] (host/sha256 (host/random-bytes 32)))))
 
+;; doc: `make-entity` — 以 kvs 构造 entity-<type-sym> 实例并返回实体映射。
+;; doc:
+;; doc: 返回 {:entity/type ... :entity/id ... :entity/instance ...}。
+;; doc: id 来自身份源 entity--identity-source；缺省为 entity-<type>-<n>
+;; doc: 递增计数，仅在本库加载上下文内唯一。生成的 id 为空或非字符串
+;; doc: 时抛出 invalid-input。
 (defn make-entity [type-sym & kvs]
   ;; defentity names the class "entity-<type>"; use the same name here.
   (let* [cls (symbol (str "entity-" (str type-sym)))
@@ -39,6 +61,7 @@
      :entity/id id
      :entity/instance inst}))
 
+;; doc: `entity-id` — 返回实体映射的 :entity/id；非映射输入返回 nil。
 (defn entity-id [entity]
   (if (map? entity)
     (get entity :entity/id)

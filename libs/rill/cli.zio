@@ -7,14 +7,19 @@
 ;; Supports --name value, --name=value, -short, --, -h/--help; no implicit
 ;; abbreviations, permissive unknown flags or parser dependency.
 
+;; doc: (rill--has m key) — true when map m contains key, without relying on a contains? primitive.
 (defn rill--has [m key]
   (> (count (filter (fn [k] (= k key)) (keys m))) 0))
 
+;; doc: (rill--options root selected) — merges the spec's global options with the selected
+;; doc: command's options; command options with the same :name override global ones.
 (defn rill--options [root selected]
   (reduce (fn [out opt]
             (vector-conj (apply vector (filter (fn [old] (not (= (get old :name nil) (get opt :name nil)))) out)) opt))
           (get root :options []) (if (nil? selected) [] (get selected :options []))))
 
+;; doc: (rill--option options flag) — looks up an option by --long or -short form; errors on
+;; doc: unknown or ambiguous flags.
 (defn rill--option [options flag]
   (let* [matches (filter (fn [opt]
                            (if (= flag (str "--" (get opt :name nil))) true
@@ -24,6 +29,9 @@
       (if (= (count matches) 0) (error (str "invalid-input: unknown option " flag))
         (error (str "invalid-input: ambiguous option " flag))))))
 
+;; doc: (rill--value option raw) — coerces a raw argv string per the option's :type (:flag,
+;; doc: :string, :integer), enforces :min/:max for integers and :choices for any type.
+;; doc: Errors with invalid-input messages on coercion or range failures.
 (defn rill--value [option raw]
   (let* [kind (get option :type :string)
          value (cond
@@ -45,6 +53,11 @@
         (error (str "invalid-input: unsupported --" (get option :name) " value " value)) true))
     value))
 
+;; doc: (rill-parse spec argv) — parses argv against a spec; returns
+;; doc: {:command :options :args :help :spec :command-spec}. Supports --name value,
+;; doc: --name=value, -short, --, -h/--help. Applies option :default values, enforces
+;; doc: :required options, rejects repeated flags and unexpected positionals. Errors carry
+;; doc: an "invalid-input: " prefix.
 (defn rill-parse [spec argv]
   (loop [i 0 command nil selected nil values {} args [] help false positional false]
     (if (= i (count argv))
@@ -97,9 +110,13 @@
                (recur (+ i 1) command selected values (vector-conj args token) help false))))
           (else (recur (+ i 1) command selected values (vector-conj args token) help false)))))))
 
+;; doc: (rill--join separator parts) — variadic str-join over a collection of parts.
 (defn rill--join [separator parts]
   (apply str-join (cons separator (apply list parts))))
 
+;; doc: (rill-help spec command) — renders a usage string for spec, or for one command when
+;; doc: given. Lists commands in :command-order (falls back to map key order, which is
+;; doc: undefined) and all options. Errors on an unknown command name.
 (defn rill-help [spec command]
   (let* [selected (if (nil? command) nil (get (get spec :commands {}) command))]
     (if (nil? command) true (if (nil? selected) (error "invalid-input: unknown help command") true))
@@ -117,6 +134,9 @@
                                    "  " (get opt :help "") "\n"))
                             (rill--options spec selected))))))
 
+;; doc: (rill-dispatch parsed handlers) — if parsed help, returns rill-help text; otherwise
+;; doc: calls the handler for parsed :command with the full parsed map. Errors when no
+;; doc: handler is registered.
 (defn rill-dispatch [parsed handlers]
   (if (get parsed :help)
     (rill-help (get parsed :spec) (get parsed :command))
@@ -124,11 +144,17 @@
       (if (nil? handler) (error "invalid-input: command has no dispatch handler")
         (handler parsed)))))
 
+;; doc: (rill-run spec handlers) — parses (host/argv) against spec and dispatches to handlers.
+;; doc: Requires the host argv binding.
 (defn rill-run [spec handlers]
   (rill-dispatch (rill-parse spec (host/argv)) handlers))
 
 ;; Real Grove command requirements, independent of its implementation.
 ;; Publication has no --force/auto-approve switch. Unknown flags fail closed.
+;; doc: rill-grove-options — vector of Grove CLI option declarations shared by all Grove
+;; doc: commands; real Grove command requirements, independent of the Grove implementation.
+;; doc: :case, :quota, :workers, :expected-version, :max-turns carry types/limits. Publication
+;; doc: has no --force/auto-approve switch; unknown flags fail closed.
 (def rill-grove-options
   [{:name "root" :key :root :required true :help "Store path"}
    {:name "bind" :key :bind :help "HTTP bind address"}
@@ -151,11 +177,15 @@
    {:name "candidate" :key :candidate}
    {:name "reason" :key :reason}])
 
+;; doc: (rill--required names) — copies the named rill-grove-options entries, each marked
+;; doc: :required true, as a command's option list.
 (defn rill--required [names]
   (apply vector (map (fn [name]
                        (put (get (filter (fn [opt] (= (get opt :name nil) name)) rill-grove-options) 0)
                             :required true)) names)))
 
+;; doc: rill-grove-spec — the Grove CLI parse spec: 11 commands (demo…serve), global options
+;; doc: above, per-command required options, and a fixed :command-order for help rendering.
 (def rill-grove-spec
   {:name "grove" :summary "Durable learning, inspection and explicit publisher decisions"
    :options rill-grove-options

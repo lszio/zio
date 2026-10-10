@@ -46,6 +46,12 @@ pub fn eval_special_form(
 ) -> Result<Option<TailResult>, EvalError> {
     let result = match name {
         "quote" => Some(data::do_quote(args)?),
+        "quasiquote" => Some(data::do_quasiquote(args, env, engine)?),
+        "unquote" | "unquote-splicing" => {
+            return Err(EvalError::invalid_form(format!(
+                "{name} (~ / ~@) used outside quasiquote (`)"
+            )));
+        }
         "set!" => Some(data::do_set(args, env, engine)?),
         "def" => Some(bindings::do_def(args, env, engine)?),
         "defn" => Some(bindings::do_defn(args, env, engine)?),

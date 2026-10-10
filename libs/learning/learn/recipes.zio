@@ -5,18 +5,24 @@
 ;; what the recipe declares. Recipes are data, so a new method (W15's
 ;; distillation/preference/…) is a new value, not a new loop.
 
+;; doc: (recipes--registry) — empty base registry; recipes--load-registry fills it.
 (def recipes--registry {})
 
+;; doc: (recipes--register registry recipe) — put recipe under its :id; re-registering
+;; doc: an id replaces it.
 (defn recipes--register [registry recipe]
   ;; recipes are versioned by id; re-registering an id replaces it
   (put registry (get recipe :id nil) recipe))
 
+;; doc: (recipes--lookup registry id) — the recipe with that id, or nil.
 (defn recipes--lookup [registry id]
   (get registry id nil))
 
 ;; The supervised hard-label recipe (W05): consumes teacher labels and
 ;; human corrections, trains every declared layer, fixed step budget,
 ;; deterministic seeded init.
+;; doc: (recipes--supervised) — "supervised@1": consumes teacher labels + human
+;; doc: corrections, trains all layers, CE loss, 512-step budget, seeded init.
 (def recipes--supervised
   {:id "supervised@1"
    :consumes [:teacher-label :human-correction]
@@ -25,6 +31,8 @@
    :init :seeded              ; structural candidates start from the seed
    :loss "cross-entropy"})
 
+;; doc: (recipes--check-signal recipe signal-kind) — true when the recipe consumes
+;; doc: signal-kind; an unconsumed kind is refused, never silently ignored.
 (defn recipes--check-signal [recipe signal-kind]
   ;; a recipe silently ignoring a signal kind would be an invisible
   ;; policy change; refusing is the honest behavior
@@ -32,11 +40,15 @@
     (reduce (fn [found k] (if found true (= k signal-kind)))
             false consumes)))
 
+;; doc: (recipes--budget-for recipe requested) — requested steps capped by the recipe's
+;; doc: :budget-steps.
 (defn recipes--budget-for [recipe requested]
   ;; a recipe caps what a candidate may spend, whatever it asks for
   (let* [cap (get recipe :budget-steps 0)]
     (if (> requested cap) cap requested)))
 
+;; doc: (recipes--trainable? recipe layer-name) — true when the trainable policy is :all
+;; doc: or lists layer-name.
 (defn recipes--trainable? [recipe layer-name]
   (let* [policy (get recipe :trainable nil)]
     (or (= :all policy)
@@ -51,6 +63,8 @@
 ;; — a distillation's teacher vocabulary, a policy's action set, a
 ;; demonstrator's legal actions — rather than a name and a hope.
 
+;; doc: (recipes--vocab-matches? recipe teacher-vocab student-vocab) — true when the
+;; doc: recipe declares no vocab, or both teacher and student vocab equal it exactly.
 (defn recipes--vocab-matches? [recipe teacher-vocab student-vocab]
   ;; Soft distillation is only meaningful on ONE label space. A teacher
   ;; whose classes are not the student's classes must be refused, never
@@ -61,9 +75,13 @@
         (and (= (list teacher-vocab) (list want))
              (= (list student-vocab) (list want))))))
 
+;; doc: (recipes--teacher-vocab-declared? recipe) — true when the recipe declares
+;; doc: :teacher-vocab.
 (defn recipes--teacher-vocab-declared? [recipe]
   (not (nil? (get recipe :teacher-vocab nil))))
 
+;; doc: (recipes--legal-action? recipe action) — true when action is inside the
+;; doc: declared :legal-actions; anything else is masked out of the loss.
 (defn recipes--legal-action? [recipe action]
   ;; Demonstration cloning is supervised on demonstrator actions inside a
   ;; DECLARED action space. An action outside it is masked out of the
@@ -72,6 +90,8 @@
   (reduce (fn [found a] (if found true (= a action)))
           false (get recipe :legal-actions [])))
 
+;; doc: (recipes--preference-usable? recipe preferred unpreferred) — true when neither
+;; doc: side of the pair abstains (abstention is a position, not a negative).
 (defn recipes--preference-usable? [recipe preferred unpreferred]
   ;; An abstention is not a loss. "I cannot tell" is a position, not a
   ;; negative, so a pair that contains one is excluded from the objective
@@ -79,6 +99,8 @@
   (and (not (get preferred :abstain false))
        (not (get unpreferred :abstain false))))
 
+;; doc: (recipes--action-set-declared? recipe) — true when the recipe declares a
+;; doc: non-empty :actions set; policies without one are refused.
 (defn recipes--action-set-declared? [recipe]
   ;; A policy recipe without an explicit action set has no termination or
   ;; reward contract to hold the policy to, so it is refused rather than
@@ -86,6 +108,8 @@
   (let* [actions (get recipe :actions nil)]
     (and (not (nil? actions)) (> (count actions) 0))))
 
+;; doc: (recipes--delayed-binds-trajectory? recipe result) — true when the delayed
+;; doc: result names a non-empty :trajectory-id; otherwise refused at submission.
 (defn recipes--delayed-binds-trajectory? [recipe result]
   ;; A delayed outcome must name the trajectory it belongs to. An
   ;; unattributable result cannot be attributed later either, so it is
@@ -97,6 +121,8 @@
 ;; `recipes--registry` collects the declarations the driver dispatches
 ;; on. Re-registering an id replaces it, so a version bump is data.
 
+;; doc: (recipes--soft-distill) — "soft-distill@1": KL at temperature 2.0 on the
+;; doc: teacher's softmax; teacher vocab declared, must equal the student's.
 (def recipes--soft-distill
   {:id "soft-distill@1"
    :consumes [:teacher-label]
@@ -109,6 +135,8 @@
    ;; own label space, so the vocabulary is declared, not inferred
    :teacher-vocab ["clear" "fault"]})
 
+;; doc: (recipes--hard-distill) — "hard-distill@1": cross-entropy on the teacher's
+;; doc: argmax labels; all layers trainable, 512-step budget.
 (def recipes--hard-distill
   {:id "hard-distill@1"
    :consumes [:teacher-label]
@@ -117,6 +145,8 @@
    :init :seeded
    :loss "cross-entropy"})
 
+;; doc: (recipes--preference) — "preference@1": pairwise logistic loss; abstaining pairs
+;; doc: are excluded from the objective, never trained as negatives.
 (def recipes--preference
   {:id "preference@1"
    :consumes [:human-preference]
@@ -128,6 +158,8 @@
    ;; excluded from the objective, never trained as a negative
    :abstain-is-loss false})
 
+;; doc: (recipes--demonstration) — "demonstration@1": masked cross-entropy over the
+;; doc: declared :legal-actions; actions outside the set are masked, not trained.
 (def recipes--demonstration
   {:id "demonstration@1"
    :consumes [:demonstration]
@@ -140,6 +172,8 @@
    ;; outside this set is masked out of the loss, not trained.
    :legal-actions ["clear" "fault"]})
 
+;; doc: (recipes--self-supervised) — "self-supervised@1": masked reconstruction;
+;; doc: :task-gate is required — reconstruction never substitutes for task acceptance.
 (def recipes--self-supervised
   {:id "self-supervised@1"
    :consumes [:demonstration]
@@ -153,6 +187,8 @@
    ;; reconstructs.
    :task-gate "holdout-accuracy>=0.90"})
 
+;; doc: (recipes--environment-feedback) — "environment-feedback@1": REINFORCE on delayed
+;; doc: returns; every result must bind to a named trajectory.
 (def recipes--environment-feedback
   {:id "environment-feedback@1"
    :consumes [:environment-result]
@@ -165,6 +201,8 @@
    :binds :trajectory
    :delay-allowed true})
 
+;; doc: (recipes--policy-gradient) — "policy-gradient@1": REINFORCE with baseline on a
+;; doc: restricted lineworld; explicit action set, reward and termination contract.
 (def recipes--policy-gradient
   {:id "policy-gradient@1"
    :consumes [:environment-result]
@@ -184,6 +222,7 @@
    :reward "step-cost-and-goal-bonus"
    :termination "reach-goal-or-max-steps"})
 
+;; doc: (recipes--all) — vector of every recipe declaration the driver dispatches on.
 (def recipes--all
   [recipes--supervised
    recipes--hard-distill
@@ -194,6 +233,8 @@
    recipes--environment-feedback
    recipes--policy-gradient])
 
+;; doc: (recipes--load-registry) — registry map of all recipes in recipes--all, keyed
+;; doc: by id.
 (defn recipes--load-registry []
   (let [reg recipes--registry]
     (reduce (fn [acc r] (recipes--register acc r)) reg recipes--all)))

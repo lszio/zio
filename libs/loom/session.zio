@@ -29,17 +29,28 @@
 ;; process lifecycle through `host/process-kill`, and `loom--session-
 ;; cancel` runs that hook first so an outstanding model call is reaped
 ;; before the budget is marked cancelled.
+;; doc: (loom--key k) — keyword→string normalization used by loom--get.
 (defn loom--key [k] (if (keyword? k) (str (symbol k)) k))
+;; doc: (loom--get m k fallback) — get that tolerates string/keyword key mismatch; tries the
+;; doc: key as given, then its keyword/string dual, before the fallback.
 (defn loom--get [m k fallback] (get m k (get m (if (keyword? k) (loom--key k) (keyword k)) fallback)))
+;; doc: (loom--require ok message) — errors with a "loom: " prefix unless ok is truthy.
 (defn loom--require [ok message] (if ok true (error (str "loom: " message))))
+;; doc: (loom--contains xs x) — linear membership test over a collection.
 (defn loom--contains [xs x] (reduce (fn [found y] (if found true (= x y))) false xs))
 
 ;; A fresh ledger; `limits` is the application-supplied ceiling set.
+;; doc: (loom--budget-new limits) — fresh ledger with application-supplied :limits
+;; doc: {:max-calls :max-cost-micros :per-call-ceiling-micros} and zeroed counters.
 (defn loom--budget-new [limits]
   {:limits limits :calls 0 :spent 0 :spent-unobserved 0 :held 0 :cancelled false :reservations {}})
 
 ;; ── reserve / settle primitives ─────────────────────────────────
 
+;; doc: (loom--reserve tx id kind expected) — reserves budget headroom inside the tx callback.
+;; doc: Hold is max(expected, per-call ceiling); expected=0 means "no observation" and falls
+;; doc: back to the ceiling. Refuses when cancelled, duplicated id, unbounded cost, call
+;; doc: budget or shared cost budget exhausted. Returns the reservation map.
 (defn loom--reserve [tx id kind expected]
   (tx (fn [ledger]
     (let* [limits (loom--get ledger :limits {}) reservations (loom--get ledger :reservations {})
@@ -59,6 +70,9 @@
         {:ledger (assoc ledger :calls (+ calls 1) :held (+ held hold) :reservations (put reservations id reservation))
          :result reservation})))))
 
+;; doc: (loom--settle tx id actual) — settles a reservation inside the tx callback. Numeric
+;; doc: actual (≥0) adds to :spent and releases the hold; nil actual absorbs the FULL hold
+;; doc: into :spent and bumps :spent-unobserved. Replays with a conflicting actual error.
 (defn loom--settle [tx id actual]
   (tx (fn [ledger]
     (let* [reservations (loom--get ledger :reservations {}) reservation (get reservations id nil)
@@ -94,22 +108,33 @@
                 :result settled}))
             (else (error "loom: negative observed cost")))))))))
 
+;; doc: (loom--cancel-budget tx) — marks the ledger cancelled; further reserves are refused.
 (defn loom--cancel-budget [tx]
   (tx (fn [ledger] {:ledger (assoc ledger :cancelled true) :result true})))
 
+;; doc: (loom--budget-cancelled? tx) — read-only: true once the ledger is cancelled.
 (defn loom--budget-cancelled? [tx]
   (tx (fn [ledger] {:ledger ledger :result (loom--get ledger :cancelled false)})))
 
+;; doc: (loom--budget-spent tx) — read-only: total committed spend (real + absorbed unknowns).
 (defn loom--budget-spent [tx]
   ;; Read-only accessor: total committed spend (real + absorbed unknowns).
   (tx (fn [ledger] {:ledger ledger :result (loom--get ledger :spent 0)})))
+;; doc: (loom--budget-held tx) — read-only: headroom currently held by outstanding reservations.
 (defn loom--budget-held [tx]
   (tx (fn [ledger] {:ledger ledger :result (loom--get ledger :held 0)})))
+;; doc: (loom--budget-unobserved tx) — read-only: spend absorbed from calls with no reported
+;; doc: cost ("this much could not be priced").
 (defn loom--budget-unobserved [tx]
   (tx (fn [ledger] {:ledger ledger :result (loom--get ledger :spent-unobserved 0)})))
 
 ;; ── message / response validation ────────────────────────────────
 
+;; doc: (loom--validate-messages messages) — validates a caller-supplied message list: roles
+;; doc: limited to user/assistant/tool (no system), tool results must match a pending tool
+;; doc: call exactly once, only assistant messages may carry tool_calls, each call needs id/
+;; doc: name/map arguments and unique ids. Errors on violation; returns the final
+;; doc: pending/seen tracking state (not a boolean).
 (defn loom--validate-messages [messages]
   (reduce (fn [state m]
     (let* [role (loom--get m :role nil) calls (loom--get m :tool_calls []) id (loom--get m :tool_call_id nil)
@@ -126,6 +151,9 @@
                               (assoc a :seen (put (get a :seen) cid true) :pending (put (get a :pending) cid true)))) state calls)]
         (if (= role "tool") (assoc next :pending (put (get next :pending) id false)) next))))
     {:pending {} :seen {}} messages))
+;; doc: (loom--validate-response response id) — validates a provider response against the
+;; doc: request id: assistant role, known finish_reason, tool_calls consistent with the
+;; doc: finish reason, and a self-consistent message. Returns the response.
 (defn loom--validate-response [response id]
   (loom--require (= id (loom--get response :request_id nil)) "foreign response correlation")
   (let* [reason (loom--get response :finish_reason nil) message (loom--get response :message nil) calls (loom--get message :tool_calls [])]
@@ -133,6 +161,9 @@
     (loom--require (loom--contains ["stop" "length" "tool_calls" "content_filter"] reason) "unknown finish reason")
     (loom--require (if (> (count calls) 0) (= reason "tool_calls") (not (= reason "tool_calls"))) "inconsistent tool finish reason")
     (loom--validate-messages [message]) response))
+;; doc: (loom--wire-message message) — converts an internal message to wire form: tool_call
+;; doc: arguments are JSON-stringified and wrapped in {:id :type "function" :function …};
+;; doc: tool_call_id is attached when present.
 (defn loom--wire-message [message]
   (let* [base {:role (loom--get message :role nil) :content (loom--get message :content nil)}
          calls (loom--get message :tool_calls []) id (loom--get message :tool_call_id nil)
@@ -149,6 +180,11 @@
 ;; caller has elected to authorize it (loom--http-json never embeds the
 ;; value in the candidate — only the env reference travels). An
 ;; unauthorized secret reference is a refusal.
+;; doc: (loom--http-json config path body) — POST body as JSON to config :base-url + path via
+;; doc: the host/http-request binding (requires loom host bindings). The Bearer secret is read
+;; doc: from the process env via the declared :secret-env reference — the value never travels
+;; doc: in candidate code; an unavailable secret is a refusal. 2xx required; body parsed via
+;; doc: host/json-read.
 (defn loom--http-json [config path body]
   (let* [headers {"Content-Type" "application/json"} secret-ref (loom--get config :secret-env nil)
          _declared (loom--require (string? secret-ref) "upstream secret-env reference must be declared")
@@ -161,6 +197,11 @@
                                       :max-body-bytes (loom--get config :max-response-bytes 1048576)})]
     (loom--require (and (>= (loom--get response :status 0) 200) (< (loom--get response :status 0) 300)) "upstream HTTP failure")
     (host/json-read (loom--get response :body nil))))
+;; doc: (loom--model-respond config request system) — one chat-completions call: validates the
+;; doc: request, wires messages with a system preamble, calls loom--http-json on
+;; doc: "chat/completions", and normalizes the reply to an internal response map
+;; doc: {:request_id :finish_reason :message :usage}. Requires explicit :model and positive
+;; doc: :max_output_tokens. Returns the validated response.
 (defn loom--model-respond [config request system]
   (let* [id (loom--get request :request_id "") messages (loom--get request :messages []) max-output (loom--get request :max_output_tokens 0)]
     (loom--require (not (= id "")) "request id missing")
@@ -189,9 +230,13 @@
 ;; the underlying process (host/process-kill is granted by the host on
 ;; process-attached budgets only) and flips the budget ledger to
 ;; cancelled so outstanding reservations refuse to be admitted.
+;; doc: (loom--session config system budget-tx tools) — fresh session map: upstream config,
+;; doc: system preamble, budget tx callback, tools, empty history, next-request 1.
 (defn loom--session [config system budget-tx tools]
   {:config config :system system :budget-tx budget-tx :tools tools :messages [] :next-request 1 :cancelled false :process nil})
 
+;; doc: (loom--attach-process session process) — binds an upstream process handle (e.g. an ACP
+;; doc: subprocess) so session-cancel can reap it via host/process-kill; nil detaches.
 (defn loom--attach-process [session process]
   ;; Bind an upstream process handle (e.g. an ACP subprocess) so a
   ;; session-cancel can reap it. Pass nil to detach. Cancelling a
@@ -199,6 +244,11 @@
   ;; budget from admitting new reservations.
   (assoc session :process process))
 
+;; doc: (loom--session-call session content options) — appends a user message, reserves budget
+;; doc: (hold = per-call ceiling; no ceiling → refused), calls loom--model-respond, settles
+;; doc: with the reported cost (nil absorbs the hold), and returns {:session :response
+;; doc: :settlement} with the assistant reply appended. On failure the hold is settled as
+;; doc: unknown and the error re-raised.
 (defn loom--session-call [session content options]
   (loom--require (not (get session :cancelled)) "cancelled session")
   (let* [id (str "req-" (get session :next-request)) messages (vector-conj (get session :messages) {:role "user" :content content})
@@ -217,6 +267,9 @@
          :response response :settlement settlement})
       (catch any (loom--settle tx id nil) (error (str *error*))))))
 
+;; doc: (loom--tool-result session call-id content options) — appends a tool message for a
+;; doc: prior tool call (validated), reserves/settles budget as in session-call, and returns
+;; doc: {:session :response :settlement} with the model's next reply appended.
 (defn loom--tool-result [session call-id content options]
   (let* [messages (vector-conj (get session :messages) {:role "tool" :tool_call_id call-id :content content})
          _valid (loom--validate-messages messages)
@@ -229,6 +282,10 @@
             :response response :settlement (loom--settle tx id (loom--get (loom--get response :usage {}) :cost_micros nil))})
          (catch any (loom--settle tx id nil) (error (str *error*))))))
 
+;; doc: (loom--session-cancel session) — cancels the budget ledger FIRST, then reaps the
+;; doc: attached process via host/process-kill (host binding granted on process-attached
+;; doc: budgets only); order prevents a reservation slipping in while the process dies.
+;; doc: Safe with no attached process.
 (defn loom--session-cancel [session]
   ;; Order: cancel the budget FIRST so the next reserve refused. THEN
   ;; reap the process. Reversing the order can let a reservation slip
@@ -239,6 +296,10 @@
 
 ;; ── teacher ────────────────────────────────────────────────────
 
+;; doc: (loom--teacher-validate request external-authority) — validates a teacher request:
+;; doc: request id, non-empty parts, an allowed :licence ("train-student" requires
+;; doc: :permits_training_use), a response byte bound, per-part input modality within the
+;; doc: declared capabilities, and per-part external-authority sign-off. Returns the request.
 (defn loom--teacher-validate [request external-authority]
   (let* [cap (loom--get request :capability {}) parts (loom--get request :parts []) licence (loom--get request :licence nil)
          wants (loom--get request :wants []) modalities (loom--get cap :input_modalities [])]
@@ -255,6 +316,9 @@
         (loom--require (external-authority part) "source is not licensed for externalization"))) parts)
     (map (fn [want] (loom--require (loom--contains (loom--get cap :output_kinds []) want) "teacher output capability unavailable")) wants)
     request))
+;; doc: (loom--teacher-response request response) — validates a teacher reply: matching request
+;; doc: id and teacher_id, no error field; soft scores require a vocabulary of equal width and
+;; doc: are serialized via host/json-bytes. Returns the response unchanged.
 (defn loom--teacher-response [request response]
   (let* [cap (loom--get request :capability {}) scores (loom--get response :soft_scores nil) vocab (loom--get cap :vocabulary nil)]
     (loom--require (= (loom--get request :request_id nil) (loom--get response :request_id nil)) "foreign teacher response")
@@ -265,6 +329,10 @@
                               (host/json-bytes scores)))
     ;; Proposed programs remain data and never gain publisher authority.
     response))
+;; doc: (loom--teacher-http config request external-authority budget-tx) — validates, reserves
+;; doc: budget for "teacher", posts the request to config :teacher-path (default "query"),
+;; doc: validates the reply, then settles with reported cost (nil → unknown on failure).
+;; doc: Uses loom--http-json, so requires the loom host bindings.
 (defn loom--teacher-http [config request external-authority budget-tx]
   (loom--teacher-validate request external-authority)
   (let* [id (loom--get request :request_id nil)]
@@ -273,6 +341,10 @@
                 validated (loom--teacher-response request reply)]
            (loom--settle budget-tx id (loom--get (loom--get reply :usage {}) :cost_micros nil)) validated)
          (catch any (loom--settle budget-tx id nil) (error (str *error*))))))
+;; doc: (loom--embed config texts space budget-tx request-id) — embeds texts under a semantic
+;; doc: space declaration {:encoder :dimension :version}: reserves budget for "embedding",
+;; doc: posts to "embeddings", checks row count and every vector's dimension against the
+;; doc: space, settles, and returns {:space :vectors :model_version}.
 (defn loom--embed [config texts space budget-tx request-id]
   (loom--require (and (not (= "" (loom--get space :encoder ""))) (> (loom--get space :dimension 0) 0)
                      (not (nil? (loom--get space :version nil)))) "embedding semantic-space declaration missing")
@@ -293,12 +365,17 @@
 ;; version is a monotonically-bumped identifier. Comparing vectors
 ;; from different versions is refused upstream (loom--embed refuses to
 ;; even construct mismatched-dimension rows).
+;; doc: (loom--space-declare encoder dimension version) — builds a semantic-space declaration
+;; doc: {:encoder :dimension :version}; requires a string encoder, positive dimension,
+;; doc: non-empty version.
 (defn loom--space-declare [encoder dimension version]
   (loom--require (string? encoder) "encoder id must be string")
   (loom--require (and (number? dimension) (> dimension 0)) "dimension must be positive")
   (loom--require (and (not (nil? version)) (not (= version ""))) "space version must be declared")
   {:encoder encoder :dimension dimension :version version})
 
+;; doc: (loom--spaces-equal? a b) — true only when both declarations name the same encoder,
+;; doc: dimension and version; nil on either side is never equal.
 (defn loom--spaces-equal? [a b]
   ;; Two spaces are comparable only when they name the same encoder at
   ;; the same dimension and version. A near-match is not a match.

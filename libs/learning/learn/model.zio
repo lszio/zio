@@ -10,6 +10,8 @@
 
 ;; ── model descriptions ─────────────────────────────────────────────
 
+;; doc: (model--graph) — the baseline model description: normalize → concat → one
+;; doc: linear fusion. Cannot represent XOR; that is the point of the baseline.
 (defn model--graph []
   ;; the fixed baseline: one linear fusion of the two modalities. It
   ;; cannot represent the XOR — that is the point of the baseline.
@@ -25,6 +27,7 @@
    ;; absent field means "none" to the worker's decoder
    :trainable ["h0"]})
 
+;; doc: (model--linear-graph) — alias of model--graph (kept for readability at call sites).
 (def model--linear-graph model--graph)
 
 ;; ── the structural rewrite ─────────────────────────────────────────
@@ -32,11 +35,15 @@
 ;; applies it; the worker executes the result; nothing else knows the
 ;; change happened.
 
+;; doc: (model--has-relu? ops) — true when any op in ops is a relu.
 (defn model--has-relu? [ops]
   (reduce (fn [found op]
             (if found true (= "relu" (get op :kind nil))))
           false ops))
 
+;; doc: (model--rewrite-add-hidden graph hidden) — idempotent structural rewrite: widen
+;; doc: the head linear to `hidden`, append ReLU + output linear, re-point :outputs and
+;; doc: :trainable at the new head. Description → description.
 (defn model--rewrite-add-hidden [graph hidden]
   ;; real description rewrite: the fusion linear gains a declared width
   ;; and a ReLU, and the head re-points at the new output. Idempotent.
@@ -53,6 +60,8 @@
              :outputs {:logits "h1"}
              :trainable (into (get graph :trainable []) ["h1"])))))
 
+;; doc: (model--nonlinear-graph hidden) — baseline graph with the add-hidden rewrite
+;; doc: applied at width `hidden`.
 (defn model--nonlinear-graph [hidden]
   (model--rewrite-add-hidden (model--graph) hidden))
 
@@ -61,6 +70,8 @@
 ;; + source. States: :draft → :trained → :evaluated → :accepted/:rejected.
 ;; A failed training disqualifies exactly one candidate.
 
+;; doc: (model--candidate n base-graph rewrite source) — fresh :draft candidate applying
+;; doc: rewrite to base-graph; :params and :metrics start nil.
 (defn model--candidate [n base-graph rewrite source]
   (let* [graph (rewrite base-graph)]
     {:id (str "cand-" n)
@@ -72,16 +83,22 @@
      :source source         ; who proposed it: :baseline :rewrite :proposer
      :error nil}))
 
+;; doc: (model--mark-trained cand params-artifact) — :draft → :trained with the params
+;; doc: artifact; any other state rejects the candidate with an error.
 (defn model--mark-trained [cand params-artifact]
   (if (not (= :draft (get cand :state nil)))
     (assoc cand :error "only a draft can become trained" :state :rejected)
     (assoc cand :params params-artifact :state :trained)))
 
+;; doc: (model--mark-evaluated cand metrics) — :trained → :evaluated with metrics; any
+;; doc: other state rejects the candidate with an error.
 (defn model--mark-evaluated [cand metrics]
   (if (not (= :trained (get cand :state nil)))
     (assoc cand :error "only a trained candidate can be evaluated" :state :rejected)
     (assoc cand :metrics metrics :state :evaluated)))
 
+;; doc: (model--accept cand gate-bp) — :evaluated candidate whose :accuracy-bp meets the
+;; doc: integer basis-point gate → :accepted; otherwise rejected with the reason.
 (defn model--accept [cand gate-bp]
   ;; gates compare in integer basis points: zio's comparison primitives
   ;; are integer-only by design (learn.zio's int-math discipline), so a
@@ -96,9 +113,11 @@
 ;; Steps are the shared currency. A candidate that would exceed the
 ;; budget is not started; exhaustion stops the loop without error.
 
+;; doc: (model--budget-remaining budget spent) — steps left under the budget, floored at 0.
 (defn model--budget-remaining [budget spent]
   (if (> spent budget) 0 (- budget spent)))
 
+;; doc: (model--fits? budget spent steps) — true when `steps` more steps fit the budget.
 (defn model--fits? [budget spent steps]
   (>= (model--budget-remaining budget spent) steps))
 
@@ -106,10 +125,13 @@
 ;; Highest accuracy wins; ties prefer the smaller graph (fewer trainable
 ;; layers). A candidate with no metrics is never selected.
 
+;; doc: (model--evaluated? c) — true when c is :evaluated and carries metrics.
 (defn model--evaluated? [c]
   (and (= :evaluated (get c :state nil))
        (get c :metrics nil)))
 
+;; doc: (model--select candidates) — best evaluated candidate: highest accuracy-bp,
+;; doc: ties broken by fewer trainable layers; nil when none qualifies.
 (defn model--select [candidates]
   (let* [scored (filter model--evaluated? candidates)]
     (if (= 0 (count scored))

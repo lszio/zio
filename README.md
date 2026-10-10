@@ -87,6 +87,8 @@ bun run build      # 产出 apps/site/dist
 ```
 
 - 主要入口：`/intro/`（语言介绍）、`/syntax/`（语法文档）、`/playground/`（可编辑多行源码、真实 WASM 执行）。
+- `/reference/` 库参考在构建时扫描 `libs/**/*.zio` 的文件头与
+  [`;; doc:` 注释](docs/libdoc-convention.md)自动生成——源码注释是唯一文档来源。
 - 文档：`/docs/`、`/book/`、`/blog/` 从仓库 Markdown 构建；Grove 介绍在独立的 `/grove/` 路由，应用源码在 `apps/grove/`。
 - 引擎：`apps/site/public/wasm/` 是提交的 WASM 产物。改过 `langs/core/src/` 或
   `libs/std/core.zio` 后先跑 `./tools/build-wasm.sh`，再构建站点，避免运行旧引擎。
@@ -175,8 +177,9 @@ export GROVE_TOKEN_OPERATOR=… GROVE_TOKEN_PUBLISHER=…
 [`examples/manifest.tsv`](examples/manifest.tsv) 中列出的所有文件都可由
 CLI 运行，并受可执行示例合同测试保护。`datalog-concept.zio` 只演示查询
 数据是可读取的 Zio 值，并不执行 Datalog 查询；Datalog evaluator 仍是
-[Planned](docs/feature-matrix.md)。当前不支持 `#{...}` set literal，限制及
-状态也记录在[特性矩阵](docs/feature-matrix.md)。
+[Planned](docs/feature-matrix.md)。`#{...}` set literal 现已可用（map-backed
+`set`，由 bootstrap 提供），quasiquote（`` ` `` / `~` / `~@`）为
+Experimental，状态见[特性矩阵](docs/feature-matrix.md)。
 
 ## 文档
 

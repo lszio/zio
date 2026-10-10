@@ -151,6 +151,32 @@ fn read_from_tokens(
                     return Ok((quoted, tokens.peek().is_some()));
                 }
             }
+            "`" | "~" | "~@" => {
+                if tokens.peek().is_none()
+                    || tokens
+                        .peek()
+                        .is_some_and(|t| matches!(t.text.as_str(), ")" | "]" | "}"))
+                {
+                    return Err(ReaderError::MissingQuoteExpr.at(span_of(start, end)));
+                }
+                // Reader macro: `x → (quasiquote x), ~x → (unquote x),
+                // ~@x → (unquote-splicing x)
+                let form = match token.text.as_str() {
+                    "`" => "quasiquote",
+                    "~" => "unquote",
+                    _ => "unquote-splicing",
+                };
+                let (inner, _) = read_from_tokens(tokens, source_id, input)?;
+                let inner_end = tokens.peek().map_or(BytePos(input.len()), |t| t.start);
+                let inner_span = inner.span().unwrap_or(span_of(start, inner_end));
+                let sym = Sexp::Symbol(form.into(), Some(span_of(start, start)));
+                let wrapped = Sexp::List(vector![sym, inner], Some(span_of(start, inner_span.end)));
+                if let Some(parent) = stack.last_mut() {
+                    parent.1.push_back(wrapped);
+                } else {
+                    return Ok((wrapped, tokens.peek().is_some()));
+                }
+            }
             "#" => {
                 // Dispatch reader macro: #( → vector, #{ → set
                 match tokens.next() {

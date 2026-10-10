@@ -7,14 +7,19 @@
 ;; Branch summaries arrive as data:
 ;;   {:id … :quality 0.91 :accuracy-bp 9100 :divergence 0.42 :baseline? true}
 
+;; doc: (population--sorted-by-accuracy branches) — branches sorted descending by
+;; doc: :metrics :accuracy-bp.
 (defn population--sorted-by-accuracy [branches]
   (sort (fn [a b] (> (get (get a :metrics nil) :accuracy-bp 0)
                      (get (get b :metrics nil) :accuracy-bp 0)))
         branches))
 
+;; doc: (population--is-baseline? b) — true when the branch is flagged :baseline.
 (defn population--is-baseline? [b]
   (get b :baseline false))
 
+;; doc: (population--divergence a b) — caller-reported divergence in [0,1]; 0 for a
+;; doc: branch against itself, :divergence-to-b of a otherwise.
 (defn population--divergence [a b]
   ;; reported by the caller: 0 = identical behavior, 1 = complementary
   (let [ka (get a :id nil) kb (get b :id nil)]
@@ -29,6 +34,10 @@
 ;; Everything else is proposed for pausing (never deletion: history is
 ;; the point).
 
+;; doc: (population--propose branches explore-quota) — allocation proposal: keep the
+;; doc: baseline unconditionally, the accuracy leader, and up to explore-quota branches
+;; doc: greedily most divergent from what is kept; everything else is paused.
+;; doc: → {:keep [...] :pause [...]}.
 (defn population--propose [branches explore-quota]
   (let* [sorted (population--sorted-by-accuracy branches)
          ;; 1. the baseline is kept unconditionally, however it scores
@@ -56,9 +65,11 @@
                                              (if (nil? leader) [] [leader])))]
               (filter (fn [b] (not (contains-id? kept-ids (get b :id nil)))) branches))}))
 
+;; doc: (set-of-ids branches) — map of branch id → true, as a membership set.
 (defn set-of-ids [branches]
   (reduce (fn [acc b] (put acc (get b :id nil) true)) {} branches))
 
+;; doc: (contains-id? ids id) — true when id is in the ids map.
 (defn contains-id? [ids id]
   (get ids id false))
 
@@ -67,9 +78,14 @@
 ;; shared ledger. When the grant cannot cover it, the proposal is to
 ;; pause at safe points — not to shrink a running run mid-step.
 
+;; doc: (population--can-start? spent total requested) — true when requested steps fit
+;; doc: the shared ledger (spent + requested ≤ total).
 (defn population--can-start? [spent total requested]
   (<= (+ spent requested) total))
 
+;; doc: (population--safe-pause branches spent total) — pause lowest-accuracy running
+;; doc: branches until the outstanding debt exceeds the remaining grant;
+;; doc: → {:pause [...] :outstanding n}.
 (defn population--safe-pause [branches spent total]
   ;; propose pausing the LOWEST-accuracy running branches first, until the
   ;; outstanding debt fits the remaining grant
