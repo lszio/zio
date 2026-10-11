@@ -314,3 +314,284 @@ fn wire_rejects_wrong_format_and_version() {
 fn ref_id(id: usize) -> serde_json::Value {
     serde_json::json!({ "$ref": id })
 }
+
+// ── M01: still-image save/restore ────────────────────────────────
+
+use zio_core::image::{restore, save};
+
+fn map_entry(value: &Value, key: &str) -> Value {
+    let Value::Map(entries) = value else {
+        panic!("expected a map of roots");
+    };
+    entries
+        .get(&Value::Keyword(key.into()))
+        .cloned()
+        .unwrap_or_else(|| panic!("missing root :{key}"))
+}
+
+fn bind(ctx: &EvalContext, name: &str, value: Value) {
+    ctx.env.set(name.into(), value);
+}
+
+#[test]
+fn save_restore_round_trips_shared_mutable_binding() {
+    let ctx1 = context();
+    let roots = bootstrap::eval_source(
+        &ctx1,
+        "shared.zio",
+        "(let [n 0] {:get (fn [] n) :bump (fn [] (set! n (+ n 1)) n)})",
+    )
+    .expect("closures");
+    let image = save::save_image(&ctx1, &[roots], &ImageLimits::default()).expect("save");
+    let ctx2 = context();
+    let restored = restore::restore_image(&ctx2, &image, &ImageLimits::default()).expect("restore");
+    let Value::Map(entries) = &restored[0] else {
+        panic!("expected the root map");
+    };
+    let get = entries.get(&Value::Keyword("get".into())).unwrap().clone();
+    let bump = entries.get(&Value::Keyword("bump".into())).unwrap().clone();
+    bind(&ctx2, "get", get);
+    bind(&ctx2, "bump", bump);
+    assert_eq!(
+        bootstrap::eval_source(&ctx2, "bump.zio", "(bump)").unwrap(),
+        Value::Integer(1)
+    );
+    assert_eq!(
+        bootstrap::eval_source(&ctx2, "get.zio", "(get)").unwrap(),
+        Value::Integer(1),
+        "setter and getter must share the restored binding cell"
+    );
+}
+
+#[test]
+fn self_referential_environment_survives_the_round_trip() {
+    let ctx1 = context();
+    let spin = bootstrap::eval_source(
+        &ctx1,
+        "spin.zio",
+        "((fn [] (let [f nil] (do (set! f (fn [] f)) f))))",
+    )
+    .expect("cyclic closure");
+    let image = save::save_image(&ctx1, &[spin], &ImageLimits::default()).expect("save");
+    let ctx2 = context();
+    let restored = restore::restore_image(&ctx2, &image, &ImageLimits::default()).expect("restore");
+    let Value::Function(function) = &restored[0] else {
+        panic!("expected the closure");
+    };
+    // The env's `f` binding is the very same function object.
+    assert_eq!(function.env.get("f"), Some(restored[0].clone()));
+    bind(&ctx2, "spin", restored[0].clone());
+    assert_eq!(
+        bootstrap::eval_source(&ctx2, "call-spin.zio", "(spin)").unwrap(),
+        restored[0],
+        "calling the restored closure returns the same object"
+    );
+}
+
+#[test]
+fn restored_macro_expands_in_the_new_context() {
+    let ctx1 = context();
+    bootstrap::eval_source(&ctx1, "macro.zio", "(defmacro twice [e] `(+ ~e ~e))").expect("macro");
+    let macro_value = ctx1.env.get("twice").expect("twice");
+    let image = save::save_image(&ctx1, &[macro_value], &ImageLimits::default()).expect("save");
+    let ctx2 = context();
+    let restored = restore::restore_image(&ctx2, &image, &ImageLimits::default()).expect("restore");
+    bind(&ctx2, "twice", restored[0].clone());
+    let expanded = bootstrap::eval_source(&ctx2, "expand.zio", "(macroexpand-1 '(twice 3))")
+        .expect("macroexpand");
+    assert_eq!(
+        expanded,
+        Value::List(
+            vec![
+                Value::Symbol("+".into()),
+                Value::Integer(3),
+                Value::Integer(3),
+            ]
+            .into()
+        )
+    );
+}
+
+#[test]
+fn module_exports_survive_the_round_trip() {
+    let ctx1 = context();
+    bootstrap::eval_source(
+        &ctx1,
+        "mod.zio",
+        "(module session :export [answer] (def answer 42))",
+    )
+    .expect("module");
+    let image = save::save_image(&ctx1, &[], &ImageLimits::default()).expect("save");
+    assert_eq!(image.modules.len(), 1, "module table travels");
+    assert_eq!(image.modules[0].exports, vec!["answer".to_string()]);
+    let ctx2 = context();
+    restore::restore_image(&ctx2, &image, &ImageLimits::default()).expect("restore");
+    let exported = ctx2
+        .modules
+        .borrow()
+        .find(&["session".to_string()])
+        .and_then(|module| module.exported("answer"));
+    assert_eq!(
+        exported,
+        Some(Value::Integer(42)),
+        "module exports resolve from the restored environment"
+    );
+}
+
+#[test]
+fn class_dispatch_works_after_restore() {
+    let ctx1 = context();
+    let roots = bootstrap::eval_source(
+        &ctx1,
+        "class.zio",
+        "(do
+            (defclass Widget () ((label :initarg :label)))
+            (defgeneric describe-widget [w])
+            (defmethod describe-widget ((w Widget)) (slot-value w :label))
+            (def box (make-instance Widget :label \"kept\"))
+            {:box box :describe describe-widget})",
+    )
+    .expect("classes");
+    let image = save::save_image(&ctx1, &[roots], &ImageLimits::default()).expect("save");
+    let ctx2 = context();
+    let restored = restore::restore_image(&ctx2, &image, &ImageLimits::default()).expect("restore");
+    bind(&ctx2, "box", map_entry(&restored[0], "box"));
+    bind(
+        &ctx2,
+        "describe-widget",
+        map_entry(&restored[0], "describe"),
+    );
+    let dispatched =
+        bootstrap::eval_source(&ctx2, "dispatch.zio", "(describe-widget box)").expect("dispatch");
+    assert_eq!(dispatched, Value::String("kept".into()));
+}
+
+#[test]
+fn restored_buffer_is_one_shared_cell() {
+    let ctx1 = context();
+    let buffer = Value::Buffer(Arc::new(parking_lot::Mutex::new(b"abc".to_vec())));
+    let image =
+        save::save_image(&ctx1, &[buffer.clone(), buffer], &ImageLimits::default()).expect("save");
+    let ctx2 = context();
+    let restored = restore::restore_image(&ctx2, &image, &ImageLimits::default()).expect("restore");
+    assert_eq!(restored[0], restored[1], "one cell, not two copies");
+    let Value::Buffer(cell) = &restored[0] else {
+        panic!("expected the buffer");
+    };
+    cell.lock().push(b'd');
+    let Value::Buffer(same) = &restored[1] else {
+        panic!("expected the buffer");
+    };
+    assert_eq!(&*same.lock(), b"abcd", "mutation is visible through both");
+}
+
+#[test]
+fn missing_native_binding_and_version_mismatch_are_named_errors() {
+    let ctx1 = context();
+    let native = zio_core::value::NativeFn::new("only-in-one", |_args, _| Ok(Value::Nil));
+    let image = save::save_image(
+        &ctx1,
+        &[Value::NativeFunction(native)],
+        &ImageLimits::default(),
+    )
+    .expect("save");
+    let ctx2 = context();
+    let error = restore::restore_image(&ctx2, &image, &ImageLimits::default()).unwrap_err();
+    assert!(
+        error.to_string().contains("missing native binding")
+            && error.to_string().contains("only-in-one"),
+        "{error}"
+    );
+
+    let mut stale = image;
+    stale.header.runtime = "0.0.0".into();
+    let error = restore::restore_image(&ctx2, &stale, &ImageLimits::default()).unwrap_err();
+    assert!(
+        error.to_string().contains("runtime version mismatch"),
+        "{error}"
+    );
+}
+
+#[test]
+fn image_session_example_round_trips_end_to_end() {
+    let ctx1 = context();
+    let example = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../examples/toolchain/image-session.zio"
+    );
+    let source = std::fs::read_to_string(example).expect("example source");
+    let roots = bootstrap::eval_source(&ctx1, "image-session.zio", &source).expect("example");
+    let macro_value = ctx1.env.get("twice").expect("twice macro");
+    let image = save::save_image(
+        &ctx1,
+        &[roots.clone(), macro_value],
+        &ImageLimits::default(),
+    )
+    .expect("save");
+    let canonical = image.canonical().expect("canonical");
+    let reparsed = image::wire::Image::parse(&canonical).expect("reparse");
+
+    let ctx2 = context();
+    let restored =
+        restore::restore_image(&ctx2, &reparsed, &ImageLimits::default()).expect("restore");
+    bind(&ctx2, "get", map_entry(&restored[0], "get"));
+    bind(&ctx2, "bump", map_entry(&restored[0], "bump"));
+    bind(&ctx2, "spin", map_entry(&restored[0], "spin"));
+    bind(&ctx2, "twice", restored[1].clone());
+    bind(&ctx2, "box", map_entry(&restored[0], "box"));
+    bind(&ctx2, "describe", map_entry(&restored[0], "describe"));
+    bind(&ctx2, "one", map_entry(&restored[0], "one"));
+    bind(&ctx2, "two", map_entry(&restored[0], "two"));
+
+    assert_eq!(
+        bootstrap::eval_source(&ctx2, "s1.zio", "(do (bump) (bump) (get))").unwrap(),
+        Value::Integer(2)
+    );
+    assert_eq!(
+        bootstrap::eval_source(&ctx2, "s2.zio", "(spin)").unwrap(),
+        map_entry(&restored[0], "spin")
+    );
+    assert_eq!(
+        bootstrap::eval_source(&ctx2, "s3.zio", "(macroexpand-1 '(twice 3))").unwrap(),
+        Value::List(
+            vec![
+                Value::Symbol("+".into()),
+                Value::Integer(3),
+                Value::Integer(3),
+            ]
+            .into()
+        )
+    );
+    assert_eq!(
+        bootstrap::eval_source(&ctx2, "s4.zio", "(describe box)").unwrap(),
+        Value::String("kept".into())
+    );
+    let Value::Buffer(cell) = map_entry(&restored[0], "one") else {
+        panic!("expected the buffer");
+    };
+    cell.lock().push(b'!');
+    let Value::Buffer(same) = map_entry(&restored[0], "two") else {
+        panic!("expected the shared buffer");
+    };
+    assert_eq!(&*same.lock(), b"abc!");
+}
+
+#[test]
+fn save_is_deterministic_across_runs() {
+    let ctx1 = context();
+    let roots = bootstrap::eval_source(
+        &ctx1,
+        "det.zio",
+        "{:b ((fn [k] (fn [x] (+ x k))) 4) :a (list 2 1)}",
+    )
+    .expect("roots");
+    let first = save::save_image(&ctx1, std::slice::from_ref(&roots), &ImageLimits::default())
+        .expect("save")
+        .canonical()
+        .expect("canonical");
+    let second = save::save_image(&ctx1, &[roots], &ImageLimits::default())
+        .expect("save")
+        .canonical()
+        .expect("canonical");
+    assert_eq!(first, second);
+}

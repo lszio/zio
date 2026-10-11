@@ -5,6 +5,8 @@
 //! clones per occurrence, matching the language's own clone semantics.
 //! This is the M00 format premise — restore lives in M01.
 
+pub mod restore;
+pub mod save;
 pub mod wire;
 
 use std::collections::HashMap;
@@ -103,6 +105,9 @@ struct Encoder {
     limits: ImageLimits,
     resources: Vec<ResourceRequirement>,
     depth: usize,
+    /// Save walks environment parent chains; plain graph encoding (M00
+    /// contracts) keeps each env self-contained.
+    encode_parents: bool,
 }
 
 /// Encode `roots` into a validated wire image.
@@ -113,6 +118,7 @@ pub fn encode_graph(roots: &[Value], limits: &ImageLimits) -> Result<Image, Eval
         limits: *limits,
         resources: Vec::new(),
         depth: 0,
+        encode_parents: false,
     };
     let mut root_ids = Vec::with_capacity(roots.len());
     for (index, root) in roots.iter().enumerate() {
@@ -202,11 +208,20 @@ impl Encoder {
                     )))
                 }
             }
-            Value::String(inner) => Ok(Encoded::Inline(serde_json::json!({ "value": inner }))),
-            Value::Symbol(inner) => Ok(Encoded::Inline(serde_json::json!({ "value": inner }))),
-            Value::Keyword(inner) => Ok(Encoded::Inline(serde_json::json!({ "value": inner }))),
+            Value::String(inner) => Ok(Encoded::Inline(serde_json::json!({
+                "value": inner,
+                "kind": "string",
+            }))),
+            Value::Symbol(inner) => Ok(Encoded::Inline(serde_json::json!({
+                "value": inner,
+                "kind": "symbol",
+            }))),
+            Value::Keyword(inner) => Ok(Encoded::Inline(serde_json::json!({
+                "value": inner,
+                "kind": "keyword",
+            }))),
             Value::Char(inner) => Ok(Encoded::Inline(
-                serde_json::json!({ "value": inner.to_string() }),
+                serde_json::json!({ "value": inner.to_string(), "kind": "char" }),
             )),
             Value::List(items) => self.sequence(items.iter(), "list", path),
             Value::Vector(items) => self.sequence(items.iter(), "vector", path),
@@ -263,8 +278,9 @@ impl Encoder {
                 Encoded::Ref(id) => encoded.push(serde_json::json!({ "$ref": id })),
             }
         }
-        let _ = kind;
-        Ok(Encoded::Inline(serde_json::json!({ "items": encoded })))
+        Ok(Encoded::Inline(
+            serde_json::json!({ "seq": kind, "items": encoded }),
+        ))
     }
 
     /// A map key or value: inline when pure, a reference node when it is
@@ -294,7 +310,14 @@ impl Encoder {
             };
             bindings.insert(name, encoded);
         }
-        self.nodes[reserved].payload = serde_json::json!({ "bindings": bindings });
+        let mut payload = serde_json::json!({ "bindings": bindings });
+        if self.encode_parents {
+            if let Some(parent) = env.parent() {
+                let parent_id = self.env(&parent, &format!("{path}.parent"))?;
+                payload["parent"] = serde_json::json!({ "$ref": parent_id });
+            }
+        }
+        self.nodes[reserved].payload = payload;
         Ok(reserved)
     }
 
@@ -534,6 +557,7 @@ impl Encoder {
         self.nodes[reserved].payload = serde_json::json!({
             "class": { "$ref": class_id },
             "identity": instance.header.identity,
+            "flags": instance.header.flags.bits(),
             "slots": slots,
         });
         Ok(reserved)

@@ -63,6 +63,11 @@ impl Env {
             .collect()
     }
 
+    /// The enclosing scope, when this is not the root.
+    pub(crate) fn parent(&self) -> Option<Arc<Env>> {
+        self.outer.clone()
+    }
+
     /// Remove `key` from this scope only. Inherited bindings are left
     /// alone: a definition installed later re-binds the name here, so a
     /// stale same-scope binding can be cleared without touching outer

@@ -10,6 +10,15 @@ pub struct ObjectFlags(u8);
 impl ObjectFlags {
     pub const NONE: ObjectFlags = ObjectFlags(0);
     pub const MUTABLE: ObjectFlags = ObjectFlags(1);
+
+    /// Raw bits for image encoding; `from_bits` rebuilds them.
+    pub(crate) fn bits(self) -> u8 {
+        self.0
+    }
+
+    pub(crate) fn from_bits(bits: u8) -> Self {
+        ObjectFlags(bits)
+    }
 }
 
 /// Header shared by all heap-allocated ZOS objects.

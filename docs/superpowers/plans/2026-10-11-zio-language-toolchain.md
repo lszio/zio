@@ -176,15 +176,23 @@ Expected: identity/shared-cell/reference-boundary 行为满足合同；坏 kind�
 
 **Files:** 新建 `langs/core/src/image/{save.rs,restore.rs}`、`examples/toolchain/image-session.zio`；修改 env/context/module/zos 实现与 `image_contract.rs`。
 
-- [ ] Save 遍历显式 roots，编码环境父链、闭包/宏源码或编译 body、捕获、module exports、ZOS 子集与 Buffer；记录 source map，排序语义无序表产生确定格式。NativeFn 只允许绑定稳定 ID/版本，不能保存指针或当前计数 ID。
-- [ ] Restore 先有界校验，再两遍建图/连边，在新 context 里提交完整根；不能边加载边污染旧会话。缺 native binding 或版本不符失败。
-- [ ] 镜像初始化例子创建两个捕获同一可变 binding 的函数，保存后新进程调用 setter 与 getter 检查共享；覆盖自引用环境、宏展开、模块 exports、类方法 dispatch 和 Buffer 修改。
-- [ ] 非注册 Rust closure、活动 channel/调用、未完成任务明确报对象路径；不能 silently nil。保存静止时刻，不序列化执行栈。
+- [x] Save 遍历显式 roots，编码环境父链、闭包/宏源码或编译 body、捕获、module exports、ZOS 子集与 Buffer；记录 source map，排序语义无序表产生确定格式。NativeFn 只允许绑定稳定 ID/版本，不能保存指针或当前计数 ID。
+- [x] Restore 先有界校验，再两遍建图/连边，在新 context 里提交完整根；不能边加载边污染旧会话。缺 native binding 或版本不符失败。
+- [x] 镜像初始化例子创建两个捕获同一可变 binding 的函数，保存后新进程调用 setter 与 getter 检查共享；覆盖自引用环境、宏展开、模块 exports、类方法 dispatch 和 Buffer 修改。
+- [x] 非注册 Rust closure、活动 channel/调用、未完成任务明确报对象路径；不能 silently nil。保存静止时刻，不序列化执行栈。
 
 Run: `cargo test -p zio-core --test image_contract`；M02 CLI 落地后通过其新进程 smoke 补足本包端到端验收。
 Expected: 恢复前后 getter/setter 与宏/模块/ZOS行为一致，重复引用保持共享，坏镜像不会改旧会话。
 
 **Exit:** I1/I2；只有在 M02 新进程证明后才能对外宣称可恢复镜像。
+
+**M01 验收证据（2026-10-12，Linux x64）：**
+
+- `save.rs`：`save_image(ctx, roots, limits)` 遍历显式 roots、环境父链与模块表（按 display_name 排序、exports 排序、source 名），两次保存 canonical 字节一致。
+- `restore.rs`：先 `wire::validate` + runtime 版本核对 + native binding 按名预检，再建图、连边（env/cell 先预留后统一填充），最后才把模块注册进目标 context——失败不留半成品；模块环境在连边阶段前预留。
+- 内联标量携带 kind（string/symbol/keyword/char）、内联序列携带 seq（list/vector）——M00 初版丢掉的类别在 M01 补回并有合同覆盖。
+- 22 项合同全绿：共享可变 binding（setter/getter 跨镜像）、自引用 env（f 绑定即同一对象）、宏在新 context 展开、模块 exports 恢复后可查、类方法 dispatch 恢复后可用、Buffer 恢复为一个共享 cell、缺 native binding 与 runtime 版本不符均为命名错误、示例 `examples/toolchain/image-session.zio` 端到端往返。
+- 保留边界：闭包 body 经 Value 往返（无 span，源码表未入镜像）；编译闭包按 module 名恢复且要求有函数名；执行栈、future、chan 按路径拒绝；函数值直接成环（不经 env）报告具名错误。可恢复镜像的对外宣称仍等 M02 新进程 smoke。
 
 ### M02：镜像 CLI、恢复授权与资源边界
 

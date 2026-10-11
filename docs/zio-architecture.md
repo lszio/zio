@@ -119,7 +119,7 @@ Grove 是 `apps/grove/` 独立应用，不是语言 playground；其业务逐步
 | 自举对照测试与 CLI | `langs/core/tests/self_hosting.rs`、`tools/smoke-self-build.sh` | L02：fresh context 安装整个前端，Stage 1/2/3 文件字节相同，编译执行 sum=10、closure=15；缺失 helper 不回退 Stage0 |
 | LSP 与语法资源 | `contribs/language-server/`、`contribs/tree-sitter-zio/`、`contribs/editors/` | 已有代码/资源；完整功能、安装与发行仍需验收 |
 | 元循环求值器 | `langs/interpreter/`、`langs/core/src/interpreter.rs` | 显式第三执行面：Zio reader/eval/apply/expand；同一实现纳入 L02 编译前端，Rust 引导与宿主机制保留 |
-| 运行时镜像、bin/WASM 导出、完整开发发行 | 新规格与主计划 | 规划：不把已有模块序列化或浏览器 playground 当成已交付 |
+| 运行时镜像、bin/WASM 导出、完整开发发行 | 新规格与主计划 | M00/M01 已验收图格式与静止镜像保存/恢复；镜像 CLI（M02）、导出与发行仍属规划 |
 
 第一条主线以现有 AST、bytecode、Zio 编译器为引导基础，固定语言语义与
 源码位置合同，补齐 Zio 元循环求值器和编译前端，验收编译器产物运行并编译自身、

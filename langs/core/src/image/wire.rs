@@ -39,6 +39,12 @@ pub struct ResourceRequirement {
 pub struct ModuleRecord {
     pub name: String,
     pub exports: Vec<String>,
+    /// Node id of the module's own environment.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub env: Option<usize>,
+    /// Source file name, when the module was loaded from disk.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
 }
 
 /// One encoded runtime graph. `roots` are node ids; `nodes` are dense by
@@ -132,6 +138,14 @@ impl Image {
         for module in &self.modules {
             if module.name.is_empty() {
                 return Err(EvalError::invalid_form("module record with empty name"));
+            }
+            if let Some(id) = module.env {
+                if id >= self.nodes.len() {
+                    return Err(EvalError::invalid_form(format!(
+                        "module {:?} references missing env node {id}",
+                        module.name
+                    )));
+                }
             }
         }
         for resource in &self.resources {

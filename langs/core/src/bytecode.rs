@@ -1582,7 +1582,7 @@ pub(crate) fn eval_source_text(
 
 // ─── Module value <-> artifact ──────────────────────────────────────────
 
-fn value_to_artifact(v: &Value) -> Result<ModuleArtifact, EvalError> {
+pub(crate) fn value_to_artifact(v: &Value) -> Result<ModuleArtifact, EvalError> {
     let Value::Map(map) = v else {
         return Err(EvalError::custom("expected module value (map)"));
     };
