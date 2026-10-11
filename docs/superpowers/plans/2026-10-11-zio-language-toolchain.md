@@ -153,15 +153,24 @@ Expected: Stage 1/2/3 normalized bytes equal；known-answer 程序的 sum=10、c
 
 **Files:** 修改 `value.rs`、`env.rs`、`context.rs`、`module.rs`、`zos/object.rs`、`zos/class.rs`、`zos/gf.rs`；新建 `langs/core/src/image/{mod.rs,wire.rs}`、`langs/core/tests/image_contract.rs`。
 
-- [ ] 列出各现有 Value variant 的可保存规则：纯值、环境/函数/宏/类/模块/Buffer、原生 binding、需恢复资源、默认拒绝资源。先固定 ZOS 实例的可观察共享/clone规则；不靠序列化更改原语言的身份语义。
-- [ ] wire 记录 header(format/runtime/profile)、roots、nodes(id/kind/payload)、refs、modules/bindings 和资源需求；限制节点/边/字节，所有索引与 kind 校验。已存在 portable module 以引用使用而不是复制另一份指令格式。
-- [ ] 内存对象记录 ID，环境/closure/mutable cell 可形成环；测试同一闭包环境两次引用是一个节点，非同一环境不合并，错引用不被接受。
-- [ ] 不建立全局万能序列化框架，只为真实 runtime variants 定义编码；外部 codec 注册仅在 M02/E 包需要时扩展。
+- [x] 列出各现有 Value variant 的可保存规则：纯值、环境/函数/宏/类/模块/Buffer、原生 binding、需恢复资源、默认拒绝资源。先固定 ZOS 实例的可观察共享/clone规则；不靠序列化更改原语言的身份语义。
+- [x] wire 记录 header(format/runtime/profile)、roots、nodes(id/kind/payload)、refs、modules/bindings 和资源需求；限制节点/边/字节，所有索引与 kind 校验。已存在 portable module 以引用使用而不是复制另一份指令格式。
+- [x] 内存对象记录 ID，环境/closure/mutable cell 可形成环；测试同一闭包环境两次引用是一个节点，非同一环境不合并，错引用不被接受。
+- [x] 不建立全局万能序列化框架，只为真实 runtime variants 定义编码；外部 codec 注册仅在 M02/E 包需要时扩展。
 
 Run: `cargo test -p zio-core --test image_contract`。
 Expected: identity/shared-cell/reference-boundary 行为满足合同；坏 kind、孤立引用、重复 ID、超限全部为命名错误，不 panic/分配无界内存。
 
 **Exit:** 可编码运行时图，不是递归 JSON 值复制。M00 仅是格式/身份前提，不宣称镜像交付。
+
+**M00 验收证据（2026-10-11，Linux x64）：**
+
+- `image::encode_graph(roots, &ImageLimits)` 编码 18 种 Value variant：纯值内联按出现克隆；env/function/macro/buffer/cell/class/module 与显式 identity 的 ZOS 实例按真实指针/identity intern；NativeFn 只记注册名（计数 id 不进格式）并登记 `native-binding` 资源需求；future/channel 按对象路径命名拒绝；未知 ZOS object 类型拒绝。
+- 编译函数引用 `ModuleArtifact::to_wire_json()` 的 module 节点一次，不复制指令；捕获是共享 cell 节点，未绑定保留单元命名拒绝。
+- `image_contract.rs` 13 项合同全绿：同环境两引用一节点、克隆闭包 intern 一次、等价环境不合并、共享 buffer 一个 cell、let 自引用 env↔fn 环闭合、两次编码 canonical 字节一致、ZOS identity=7 共享而匿名实例克隆。
+- wire 校验拒绝：未知 kind、越界引用、非 dense/重复 ID、kind/payload 类型错、坏 format/version、节点/边/字节/嵌套预算，全部命名错误；引用遍历为迭代式，不受 payload 深度攻击。
+- 默认 `max_depth=256`：深嵌套 Value 的 encode/drop 递归在 2 MiB 测试线程上本就不安全（L00 quoted-list 已知限制），预算低于该界限；迭代式编码器是后续提升路径。
+- 环境父链、模块表 exports、source map 与两遍建图恢复属于 M01；本包只固定图格式与身份前提。
 
 ### M01：完整静止镜像保存与恢复
 

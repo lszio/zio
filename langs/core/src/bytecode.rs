@@ -534,13 +534,12 @@ pub fn bootstrap_compiler(ctx: &EvalContext) -> Result<(), EvalError> {
             if let Sexp::List(items, _) = &form {
                 if let (Some(Sexp::Symbol(head, _)), Some(Sexp::Symbol(name, _))) =
                     (items.get(0), items.get(1))
-                {
-                    if matches!(
+                    && matches!(
                         head.as_str(),
                         "def" | "defn" | "defmacro" | "defmacro-rules"
-                    ) {
-                        names.push(name.clone());
-                    }
+                    )
+                {
+                    names.push(name.clone());
                 }
             }
             crate::eval::eval_in_context(&form, ctx)?;
@@ -2607,6 +2606,14 @@ enum WireConstant {
 }
 
 impl ModuleArtifact {
+    /// Canonical wire JSON for this artifact — the one format the image
+    /// encoder references instead of copying instructions.
+    pub(crate) fn to_wire_json(&self) -> Result<String, EvalError> {
+        let wire = self.to_wire()?;
+        serde_json::to_string(&wire)
+            .map_err(|error| EvalError::custom(format!("serialize: {error}")))
+    }
+
     fn to_wire(&self) -> Result<WireModule, EvalError> {
         Ok(WireModule {
             version: self.version,

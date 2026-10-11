@@ -53,6 +53,16 @@ impl Env {
         self.data.borrow().get(key).cloned()
     }
 
+    /// Snapshot of this scope's own bindings, unordered. Image encoding
+    /// sorts for determinism; evaluation order never depends on it.
+    pub(crate) fn owned_bindings(&self) -> Vec<(String, Value)> {
+        self.data
+            .borrow()
+            .iter()
+            .map(|(name, value)| (name.clone(), value.clone()))
+            .collect()
+    }
+
     /// Remove `key` from this scope only. Inherited bindings are left
     /// alone: a definition installed later re-binds the name here, so a
     /// stale same-scope binding can be cleared without touching outer
