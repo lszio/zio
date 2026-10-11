@@ -77,4 +77,43 @@ granted_out="$(cd "$work" && "$bin" image run "$work/session.zio-image" \
   || fail 'compile failed'
 [ -s "$work/semantics.zioc" ] || fail 'compiled module is empty'
 
-printf 'PASS toolchain artifacts: save/inspect/run across processes, grants, canary, compile\n'
+# ── bundled applications ─────────────────────────────────────────
+# Source app: static output plus explicit dynamic eval, run with no zio
+# or rustc on PATH and no checkout in sight.
+"$bin" build examples/toolchain/app.zio --target native -o "$work/app" \
+  || fail 'bundle build failed'
+app_out="$(cd "$work" && env -i PATH=/usr/bin:/bin HOME="$HOME" ./app)" \
+  || fail 'bundled app failed'
+case "$app_out" in
+  *"49"*) ;;
+  *) fail "bundled app did not print 49: $app_out" ;;
+esac
+case "$app_out" in
+  *"50"*) ;;
+  *) fail "bundled app dynamic eval did not print 50: $app_out" ;;
+esac
+
+# Image app: the entry restores the still image and keeps its state.
+"$bin" build "$work/session.zio-image" --target native -o "$work/img-app" \
+  --entry '((get root-0 :bump))' || fail 'image bundle build failed'
+img_out="$(cd "$work" && env -i PATH=/usr/bin:/bin HOME="$HOME" ./img-app)" \
+  || fail 'bundled image app failed'
+[ "$img_out" = "1" ] || fail "bundled image app returned: $img_out"
+
+# Damaged payload: one flipped byte must refuse the run by name.
+cp "$work/app" "$work/broken-app"
+python3 - "$work/broken-app" <<'PY'
+import sys
+path = sys.argv[1]
+data = bytearray(open(path, 'rb').read())
+data[len(data) - 36 - 8] ^= 0xff
+open(path, 'wb').write(data)
+PY
+broken_out="$(cd "$work" && env -i PATH=/usr/bin:/bin HOME="$HOME" ./broken-app 2>&1)" \
+  && fail 'damaged payload ran'
+case "$broken_out" in
+  *"checksum mismatch"*) ;;
+  *) fail "damage was not named: $broken_out" ;;
+esac
+
+printf 'PASS toolchain artifacts: save/inspect/run, grants, canary, compile, bundled apps\n'

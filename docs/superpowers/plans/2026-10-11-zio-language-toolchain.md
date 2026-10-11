@@ -227,13 +227,21 @@ Expected: inspect 显示格式/目标/roots/required capabilities；run 能调�
 
 **Files:** 新建 `langs/cli/src/bundle.rs`、`examples/toolchain/app.zio`；修改 CLI/Cargo/bootstrap/bytecode；扩展 artifact smoke。
 
-- [ ] build 输入支持源码、`.zioc` 与 `.zio-image`。采用预构建 runtime 模板附带有界的 payload 和校验 footer；启动时校验 offset/length/version/entry。不运行 rustc 编译用户 Zio 程序，也不硬编码 checkout 路径。
-- [ ] entry 与依赖 manifest 明确；源程序 default 为顶层执行，镜像由显式 entry 启动。静态 modules 嵌入到 BufferIoHost 或已有 module loader profile，所有资源解析以包位置/host grant为准。
-- [ ] 对动态 eval/require 包含必要 reader/compiler/declared modules，缺封闭依赖时保守保留，不输出运行到一半才缺功能的程序。
-- [ ] 从源码、编译模块和镜像分别导出应用；放到临时目录，隐藏 checkout，PATH 无 zio/rustc，验证结果和动态行为；损坏 payload 拒绝。
+- [x] build 输入支持源码、`.zioc` 与 `.zio-image`。采用预构建 runtime 模板附带有界的 payload 和校验 footer；启动时校验 offset/length/version/entry。不运行 rustc 编译用户 Zio 程序，也不硬编码 checkout 路径。
+- [x] entry 与依赖 manifest 明确；源程序 default 为顶层执行，镜像由显式 entry 启动。静态 modules 嵌入到 BufferIoHost 或已有 module loader profile，所有资源解析以包位置/host grant为准。
+- [x] 对动态 eval/require 包含必要 reader/compiler/declared modules，缺封闭依赖时保守保留，不输出运行到一半才缺功能的程序。
+- [x] 从源码、编译模块和镜像分别导出应用；放到临时目录，隐藏 checkout，PATH 无 zio/rustc，验证结果和动态行为；损坏 payload 拒绝。
 
 Run: `zio build examples/toolchain/app.zio --target native -o /tmp/zio-app`；`/tmp/zio-app`。
 Expected: 例子打印已知 `49` 并成功调用显式动态 eval 得到 `50`；镜像版还保持 M01 状态，外部依赖完整声明。
+
+**A00 验收证据（2026-10-12，Linux x64）：**
+
+- `langs/cli/src/bundle.rs`：应用 = runtime 二进制 + JSON payload + 36 字节 footer（magic/版本/长度/offset/FNV-1a 校验和）；启动钩子检测 footer 并运行 payload，普通 runtime 行为不变。构建只用当前二进制作模板，不调 rustc、不写死 checkout 路径。
+- 三种输入：`.zio` 顶层执行、`.zioc` 便携模块（构建期即 deserialize 验证）、`.zio-image` 需显式 `--entry` 表达式，恢复后按名绑定 roots。
+- 模块声明闭包：构建期用真实 reader 扫描入口与各模块源码的 `require`/`module` 形式，缺失依赖在构建时拒绝并指名（inline `(module :name …)` 自满足）；运行期按 manifest 顺序预注册，`require` 命中已加载模块，未声明依赖无法触碰 checkout。
+- `bundle_contract.rs` 4 项全绿 + smoke 扩展：隔离环境（PATH 仅 /usr/bin:/bin、无 checkout）运行源码应用输出 49 与动态 eval 的 50；镜像入口应用输出 1（M01 共享绑定状态保持）；单字节篡改载荷被“checksum mismatch”拒绝且无输出；未声明模块的构建失败且不留下产物。
+- 保留边界：应用为单文件 runtime+payload（非机器码 AOT）；浏览器与 WASI 导出属 A01/A02；bundle 不含 LSP 等开发工具。
 
 **Exit:** A1。标注 bytecode/image+runtime，不宣称 machine-code AOT/native-speed。
 

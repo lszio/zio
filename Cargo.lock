@@ -1502,6 +1502,8 @@ name = "zio-cli"
 version = "0.2.0"
 dependencies = [
  "im",
+ "serde",
+ "serde_json",
  "zio-core",
  "zio-host",
 ]

@@ -57,6 +57,17 @@ zio compile PROGRAM.zio -o OUT                        # 编译为便携模块
 文件访问仅限 `--grant-dir` 授予的根目录，根外读取按拒绝处理——镜像本身不携带
 任何权限或凭据。`inspect` 只做结构与预算校验，不触发恢复。
 
+```sh
+zio build examples/toolchain/app.zio --target native -o /tmp/zio-app
+/tmp/zio-app
+```
+
+`build` 产出单文件应用：runtime 二进制 + JSON payload + 带校验和的 footer，
+启动时校验后运行 payload。输入支持源码（`.zio`）、便携模块（`.zioc`）与
+镜像（`.zio-image`，需 `--entry EXPRESSION`）。模块依赖在构建期按真实
+reader 扫描声明闭包，缺失即拒绝构建；未声明的 `require` 在运行时也无法
+触碰 checkout。
+
 
 ## 表达式与值
 

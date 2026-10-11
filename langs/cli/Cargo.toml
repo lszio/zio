@@ -12,6 +12,9 @@ readme = "../../README.md"
 zio-core = { path = "../core" }
 zio-host = { path = "../../contribs/native/host" }
 im = "15.1.0"
+# Bundle payloads are JSON records; the runtime itself stays dependency-light.
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 
 # The crate target stays `zio-cli` on purpose. Declaring `[[bin]] name =
 # "zio"` would rename the target, and cargo only sets

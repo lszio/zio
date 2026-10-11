@@ -22,6 +22,7 @@ use zio_core::error::EvalError;
 use zio_core::im::Vector;
 use zio_core::value::Value;
 
+mod bundle;
 mod commands;
 
 // ── Context setup ───────────────────────────────────────────────
@@ -579,6 +580,7 @@ const USAGE: &str = "Usage: zio [--lib-dir DIR]... [--entry NAME] [--step-limit 
        zio image inspect IMAGE\n\
        zio image run IMAGE [--eval EXPR] [--grant-dir DIR]...\n\
        zio compile PROGRAM.zio -o OUT\n\
+       zio build INPUT --target native -o APP [--entry NAME] [--module NAME=PATH]...\n\
        \n\
        --entry NAME     call NAME after the source loads, with no arguments\n\
        --step-limit N   stop after N evaluator steps (required with --entry)\n\
@@ -668,7 +670,22 @@ fn run_self_build(output_dir: &Path, verify: bool) -> Result<(), EvalError> {
 
 /// `zio [--flags] [script]` — flags may precede the script path.
 fn main() {
+    // A bundled application runs its payload; a plain runtime continues.
+    if let Some(result) = bundle::maybe_run_bundled() {
+        if let Err(error) = result {
+            eprintln!("Error: {error}");
+            std::process::exit(1);
+        }
+        return;
+    }
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().is_some_and(|arg| arg == "build") {
+        if let Err(error) = bundle::run_build(&args[1..]) {
+            eprintln!("Error: {error}");
+            std::process::exit(1);
+        }
+        return;
+    }
     if args.first().is_some_and(|arg| arg == "image") {
         if let Err(error) = commands::run_image(&args[1..]) {
             eprintln!("Error: {error}");
