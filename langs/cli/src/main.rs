@@ -22,6 +22,8 @@ use zio_core::error::EvalError;
 use zio_core::im::Vector;
 use zio_core::value::Value;
 
+mod commands;
+
 // ── Context setup ───────────────────────────────────────────────
 
 /// Module roots the language entry point is allowed to load from.
@@ -573,6 +575,10 @@ const USAGE: &str = "Usage: zio [--lib-dir DIR]... [--entry NAME] [--step-limit 
        \x20        [--app-web-root DIR] [--app-tensor-backend FILE] [--app-tensor-python FILE]\n\
        \x20        [--app-root-dir DIR] [--app-bind ADDR] [--app-workers N] [--args ARG]...\n\
        zio self-build [--verify] [--out-dir DIR]\n\
+       zio image save PROGRAM.zio -o IMAGE [--root NAME]...\n\
+       zio image inspect IMAGE\n\
+       zio image run IMAGE [--eval EXPR] [--grant-dir DIR]...\n\
+       zio compile PROGRAM.zio -o OUT\n\
        \n\
        --entry NAME     call NAME after the source loads, with no arguments\n\
        --step-limit N   stop after N evaluator steps (required with --entry)\n\
@@ -663,6 +669,20 @@ fn run_self_build(output_dir: &Path, verify: bool) -> Result<(), EvalError> {
 /// `zio [--flags] [script]` — flags may precede the script path.
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().is_some_and(|arg| arg == "image") {
+        if let Err(error) = commands::run_image(&args[1..]) {
+            eprintln!("Error: {error}");
+            std::process::exit(1);
+        }
+        return;
+    }
+    if args.first().is_some_and(|arg| arg == "compile") {
+        if let Err(error) = commands::run_compile(&args[1..]) {
+            eprintln!("Error: {error}");
+            std::process::exit(1);
+        }
+        return;
+    }
     if args.first().is_some_and(|arg| arg == "self-build") {
         let default_dir = Path::new("target/zio-self-build");
         let (verify, output_dir) = match &args[1..] {

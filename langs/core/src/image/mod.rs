@@ -136,6 +136,7 @@ pub fn encode_graph(roots: &[Value], limits: &ImageLimits) -> Result<Image, Eval
             profile: "graph-v1".to_string(),
         },
         roots: root_ids,
+        root_names: Vec::new(),
         nodes: encoder.nodes,
         modules: Vec::new(),
         resources: encoder.resources,

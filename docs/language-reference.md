@@ -43,6 +43,20 @@ context 安装上一代完整制品后再编译。旧前端绑定全部移除，
 四个编译入口与 sum=10、closure=15。构建 context 使用空模块根，不借用外部模块。
 这证明首轮便携字节码固定点，不代表 Rust-free、机器码 AOT、镜像或全套发行。
 
+### 镜像与编译制品
+
+```sh
+zio image save PROGRAM.zio -o IMAGE [--root NAME]...  # 评估并保存静止镜像
+zio image inspect IMAGE                              # 只读元数据，不恢复
+zio image run IMAGE [--eval EXPR] [--grant-dir DIR]... # 空模块根恢复后执行
+zio compile PROGRAM.zio -o OUT                        # 编译为便携模块
+```
+
+`save` 的 roots 默认是程序结果（名 `root-0`），`--root NAME` 保存指定绑定。
+`run` 在空模块根的 fresh context 恢复，按名绑定 roots，再求值 `--eval`；
+文件访问仅限 `--grant-dir` 授予的根目录，根外读取按拒绝处理——镜像本身不携带
+任何权限或凭据。`inspect` 只做结构与预算校验，不触发恢复。
+
 
 ## 表达式与值
 

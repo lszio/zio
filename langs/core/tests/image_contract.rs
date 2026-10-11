@@ -311,6 +311,44 @@ fn wire_rejects_wrong_format_and_version() {
     assert!(image::wire::Image::parse(&old).is_err());
 }
 
+#[test]
+fn named_roots_round_trip_and_validate() {
+    let ctx1 = context();
+    let roots = bootstrap::eval_source(&ctx1, "named.zio", "[42 \"session\"]").expect("roots");
+    let Value::Vector(items) = &roots else {
+        panic!("expected a vector");
+    };
+    let image = save::save_named_image(
+        &ctx1,
+        &[
+            ("answer".to_string(), items[0].clone()),
+            ("label".to_string(), items[1].clone()),
+        ],
+        &ImageLimits::default(),
+    )
+    .expect("save");
+    assert_eq!(
+        image.root_names,
+        vec!["answer".to_string(), "label".to_string()]
+    );
+    let ctx2 = context();
+    let restored = restore::restore_image(&ctx2, &image, &ImageLimits::default()).expect("restore");
+    assert_eq!(restored[0], items[0]);
+    assert_eq!(restored[1], items[1]);
+
+    // Duplicate names would silently shadow a root on restore.
+    let mut duplicated = image.clone();
+    duplicated.root_names[1] = "answer".into();
+    let error = duplicated.validate(&ImageLimits::default()).unwrap_err();
+    assert!(error.to_string().contains("duplicate root name"), "{error}");
+
+    // Names must line up with roots.
+    let mut misaligned = image;
+    misaligned.root_names.pop();
+    let error = misaligned.validate(&ImageLimits::default()).unwrap_err();
+    assert!(error.to_string().contains("root names"), "{error}");
+}
+
 fn ref_id(id: usize) -> serde_json::Value {
     serde_json::json!({ "$ref": id })
 }

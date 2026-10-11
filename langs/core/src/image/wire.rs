@@ -54,6 +54,10 @@ pub struct ModuleRecord {
 pub struct Image {
     pub header: Header,
     pub roots: Vec<usize>,
+    /// Names for `roots`, same length. A name is a binding key the
+    /// restore side chooses; it is not a path and carries no authority.
+    #[serde(default)]
+    pub root_names: Vec<String>,
     pub nodes: Vec<Node>,
     #[serde(default)]
     pub modules: Vec<ModuleRecord>,
@@ -132,6 +136,21 @@ impl Image {
             if *id >= self.nodes.len() {
                 return Err(EvalError::invalid_form(format!(
                     "root references missing node {id}"
+                )));
+            }
+        }
+        if !self.root_names.is_empty() && self.root_names.len() != self.roots.len() {
+            return Err(EvalError::invalid_form(format!(
+                "image has {} roots but {} root names",
+                self.roots.len(),
+                self.root_names.len()
+            )));
+        }
+        let mut seen_names = std::collections::HashSet::new();
+        for name in &self.root_names {
+            if !seen_names.insert(name) {
+                return Err(EvalError::invalid_form(format!(
+                    "duplicate root name {name:?}"
                 )));
             }
         }

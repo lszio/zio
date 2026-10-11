@@ -198,9 +198,9 @@ Expected: 恢复前后 getter/setter 与宏/模块/ZOS行为一致，重复引�
 
 **Files:** 修改 CLI、`image/mod.rs`、bootstrap/context；新建 `langs/cli/src/commands.rs`、`tools/smoke-toolchain-artifacts.sh`，扩展 image tests。
 
-- [ ] 实现 `image save/inspect/run` 与 `compile ... -o ...`；inspect 只校验元数据，不运行恢复器。入口解析保存与运行路径复用，不遗留第二套 context 装配。
-- [ ] 宿主注册 trusted restorer(binding ID/version/capabilities)，资源描述不含密钥或授权值；缺 grant 先拒绝，再创建资源。JS handles 无codec时拒绝，后续 codec 同样需要验证和 grants。
-- [ ] smoke 启动进程 A save、进程 B inspect/run；恢复环境从宿主 grant 建立，移出源码树验证 portable 根。通过 canary 文件和环境 token 证明保存/恢复未继承权限或泄漏密钥。
+- [x] 实现 `image save/inspect/run` 与 `compile ... -o ...`；inspect 只校验元数据，不运行恢复器。入口解析保存与运行路径复用，不遗留第二套 context 装配。
+- [x] 宿主注册 trusted restorer(binding ID/version/capabilities)，资源描述不含密钥或授权值；缺 grant 先拒绝，再创建资源。JS handles 无codec时拒绝，后续 codec 同样需要验证和 grants。
+- [x] smoke 启动进程 A save、进程 B inspect/run；恢复环境从宿主 grant 建立，移出源码树验证 portable 根。通过 canary 文件和环境 token 证明保存/恢复未继承权限或泄漏密钥。
 
 规划 smoke 命令：
 
@@ -213,6 +213,15 @@ zio image run /tmp/session.zio-image
 Expected: inspect 显示格式/目标/roots/required capabilities；run 能调用恢复的闭包和宏。无授权、缺 binding、无外语 codec 返回非零并包含对象路径/原因；failed restore 不破坏其他会话。
 
 **Exit:** I1/I2/I3；资源复建至少跑通一个受 root 限制的实际文件资源例子，不能用 mock echo 验收恢复权限。
+
+**M02 验收证据（2026-10-12，Linux x64）：**
+
+- `langs/cli/src/commands.rs`：`image save/inspect/run` 与 `compile -o`；save 与 run 共用 `script_context` 装配（程序目录 + ZIO_PATH 的模块根），inspect 只做 `wire::Image::parse` 元数据校验，绝不触发恢复。
+- 恢复授权：restore context 使用 `GrantIoHost`（stdio 透传，所有文件操作须落在 `--grant-dir` canonical 根内），模块根为空；镜像 resource requirements 在建图前按名预检（缺 binding 先拒绝再创建资源）。镜像格式只保存注册名，不含密钥或授权值。
+- `wire::Image` 新增 `root_names`（与 roots 等长、唯一），`save_named_image` 供宿主命名；恢复侧按名绑定。
+- `tools/smoke-toolchain-artifacts.sh` 实跑通过：进程 A save（538764 bytes，1 root，350 nodes）→ grep 证明 env token 与 canary 路径均未进入镜像 → 进程 B 在源码树外 inspect（format/root/module 均报告）→ run 恢复后调用闭包得共享绑定 1 → 无 grant 读 canary 被拒且报错点名 grant 边界 → `--grant-dir` 后读取真实文件资源成功 → compile 产出 14996 字节便携模块。
+- `image_contract.rs` 新增 root names 往返/重复名/错长合同；23 项全绿。
+- 保留边界：只保存静止时刻，执行栈与活动资源按路径拒绝；恢复不做外部资源自动重建（文件资源以宿主 grant 现场创建）；应用打包导出属 A00–A02。
 
 ### A00：原生独立应用
 

@@ -70,10 +70,26 @@ pub fn save_image(
             profile: "still-v1".to_string(),
         },
         roots: root_ids,
+        root_names: Vec::new(),
         nodes: encoder.nodes,
         modules: records,
         resources: encoder.resources,
     };
+    image.validate(limits)?;
+    Ok(image)
+}
+
+/// Save with caller-chosen root names; restore binds each restored root
+/// under its name. Names are binding keys chosen by the host — the image
+/// never stores an authority or a path.
+pub fn save_named_image(
+    ctx: &EvalContext,
+    roots: &[(String, Value)],
+    limits: &ImageLimits,
+) -> Result<wire::Image, EvalError> {
+    let values: Vec<Value> = roots.iter().map(|(_, value)| value.clone()).collect();
+    let mut image = save_image(ctx, &values, limits)?;
+    image.root_names = roots.iter().map(|(name, _)| name.clone()).collect();
     image.validate(limits)?;
     Ok(image)
 }
