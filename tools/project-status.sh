@@ -7,7 +7,7 @@ cd "$root"
 emit_status() {
   local tests special_forms native_bindings runnable_examples crates
   tests="$(cargo test --workspace -- --list 2>/dev/null | awk '/: test$/ { count += 1 } END { print count + 0 }')"
-  special_forms="$(rg -n '=> Some\(' langs/core/src/special/mod.rs | wc -l | tr -d ' ')"
+  special_forms="$(rg -n '^[[:space:]]*"[^"]+" =>' langs/core/src/special/mod.rs | wc -l | tr -d ' ')"
   native_bindings="$(rg -n 'Value::NativeFunction\(NativeFn::new' langs/core/src/builtins/ | wc -l | tr -d ' ')"
   runnable_examples="$(awk -F '|' '$1 !~ /^#/ && $2 == "runnable" { count += 1 } END { print count + 0 }' examples/manifest.tsv)"
   # member count follows the workspace manifest, so adding a crate cannot

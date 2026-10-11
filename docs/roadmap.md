@@ -1,49 +1,78 @@
 # Zio 路线图 — v0.2 → v1.0
 
-> 从可验证的 AST Lisp 内核 + experimental ZOS 子集到自举的通用语言
+> 2026-10-11 当前主线：语义独立的通用 Lisp、元循环/自举与运行时镜像，
+> 最终以全套开发发行和可裁剪应用产物交付。
 >
-> 未交付的 Phase、交付标准和应用蓝图是规划目标；历史 Grove 表格保留
-> 原任务交付证据，不代表新的 agent 产品主线完成。当前能力状态以
-> [特性矩阵](feature-matrix.md)为准，生成的仓库数量见
-> [项目状态](status.md)。
+> 当前目标以[语言与工具链规格](superpowers/specs/2026-10-11-zio-language-toolchain-design.md)为准，
+> 工作包、依赖和验收以[主计划](superpowers/plans/2026-10-11-zio-language-toolchain.md)为准。
+> 下方旧 Phase 保留历史索引与证据，不是当前排期或本轮实跑结果。
 
 ---
 
 ## 概要
 
-**当前**：v0.2 — AST evaluator 可运行，ZOS class/generic dispatch 子集为
-Experimental；可验证数量见[项目状态](status.md)。
+**当前基础**：已有 Rust Reader/AST evaluator、Experimental ZOS、字节码运行时、
+Zio 编译器、自举对照测试、LSP 与 Tree-sitter/编辑器资源。可检查来源见
+[架构 §3.3](zio-architecture.md#33-工具链当前来源与规划验收)；存在源码不等于本轮验收，
+也不等于镜像或完整发行已经交付；L01 元循环与 L02 首轮便携编译器自举已验收，状态与实跑证据见主计划和语言参考。
 
-**目标**：v1.0 — 自举工具链、嵌入式友好、ZOS 对象系统完整、扩展库生态 MVP。
+**目标**：Zio 语义不依附 Rust trait；Rust 提供引导与机制，Zio 表达 reader、
+eval/apply、展开、分析与编译。开发发行一次配齐解释器、编译器、LSP、语法/编辑器资源、
+WASM 与文档；最小应用产物不强制带开发工具、未用引擎或 Grove。
 
-**排期依据**：按合同依赖与真实验收推进，不沿用旧的 8–10 个月估算或测试数量目标作为交付承诺。
+**排期依据**：按合同依赖与真实验收推进。旧版本号、估时、LOC 和测试数量
+不作为当前交付承诺；测试用于证明行为，不以凑数量定义完成。
 
 ---
 
 ## 架构原则
 
-三条原则驱动路线图：
-
-1. **核心收敛，保留 ZOS** — 对象/类/泛型函数/方法/MOP 属于语言核心方向；官方 Zio 库 Numa（计算）、Rill（CLI 组合）、Loom（Agent harness）与独立 Grove 应用不反向进入语言语义。
-2. **先做对再做快** — AST 解释器先验证语义；JIT/ZIR/bytecode VM 当前均为 [Planned](feature-matrix.md)，不同时作为第一轮自举前提。
-3. **工具链自举与应用演化分开** — Zio 编写展开/分析/编译器，Rust 持最小运行时和宿主；Grove 先验证可编码 agent、生成执行和人工审查升级。两条线互不阻塞，见 [ADR-019](adrs.md#adr-019-grove-独立应用与同像性逻辑演化)。
+1. **语义独立，保持四层目录** — `langs/` 持语言与工具链，`libs/` 持 Zio 库，
+   `contribs/` 持可信宿主/引擎/工具适配，`apps/` 持应用。ZOS 保留核心，
+   Numa/Rill/Loom 与独立 Grove 只消费语言，不反向定义语义。
+2. **先做对再做快** — 复用已有 AST、bytecode 和 Zio compiler；
+   元循环/编译行为逐项对照，优化 ZIR/JIT 与机器码 AOT 不作为首轮完成前提。
+3. **语言双主线与应用分开** — 元循环求值器/自举和镜像/导出分别验收，
+   汇合到完整发行；Grove 的应用演化另循产品计划，不阻塞语言发行。
 
 ## 当前目录切换与后续实现（2026-10-07）
 
-本轮结构切换：语言平铺在 `langs/core/`、`langs/cli/`，Zio 库归 `libs/`，
-通用 Rust 传输/宿主适配归 `contribs/native/loom/`，应用归 `apps/`。
-`apps/site/` 是语言介绍/文档/playground；`apps/grove/` 是独立产品。
-批准合同与验收见[目录计划](superpowers/plans/2026-10-07-language-first-layout.md)。
-此项记录结构重构，不新增或重算测试数量，不把历史实跑作为迁移后的证据。
+该日期标题保留原引用：2026-10-07 的[目录计划](superpowers/plans/2026-10-07-language-first-layout.md)
+记录首轮物理布局切换及当时实跑，不是当前工作包。四层目录保持，不另起迁移布局。
+Grove 的存储、调度、评价和治理等 Rust 业务尚未整体迁成 Zio；可信安全和后端
+机制保留必要 Rust 实现。`libs/rill/cli.zio` 已有 CLI 解析组件，独立发行与完整合同另行验收。
+编译器、LSP、Tree-sitter 已有来源，不再把它们写成完全不存在。
 
-下一步的业务方向是 Zio 库与 Zio Grove 业务，**不是继续把独立 Rust 业务库作为目标**。
-现有 `apps/grove/native/` 仍含 Rust 存储、调度、评价、治理及产品入口，尚未整体迁为 Zio。
-通用 native/transport、可信安全与后端边界保留必要 Rust 实现。
-Rill 未实现，不建立空占位目录。编译器自举、Tree-sitter 与 LSP 仍待各自验收。
+### 当前双主线与汇合验收（2026-10-11）
 
-旧[统一实现计划](superpowers/plans/2026-10-05-zio-grove-convergence.md)的 T/C/I/H/G
-编号和下面 Phase 1–7 是历史功能/证据索引，物理落点与库实现归属由当前
-[架构](zio-architecture.md)及 2026-10-07 计划取代；不得继续按旧目录建 Rust 库。
+| 主线 | 当前起点 | 目标与验收 |
+|---|---|---|
+| A：元循环求值器与自举编译器 | Rust AST、`bytecode.rs`、`compiler.zio`、`self_hosting.rs` | 固定语言/对象/模块与源码位置合同；Zio eval/apply 与 AST/bytecode 行为对照；编译器产物编译自身、规范化固定点与目标语义覆盖 |
+| B：运行时镜像与导出 | 现有值、闭包与模块机制；模块序列化不等于镜像 | 对象图保存/恢复保留身份、共享、循环及闭包；外部资源明确重建，否则拒绝；恢复权限重新授予；分别验收 bin、浏览器 WASM 与 WASI |
+| 汇合：引擎与完整开发发行 | 现有宿主接口、工具/语法资源、浏览器入口 | 外部解释/编译引擎库明确源码入口与制品合同；解释器、编译器、LSP、语法资源、WASM、文档一起交付，干净安装可用，不依赖构建机源码路径 |
+
+以源码为输入，四类产物为完整开发发行版、编译模块（便携字节码）、运行时镜像、
+应用产物；native bin、WASM-browser、WASM-WASI 是应用产物子类型。
+首轮 bin 是 bytecode/初始镜像 + runtime 打包，不是机器码 AOT；完整开发发行与最小
+应用产物分开。`inline` 是外语代码入口，不必然 eval；解释执行或编译制品由引擎
+库合同决定。当前 JS bridge 为 WASM-only，`js` dotted resolver 为 interpreter-only，
+native CLI 无 JS，不把它们当作通用外语引擎已交付。
+
+依赖方向：先固定语义与运行机制，A/B 可按共同合同分别推进；镜像恢复须有
+明确的代码/模块绑定和资源能力合同；导出消费稳定制品与恢复入口；完整发行再
+验收工具、引擎、平台与安装组合。详细工作包只维护在
+[主计划](superpowers/plans/2026-10-11-zio-language-toolchain.md)，本页不复制第二套排期。
+
+### 历史 Phase 与计划的读取方式
+
+下面 Phase 1–7、应用蓝图、依赖图和风险矩阵保留原标题及编号，避免破坏引用。
+其旧估时、LOC、测试数目标、目录和 API 示例均为**历史规划快照**，不是当前
+实现状态、待办优先级或承诺；历史勾选/命令与测量仅在当时任务范围内成立。
+本轮未重跑其中任何命令。未实现 API 示例不能直接作为当前可运行用法。
+
+旧[统一实现计划](superpowers/plans/2026-10-05-zio-grove-convergence.md)的 T/C/I/H/G、
+W00–W17 和 2026-10-07 目录计划作为历史证据索引保留；目标、物理归属和当前
+依赖以前述新规格、新计划与[架构](zio-architecture.md)为准，不按旧目录重建 Rust 库。
 
 
 ---
@@ -429,8 +458,8 @@ ACP 客户端/教师适配按 G06 验收，服务端按 G07 验收；不另起�
 
 ## 依赖图
 
-下面保留旧功能 Phase 的依赖示意。当前实现主线的合同依赖以前面的工作包
-表与统一实现计划为准，不能据此要求 Grove 等待完整 VM/JIT 或编辑器。
+下面仅保留旧 Phase 的历史依赖示意。当前语言双主线以本页前部与新主计划
+为准；Grove 不等待完整 VM/JIT、编辑器或镜像才能推进独立应用验收。
 
 ```
 Phase 1 ──── Span ───────────────────→ Phase 1.2 Reader 扩展 ───→ Phase 3 Reader Macro

@@ -18,9 +18,9 @@
 (defmacro nif [expr pos zero neg]
   `(let [n ~expr]
      (cond
-       (pos? n) ~pos
-       (zero? n) ~zero
-       true ~neg)))
+       ((pos? n) ~pos)
+       ((zero? n) ~zero)
+       (else ~neg))))
 
 (println (nif 5 "positive" "zero" "negative"))     ;; "positive"
 (println (nif 0 "positive" "zero" "negative"))     ;; "zero"
@@ -50,7 +50,7 @@
 ;; → (if false nil 42)
 
 (println (macroexpand-1 '(nif 5 "pos" "zero" "neg")))
-;; → (let [n 5] (cond (pos? n) "pos" (zero? n) "zero" true "neg"))
+;; → (let [n 5] (cond ((pos? n) "pos") ((zero? n) "zero") (else "neg")))
 
 ;; ── def-logger — macro generating functions ───────────────────
 

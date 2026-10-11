@@ -11,6 +11,7 @@ pub mod context;
 pub mod env;
 pub mod error;
 pub mod eval;
+pub mod interpreter;
 pub mod io;
 pub mod macros;
 pub mod module;

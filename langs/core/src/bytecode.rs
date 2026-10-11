@@ -3,19 +3,27 @@
 //! This module is the only thing the rest of the evaluator calls into when a
 //! function value carries `compiled: Some(closure)`. The compiler living in
 //! `langs/compiler/compiler.zio` lowers Zio source into the constant pool and
-//! opcode table this VM understands; `bootstrap_compiler` makes that lowering
-//! available at boot, `run_source`/`execute_module` run installed programs,
-//! and `self_build` performs the three-stage build that proves the compiler
-//! compiles itself.
+//! opcode table this VM understands; `bootstrap_compiler` installs the
+//! interpreted frontend bundle (reader, expand, evaluator, analyze,
+//! compiler), `run_source`/`execute_module` run installed programs, and
+//! `self_build` performs the three-stage build that proves the compiler
+//! compiles itself: the interpreted frontend produces stage 1, and each
+//! later stage is the previous stage's compiled frontend compiling the
+//! same bundle again in a fresh context.
 //!
-//! Everything here executes — no AST fallback, no re-interpretation of Sexp.
-//! Native ZOS class/generic primitives stay native on purpose: ordinary
-//! function/method/initializer bodies compile to callable closures through
-//! `compile_source`. The VM charges fuel through `EvalRuntime::spend` on
+//! Explicit artifacts execute bytecode without expression interpretation.
+//! The public source loader retains its bootstrap AST path; native declaration
+//! mechanisms install ZOS metadata and compiled function/method bodies.
+//! Artifacts retain optional original source text across wire round-trips.
+//! Runtime registration and parser span indexing are shared by their closures;
+//! legacy artifacts without provenance never borrow a newer filename revision.
+//! The VM charges fuel through `EvalRuntime::spend` on
 //! every instruction so the bounded-execution feature in this system is
 //! honored inside compiled code, including closures and HOFs.
 
-use std::sync::Arc;
+use std::cell::{OnceCell, RefCell};
+use std::rc::Rc;
+use std::sync::{Arc, Weak};
 
 use im::{HashMap as ImHashMap, Vector, vector};
 use serde::{Deserialize, Serialize};
@@ -30,14 +38,15 @@ use crate::value::{Function, Macro, NativeFn, Value};
 
 // ─── Public wire-level types ────────────────────────────────────────────
 
-/// A closure value: pairs a function index inside its owning module with the
-/// captured values from the enclosing scope. Captures are stored as `Value`
-/// so lexical mutation propagates back through `StoreCapture` correctly.
+/// The one wire version the compiler emits and the runtime accepts.
+pub const MODULE_VERSION: u32 = 1;
+
+/// A compiled callable with shared cells for captured lexical bindings.
 #[derive(Debug, Clone)]
 pub struct Closure {
     pub module: Arc<ModuleArtifact>,
     pub fn_index: usize,
-    pub captures: Vector<Value>,
+    pub captures: Vector<Rc<RefCell<BindingCell>>>,
 }
 
 /// A compiled module: the wire-level payload the compiler emits, the runtime
@@ -51,6 +60,8 @@ pub struct ModuleArtifact {
     pub constants: Vector<Constant>,
     /// The module's exported entry, recorded by name.
     pub entry_name: Option<String>,
+    /// Original source, absent for legacy artifacts; never inferred from a filename.
+    source: Option<Arc<SourceProvenance>>,
 }
 
 #[derive(Debug, Clone)]
@@ -63,12 +74,301 @@ pub struct FunctionRecord {
     pub params: Vector<String>,
     pub rest: Option<String>,
     pub locals: usize,
-    /// Already-bound captured values, in the order the enclosing scope
-    /// supplied them. Names would not survive: a capture is whatever the
-    /// scope held, including a mutable cell.
+    /// Capture descriptors, in enclosing-scope order: `[:local n]` or
+    /// `[:capture n]`. Runtime closures resolve these to shared binding cells.
     pub captures: Vector<Value>,
     pub code: Vector<Instruction>,
     pub debug: Vector<Option<(usize, usize)>>,
+}
+
+#[derive(Debug)]
+struct SourceProvenance {
+    text: String,
+    spans: OnceCell<std::collections::BTreeMap<(usize, usize), crate::span::Span>>,
+    registrations: RefCell<Vec<(Weak<crate::span::SourceMap>, crate::span::SourceId)>>,
+    /// Guards reentrant span decoding: decoding runs the installed Zi
+    /// reader, whose own compiled bodies may bind provenance again.
+    decoding: std::cell::Cell<bool>,
+}
+
+fn collect_spans(
+    form: &Sexp,
+    spans: &mut std::collections::BTreeMap<(usize, usize), crate::span::Span>,
+) {
+    if let Some(span) = form.span() {
+        spans.entry((span.line, span.col)).or_insert(span);
+    }
+    match form {
+        Sexp::List(items, _) | Sexp::Vector(items, _) => {
+            items.iter().for_each(|item| collect_spans(item, spans))
+        }
+        Sexp::Map(items, _) => items.iter().for_each(|(key, value)| {
+            collect_spans(key, spans);
+            collect_spans(value, spans);
+        }),
+        _ => {}
+    }
+}
+
+// Macro constructors are materialized while the compiler is still running,
+// before the returned root artifact can carry :source. Retain that
+// compile unit's exact registration, lazily snapshotting it only if a
+// constructor needs it.
+struct CompilationSource {
+    map: Arc<crate::span::SourceMap>,
+    id: crate::span::SourceId,
+    provenance: Option<(String, Arc<SourceProvenance>)>,
+}
+
+thread_local! {
+    static COMPILATION_SOURCE: RefCell<Option<CompilationSource>> = const { RefCell::new(None) };
+}
+
+struct CompilationSourceGuard(Option<CompilationSource>);
+
+impl CompilationSourceGuard {
+    fn enter(ctx: &EvalContext, source_id: crate::span::SourceId) -> Self {
+        let origin = CompilationSource {
+            map: Arc::clone(ctx.source_map()),
+            id: source_id,
+            provenance: None,
+        };
+        Self(COMPILATION_SOURCE.with(|active| active.replace(Some(origin))))
+    }
+}
+
+impl Drop for CompilationSourceGuard {
+    fn drop(&mut self) {
+        COMPILATION_SOURCE.with(|active| {
+            active.replace(self.0.take());
+        });
+    }
+}
+
+fn compilation_provenance(name: &str, engine: &dyn EvalEngine) -> Option<Arc<SourceProvenance>> {
+    COMPILATION_SOURCE.with(|active| {
+        let mut active = active.borrow_mut();
+        let origin = active.as_mut()?;
+        if !Arc::ptr_eq(&origin.map, engine.source_map()) {
+            return None;
+        }
+        if origin.provenance.is_none() {
+            let file = origin.map.get(origin.id)?;
+            if file.name != name {
+                return None;
+            }
+            let source = Arc::new(SourceProvenance::new(file.source));
+            source
+                .registrations
+                .borrow_mut()
+                .push((Arc::downgrade(&origin.map), origin.id));
+            origin.provenance = Some((file.name, source));
+        }
+        origin
+            .provenance
+            .as_ref()
+            .filter(|(source_name, _)| source_name == name)
+            .map(|(_, source)| Arc::clone(source))
+    })
+}
+
+impl SourceProvenance {
+    fn new(text: String) -> Self {
+        Self {
+            text,
+            spans: OnceCell::new(),
+            registrations: RefCell::new(Vec::new()),
+            decoding: std::cell::Cell::new(false),
+        }
+    }
+
+    /// Register this provenance's text under `name` in the engine's
+    /// SourceMap and return its id, reusing an existing registration for
+    /// the same map. Span metadata is decoded once per provenance —
+    /// through the installed Zi reader, never a second hidden Rust parse —
+    /// whether or not the registration already existed (macro constructors
+    /// pre-seed registrations, and compile errors still need spans).
+    fn bind(
+        &self,
+        name: &str,
+        engine: &dyn EvalEngine,
+    ) -> Result<crate::span::SourceId, EvalError> {
+        let source_map = engine.source_map();
+        let mut registrations = self.registrations.borrow_mut();
+        let id = match registrations
+            .iter()
+            .find(|(map, _)| std::ptr::eq(map.as_ptr(), Arc::as_ptr(source_map)))
+        {
+            Some((_, id)) => *id,
+            None => {
+                registrations.retain(|(map, _)| map.strong_count() != 0);
+                let id = source_map.register(name.to_string(), self.text.clone());
+                registrations.push((Arc::downgrade(source_map), id));
+                id
+            }
+        };
+        drop(registrations);
+        if self.spans.get().is_none() && !self.decoding.replace(true) {
+            let decoded = self.decode_spans(id, engine);
+            self.decoding.set(false);
+            let _ = self.spans.set(decoded?);
+        }
+        Ok(id)
+    }
+
+    /// Decode the `(line, col) -> span` table by projecting the Zi
+    /// reader's own syntax nodes to Sexp metadata. The reader must be
+    /// installed; a context that cannot read its own artifacts fails
+    /// closed instead of guessing spans.
+    fn decode_spans(
+        &self,
+        id: crate::span::SourceId,
+        engine: &dyn EvalEngine,
+    ) -> Result<std::collections::BTreeMap<(usize, usize), crate::span::Span>, EvalError> {
+        let zi_read = engine.env().get("zi-read").ok_or_else(|| {
+            EvalError::custom(
+                "zi-read is not bound; module source provenance requires the installed Zio reader",
+            )
+        })?;
+        let nodes = call_value(
+            zi_read,
+            vector![
+                Value::String(self.text.clone()),
+                Value::Integer(id.0 as i64)
+            ],
+            engine,
+        )?;
+        let Value::Vector(forms) = nodes else {
+            return Err(EvalError::custom(
+                "zi-read did not return a form vector for module provenance",
+            ));
+        };
+        let mut spans = std::collections::BTreeMap::new();
+        for form in forms.iter() {
+            collect_spans(&compiler_sexp(form)?, &mut spans);
+        }
+        Ok(spans)
+    }
+}
+
+/// The self-hosted frontend bundle, in load order. Stage 0 evaluates each
+/// part as ordinary Zio source; every later stage executes the same
+/// content as one compiled artifact.
+const COMPILER_PARTS: [(&str, &str); 5] = [
+    ("reader.zio", include_str!("../../interpreter/reader.zio")),
+    ("expand.zio", include_str!("../../interpreter/expand.zio")),
+    (
+        "evaluator.zio",
+        include_str!("../../interpreter/evaluator.zio"),
+    ),
+    ("analyze.zio", include_str!("../../compiler/analyze.zio")),
+    ("compiler.zio", include_str!("../../compiler/compiler.zio")),
+];
+
+/// The single deterministic bundle text: the five parts concatenated on
+/// newline boundaries, in load order. Computed once into static storage;
+/// every stage compiles byte-identical copies of this string.
+pub fn compiler_source() -> &'static str {
+    static SOURCE: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+        let mut text = String::new();
+        for (_, part) in COMPILER_PARTS {
+            text.push_str(part);
+            if !part.ends_with('\n') {
+                text.push('\n');
+            }
+        }
+        text
+    });
+    &SOURCE
+}
+
+thread_local! {
+    /// SourceIds this thread's contexts registered for the compiler
+    /// bundle — the interpreted bootstrap parts and each installed
+    /// compiled artifact's provenance. Exact registrations, established
+    /// only by `bootstrap_compiler` / `install_compiled_compiler`; a file
+    /// the user happens to name `compiler.zio` never lands here.
+    static COMPILER_BUNDLE_SOURCES: RefCell<Vec<(Weak<crate::span::SourceMap>, crate::span::SourceId)>> =
+        const { RefCell::new(Vec::new()) };
+}
+
+fn record_bundle_source(map: &Arc<crate::span::SourceMap>, id: crate::span::SourceId) {
+    COMPILER_BUNDLE_SOURCES.with(|sources| {
+        let mut sources = sources.borrow_mut();
+        sources.retain(|(live, _)| live.strong_count() != 0);
+        sources.push((Arc::downgrade(map), id));
+    });
+}
+
+/// Whether `id` names a compiler-bundle registration in `map`. Errors
+/// carrying such a span are implementation failures of the frontend
+/// itself; diagnostics rebind them to the target form.
+pub(crate) fn is_compiler_bundle_source(
+    map: &crate::span::SourceMap,
+    id: crate::span::SourceId,
+) -> bool {
+    COMPILER_BUNDLE_SOURCES.with(|sources| {
+        sources
+            .borrow()
+            .iter()
+            .any(|(live, known)| std::ptr::eq(live.as_ptr(), map) && *known == id)
+    })
+}
+
+struct CompilerBindings {
+    map: Weak<crate::span::SourceMap>,
+    names: Vec<String>,
+    protected: Vec<Weak<Function>>,
+}
+
+thread_local! {
+    static COMPILER_BINDINGS: RefCell<Vec<CompilerBindings>> = const { RefCell::new(Vec::new()) };
+}
+
+fn record_compiler_bindings(ctx: &EvalContext, names: Vec<String>) {
+    let protected = ["zi-read-one", "zi-e-step"]
+        .iter()
+        .filter_map(|name| match ctx.env.get_owned(name) {
+            Some(Value::Function(function)) => Some(Arc::downgrade(&function)),
+            _ => None,
+        })
+        .collect();
+    COMPILER_BINDINGS.with(|bindings| {
+        let mut bindings = bindings.borrow_mut();
+        bindings.retain(|entry| {
+            entry.map.strong_count() > 0 && entry.map.as_ptr() != Arc::as_ptr(ctx.source_map())
+        });
+        bindings.push(CompilerBindings {
+            map: Arc::downgrade(ctx.source_map()),
+            names,
+            protected,
+        });
+    });
+}
+
+/// Authorize the registered callback itself; syntax spans are forgeable data.
+pub(crate) fn is_compiler_bundle_function(
+    function: &Arc<Function>,
+    map: &crate::span::SourceMap,
+) -> bool {
+    COMPILER_BINDINGS.with(|bindings| {
+        bindings.borrow().iter().any(|entry| {
+            std::ptr::eq(entry.map.as_ptr(), map)
+                && entry
+                    .protected
+                    .iter()
+                    .any(|known| std::ptr::eq(known.as_ptr(), Arc::as_ptr(function)))
+        })
+    })
+}
+
+/// Outer lookup retained by a reserved forward definition until it executes.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "value", rename_all = "kebab-case")]
+pub enum BindingSource {
+    Local(usize),
+    Capture(usize),
+    Global(String),
 }
 
 /// One VM instruction. Opcodes mirror what `langs/compiler/compiler.zio`
@@ -82,7 +382,12 @@ pub enum Instruction {
     Capture(usize),
     Store(usize),
     StoreCapture(usize),
+    /// Assign a lexical binding without initializing an unexecuted definition.
+    SetLocal(usize),
     Bind(usize),
+    /// Reserve a fresh unbound activation, falling back to the outer binding
+    /// until Store executes the definition. Captured assignment follows fallback.
+    Declare(usize, String, Option<BindingSource>),
     Global(String),
     SetGlobal(String),
     Define(String),
@@ -95,9 +400,10 @@ pub enum Instruction {
     Return,
     VectorN(usize),
     MapN(usize),
-    /// Install a handler table; on error the VM walks it in reverse and jumps
-    /// to the first type-name match (or `"error"` / `"any"` as a fallback).
-    /// The handler also pushes the error value onto the stack at the target.
+    QuasiConj(bool),
+    QuasiList,
+    /// Protect a stack region. Targets are tested in the compiler's order,
+    /// matching AST catch precedence; the catch gets a child `*error*` binding.
     Handler(Vec<(String, usize)>),
     Unhandler,
     ClearError,
@@ -152,7 +458,19 @@ pub fn register(ctx: &EvalContext) {
     env.set(
         "compiler/position".into(),
         Value::NativeFunction(NativeFn::new("compiler/position", move |args, _| {
-            Ok(Value::from(compiler_position(args)?))
+            compiler_position(args)
+        })),
+    );
+    env.set(
+        "compiler/form".into(),
+        Value::NativeFunction(NativeFn::new("compiler/form", |args, _| {
+            compiler_form(compiler_argument(&args)?)
+        })),
+    );
+    env.set(
+        "compiler/datum".into(),
+        Value::NativeFunction(NativeFn::new("compiler/datum", |args, _| {
+            compiler_datum(compiler_argument(&args)?)
         })),
     );
     env.set(
@@ -169,8 +487,8 @@ pub fn register(ctx: &EvalContext) {
     );
     env.set(
         "compiler/fail".into(),
-        Value::NativeFunction(NativeFn::new("compiler/fail", move |args, _| {
-            Err(compiler_fail(args)?)
+        Value::NativeFunction(NativeFn::new("compiler/fail", move |args, engine| {
+            Err(compiler_fail(args, engine)?)
         })),
     );
     // Each closure needs its own handle to the one live environment.
@@ -187,21 +505,48 @@ pub fn register(ctx: &EvalContext) {
     let macro_env = Arc::clone(&env);
     env.set(
         "compiler/install-macro".into(),
-        Value::NativeFunction(NativeFn::new("compiler/install-macro", move |args, _| {
-            install_macro(args, Arc::clone(&macro_env))?;
-            Ok(Value::Nil)
-        })),
+        Value::NativeFunction(NativeFn::new(
+            "compiler/install-macro",
+            move |args, engine| {
+                install_macro(args, Arc::clone(&macro_env), engine)?;
+                Ok(Value::Nil)
+            },
+        )),
     );
 }
 
-/// Load the Zio compiler source into the context, then wire `zio--compile`
-/// so ordinary source can call it. The compiler source is treated like any
-/// other Zio source — it is parsed and run through the standard loader —
-/// but its `defmacro` / `defn` definitions stay compiled to closures so the
-/// host's install hooks can reify them.
+/// Install the interpreted frontend bundle into `ctx`: every part is
+/// parsed and run through the standard Rust loader exactly once per
+/// registration, so `zi-read`, `zi-expand`, `zi-apply` and `zio--compile`
+/// exist as ordinary globals. Each part's registration is recorded as a
+/// trusted implementation source — exact ids, never filename guesses —
+/// so diagnostics re-frontend span errors to the target form.
 pub fn bootstrap_compiler(ctx: &EvalContext) -> Result<(), EvalError> {
-    let source = include_str!("../../compiler/compiler.zio");
-    eval_source_text(ctx, "<compiler>", source)?;
+    let mut names = Vec::new();
+    for (name, part) in COMPILER_PARTS {
+        let id = ctx
+            .source_map()
+            .register(name.to_string(), part.to_string());
+        record_bundle_source(ctx.source_map(), id);
+        let forms = crate::reader::reader::read_program_with_source(part, id)
+            .map_err(|error| error.into_eval(name))?;
+        for form in forms {
+            if let Sexp::List(items, _) = &form {
+                if let (Some(Sexp::Symbol(head, _)), Some(Sexp::Symbol(name, _))) =
+                    (items.get(0), items.get(1))
+                {
+                    if matches!(
+                        head.as_str(),
+                        "def" | "defn" | "defmacro" | "defmacro-rules"
+                    ) {
+                        names.push(name.clone());
+                    }
+                }
+            }
+            crate::eval::eval_in_context(&form, ctx)?;
+        }
+    }
+    record_compiler_bindings(ctx, names);
     Ok(())
 }
 
@@ -211,42 +556,44 @@ pub fn run_source(ctx: &EvalContext, name: &str, source: &str) -> Result<Value, 
     eval_source_text(ctx, name, source)
 }
 
-/// Compile `source` to a module artifact by calling the self-hosted compiler.
-/// The compiler is invoked through `zio--compile` — interpreted unless the
-/// caller pre-installed a compiled version.
+/// Compile `source` to a module artifact by calling the installed
+/// frontend. The text is registered in the context's SourceMap and read
+/// by the global `zi-read` — interpreted at stage 0, compiled after
+/// `install_compiled_compiler` — and the resulting syntax nodes go to
+/// `zio--compile` untouched. No Rust parser ever sees the target text.
 pub fn compile_source(ctx: &EvalContext, name: &str, source: &str) -> Result<Value, EvalError> {
-    let parsed = parse_source(name, source)?;
-    let form_vec: Vector<Value> = parsed.into_iter().map(Value::from).collect();
-    let form_value = Value::Vector(form_vec);
+    let source_id = ctx
+        .source_map()
+        .register(name.to_string(), source.to_string());
+    let zi_read = ctx.env.get("zi-read").ok_or_else(|| {
+        EvalError::custom("zi-read is not bound; bootstrap_compiler was not called")
+    })?;
+    let _source_guard = CompilationSourceGuard::enter(ctx, source_id);
+    let forms = call_value(
+        zi_read,
+        vector![
+            Value::String(source.into()),
+            Value::Integer(source_id.0 as i64)
+        ],
+        ctx,
+    )?;
+    if !matches!(&forms, Value::Vector(_)) {
+        return Err(EvalError::custom(
+            "zi-read did not return a vector of forms",
+        ));
+    }
     let zio_compile = ctx.env.get("zio--compile").ok_or_else(|| {
         EvalError::custom("zio--compile is not bound; bootstrap_compiler was not called")
     })?;
-    let compiled = call_value(
-        zio_compile,
-        vector![Value::String(name.into()), form_value],
-        ctx,
-    )?;
-    Ok(compiled)
-}
-
-/// Install `zio--compile` from a compiled module and report which
-/// function index it was bound to.
-///
-/// Exists so a diagnostic can check the stage-2 binding without
-/// duplicating the search that [`install_compiled_compiler`] performs; if
-/// the two ever disagree, the diagnostic would be measuring something
-/// other than the real path.
-pub fn install_compiled_for_test(ctx: &EvalContext, module: &Value) -> Option<usize> {
-    let before = ctx.env.get("zio--compile");
-    install_compiled_compiler(ctx, module).ok()?;
-    let after = ctx.env.get("zio--compile");
-    match (&before, &after) {
-        (Some(before), Some(after)) if before == after => None,
-        (_, Some(Value::Function(function))) => {
-            function.compiled.as_ref().map(|closure| closure.fn_index)
-        }
-        _ => None,
-    }
+    let compiled = call_value(zio_compile, vector![Value::String(name.into()), forms], ctx)?;
+    let Value::Map(mut module) = compiled else {
+        return Err(EvalError::custom("compiler returned a non-module value"));
+    };
+    module.insert(
+        Value::Keyword("source".into()),
+        Value::String(source.into()),
+    );
+    Ok(Value::Map(module))
 }
 
 /// Run an installed compiled module — the unit the compiler emits.
@@ -274,57 +621,63 @@ pub fn deserialize_module(text: &str) -> Result<Value, EvalError> {
     Ok(artifact_to_value(&artifact))
 }
 
-/// Three-stage self-build. Stage 0 is the interpreted compiler already in
-/// `ctx`; stage 1 runs that interpreter to produce a compiled-compiler
-/// artifact; stage 2 runs the compiled-compiler to compile the same source
-/// again. Stages 1 and 2 must produce byte-identical module artifacts.
+/// Three-stage self-build of the frontend bundle. Stage 1 is the
+/// interpreted frontend (stage 0) compiling the bundle; stage 2 is stage
+/// 1's compiled frontend recompiling the same bundle in a fresh context;
+/// stage 3 is stage 2's frontend doing the same again. Every transition
+/// starts from a fresh language context, so no interpreted helper or
+/// module cache from an earlier stage can survive into the next compile.
 ///
-/// Returned `SelfBuild.equal` is true when stages 1 and 2 hash the same way
-/// after canonicalization. The `modules` vec holds the module value from
-/// each stage.
+/// `normalized` holds each stage's canonical wire JSON; `equal` is direct
+/// byte equality of all three. The `modules` vec holds the module value
+/// from each stage.
 pub struct SelfBuild {
     pub modules: Vec<Value>,
     pub normalized: Vec<String>,
-    pub hashes: Vec<String>,
     pub equal: bool,
 }
 
+/// A fresh context for the next self-build stage: empty module roots and
+/// the caller's I/O authority. The bundle is pure source — it needs no
+/// module access — so nothing ambient is invented or inherited.
+fn self_build_context(ctx: &EvalContext) -> Result<EvalContext, EvalError> {
+    crate::bootstrap::language_context_with_io(
+        crate::bootstrap::ModuleRoots::empty(),
+        Arc::clone(&ctx.io),
+    )
+}
+
 pub fn self_build(ctx: &EvalContext) -> Result<SelfBuild, EvalError> {
-    let source = include_str!("../../compiler/compiler.zio");
-    // Stage 0: the interpreter running the compiler source is the baseline.
-    // We compute a "stage 0" artifact by interpreting compiler.zio first,
-    // which is what `bootstrap_compiler` already does. Then stage 1 invokes
-    // the interpreted `zio--compile` on the source.
-    bootstrap_compiler(ctx)?;
+    let source = compiler_source();
+    // Stage 0: ensure the interpreted frontend is installed (language
+    // contexts already bootstrap it; other callers get it here).
+    if ctx.env.get("zio--compile").is_none() {
+        bootstrap_compiler(ctx)?;
+    }
+    // Stage 1: the interpreted frontend compiles the bundle.
     let stage1 = compile_source(ctx, "compiler.zio", source)?;
-    // Stage 2: install stage 1's compiled compiler into the env, then
-    // re-compile the source under it.
-    install_compiled_compiler(ctx, &stage1)?;
-    let stage2 = compile_source(ctx, "compiler.zio", source)?;
+    // Stage 2: fresh context, stage 1's compiled frontend installed.
+    let stage2_ctx = self_build_context(ctx)?;
+    install_compiled_compiler(&stage2_ctx, &stage1)?;
+    let stage2 = compile_source(&stage2_ctx, "compiler.zio", source)?;
+    // Stage 3: fresh context, stage 2's compiled frontend installed.
+    let stage3_ctx = self_build_context(ctx)?;
+    install_compiled_compiler(&stage3_ctx, &stage2)?;
+    let stage3 = compile_source(&stage3_ctx, "compiler.zio", source)?;
 
     let norm = |m: &Value| -> Result<String, EvalError> {
         let art = value_to_artifact(m)?;
         let wire = art.to_wire();
         serde_json::to_string(&wire?).map_err(|e| EvalError::custom(format!("normalize: {e}")))
     };
-    let h = |s: &str| -> String {
-        // FNV-1a 64 — stable, zero-dep, sufficient for canonical-form equality.
-        let mut hash: u64 = 0xcbf29ce484222325;
-        for b in s.as_bytes() {
-            hash ^= *b as u64;
-            hash = hash.wrapping_mul(0x100000001b3);
-        }
-        format!("{:016x}", hash)
-    };
     let n1 = norm(&stage1)?;
     let n2 = norm(&stage2)?;
-    let h1 = h(&n1);
-    let h2 = h(&n2);
+    let n3 = norm(&stage3)?;
+    let equal = n1 == n2 && n2 == n3;
     Ok(SelfBuild {
-        modules: vec![stage1, stage2],
-        normalized: vec![n1, n2],
-        hashes: vec![h1.clone(), h2.clone()],
-        equal: h1 == h2,
+        modules: vec![stage1, stage2, stage3],
+        normalized: vec![n1, n2, n3],
+        equal,
     })
 }
 
@@ -351,70 +704,125 @@ pub fn call_value(
     args: Vector<Value>,
     engine: &dyn EvalEngine,
 ) -> Result<Value, EvalError> {
-    match func {
-        Value::Function(f) => {
-            if let Some(closure) = f.compiled.as_ref() {
-                return invoke_closure(closure, args, &f.env, engine);
+    let mut func = func;
+    let mut args = args;
+    loop {
+        if let Value::Macro(m) = &func {
+            if let Some(result) = engine.intercept_macro(m, &args) {
+                return result;
             }
-            // Interpreted path: bind args, eval body. The compiler itself is
-            // interpreted until `self_build` installs the compiled version.
-            let env = if f.rest_param.is_some() {
-                Env::bind_variadic(&f.env, &f.params, &f.rest_param, &args)?
-            } else {
-                Env::bind(&f.env, &f.params, &args)?
-            };
-            let result = engine.eval_expr(&f.body, &env, false)?;
-            Ok(result.into_value())
+            let forms = args
+                .iter()
+                .map(macros::value_to_sexp)
+                .collect::<Result<Vec<_>, _>>()?;
+            return macros::apply_macro(m, &forms, &m.env, engine).map(Value::from);
         }
-        Value::NativeFunction(nf) => nf.call(args, engine),
-        Value::Object(o) => {
-            // `try_apply` is optional because an object is not
-            // necessarily callable: a ZOS object with no applicable
-            // method is a value, and calling it is a type error rather
-            // than a protocol failure. So the Option is the dispatch
-            // decision, and it is unwrapped exactly once. The error names
-            // the kind rather than the value: the object's own display
-            // would need the binding this arm has already moved.
-            let Some(result) = crate::zos::apply::try_apply(o.as_ref(), args, engine) else {
-                return Err(EvalError::not_a_function("ZOS object"));
-            };
-            match result? {
-                TailResult::Value(value) => Ok(value),
-                TailResult::TailCall(next, next_args) => call_value(next, next_args, engine),
-                TailResult::Recur(_) => Err(EvalError::recur_without_loop()),
+        match crate::eval::apply(func, args, engine)? {
+            TailResult::Value(value) => return Ok(value),
+            TailResult::TailCall(next, next_args) => {
+                func = next;
+                args = next_args;
             }
+            TailResult::Recur(_) => return Err(EvalError::recur_without_loop()),
         }
-        Value::Macro(m) => {
-            // Macros invoked as functions: most often inside the compiled
-            // compiler itself. Convert args to Sexp, apply, convert back.
-            let arg_sexps: Vec<Sexp> = {
-                let mut out = Vec::with_capacity(args.len());
-                for a in args.iter() {
-                    out.push(macros::value_to_sexp(a)?);
-                }
-                out
-            };
-            let sexp = macros::apply_macro(&m, &arg_sexps, &m.env, engine)?;
-            Ok(Value::from(sexp))
-        }
-        other => Err(EvalError::not_a_function(format!("{other}"))),
     }
 }
 
 // ─── VM core ────────────────────────────────────────────────────────────
 
-/// A `try` region the VM has entered.
-///
-/// The compiler emits `:handler` / `:unhandler` around a `try` body so
-/// a future VM can dispatch a `throw` to the right `catch` without
-/// unwinding Rust frames. Today the region is recorded and popped but
-/// never consulted: a `try` whose body is compiled falls back to the
-/// interpreter, which handles the catch itself. The field is kept
-/// because the opcodes are already emitted, and a VM that grows throw
-/// dispatch needs the region to already be tracked.
+/// A protected operand-stack region and its lexical environment.
 struct HandlerFrame {
-    #[allow(dead_code)]
     table: Vec<(String, usize)>,
+    stack_len: usize,
+    env: Arc<Env>,
+    error_depth: usize,
+}
+
+#[derive(Debug)]
+pub enum BindingFallback {
+    Cell(Rc<RefCell<BindingCell>>),
+    Global(String, Arc<Env>),
+}
+
+/// Runtime-only binding state; unbound reservations are never language values.
+#[derive(Debug)]
+pub enum BindingCell {
+    Bound(Value),
+    Unbound {
+        name: String,
+        fallback: Option<BindingFallback>,
+    },
+}
+
+impl BindingCell {
+    fn read(&self, engine: &dyn EvalEngine) -> Result<Value, EvalError> {
+        match self {
+            Self::Bound(value) => Ok(value.clone()),
+            Self::Unbound { name, fallback } => match fallback {
+                Some(BindingFallback::Cell(cell)) => cell.borrow().read(engine),
+                Some(BindingFallback::Global(name, env)) => lookup_global(engine, name, env),
+                None => Err(EvalError::symbol_not_found(name)),
+            },
+        }
+    }
+
+    fn assign_capture(&mut self, value: Value, engine: &dyn EvalEngine) -> Result<(), EvalError> {
+        match self {
+            Self::Bound(slot) => {
+                *slot = value;
+                Ok(())
+            }
+            Self::Unbound { name, fallback } => match fallback {
+                Some(BindingFallback::Cell(cell)) => {
+                    cell.borrow_mut().assign_capture(value, engine)
+                }
+                Some(BindingFallback::Global(name, env)) => set_global(engine, name, value, env),
+                None => Err(EvalError::symbol_not_found(name.as_str())),
+            },
+        }
+    }
+}
+
+#[derive(Debug)]
+enum LocalSlot {
+    Inline(BindingCell),
+    Shared(Rc<RefCell<BindingCell>>),
+}
+
+impl LocalSlot {
+    fn read(&self, engine: &dyn EvalEngine) -> Result<Value, EvalError> {
+        match self {
+            Self::Inline(binding) => binding.read(engine),
+            Self::Shared(cell) => cell.borrow().read(engine),
+        }
+    }
+
+    fn write(&mut self, value: Value) {
+        match self {
+            Self::Inline(binding) => *binding = BindingCell::Bound(value),
+            Self::Shared(cell) => *cell.borrow_mut() = BindingCell::Bound(value),
+        }
+    }
+
+    fn assign_capture(&mut self, value: Value, engine: &dyn EvalEngine) -> Result<(), EvalError> {
+        match self {
+            Self::Inline(binding) => binding.assign_capture(value, engine),
+            Self::Shared(cell) => cell.borrow_mut().assign_capture(value, engine),
+        }
+    }
+
+    fn capture(&mut self) -> Rc<RefCell<BindingCell>> {
+        if let Self::Inline(binding) = self {
+            *self = Self::Shared(Rc::new(RefCell::new(std::mem::replace(
+                binding,
+                BindingCell::Bound(Value::Nil),
+            ))));
+        }
+        match self {
+            Self::Shared(cell) => Rc::clone(cell),
+            Self::Inline(_) => unreachable!(),
+        }
+    }
 }
 
 fn invoke_closure(
@@ -442,493 +850,661 @@ fn invoke_closure(
 fn bind_call(
     module: Arc<ModuleArtifact>,
     fn_index: usize,
-    captures: Vector<Value>,
+    captures: Vector<Rc<RefCell<BindingCell>>>,
     record: &FunctionRecord,
     args: Vector<Value>,
     lexical_env: &Arc<Env>,
     engine: &dyn EvalEngine,
 ) -> Result<Value, EvalError> {
-    // Arity check: count params vs args, accounting for rest.
-    let min = record.params.len();
-    let max = if record.rest.is_some() {
-        usize::MAX
-    } else {
-        record.params.len()
-    };
-    if args.len() < min || args.len() > max {
-        // Name the function: an arity error with no callee is a puzzle,
-        // and the whole point of this path is that the callee is machine
-        // generated and therefore not visible in the source.
-        return Err(EvalError::custom(format!(
-            "wrong argument count: expected between {min} and {max}, got {} (in {} fn {fn_index})",
-            args.len(),
-            module.name
-        )));
-    }
-
-    // Build locals array: [captures..., params..., rest...].
-    // Captures sit at indices 0..record.captures.len(); params follow.
-    let mut locals: Vec<Value> =
-        Vec::with_capacity(record.locals.max(args.len() + record.captures.len()));
-    for c in captures.iter() {
-        locals.push(c.clone());
-    }
-    for a in args.iter() {
-        locals.push(a.clone());
-    }
-    if let Some(rest_name) = &record.rest {
-        // Pad locals up to params+rest count, then bind rest as a list.
-        while locals.len() < record.params.len() + record.captures.len() {
-            locals.push(Value::Nil);
-        }
-        // Recompute rest position: captures_count + params_count.
-        let rest_start = record.captures.len() + record.params.len();
-        // If we already pushed rest items as locals (because locals cap =
-        // record.locals was set during compile), they're just there. Either
-        // way, ensure the rest slot exists; bind extra args as a list.
-        if locals.len() <= rest_start {
-            locals.push(Value::List(Vector::new()));
-        } else {
-            // The args beyond params are already in locals; rebuild a list.
-            let rest_vec: Vector<Value> = locals[rest_start..].iter().cloned().collect();
-            locals.truncate(rest_start);
-            locals.push(Value::List(rest_vec));
-        }
-        let _ = rest_name; // name is preserved in record for diagnostics
-    }
-
-    // Pad locals to record.locals size with Nil so indices up to locals-1 are
-    // always valid (the compiler pre-reserved slots for top-level `def`).
-    while locals.len() < record.locals {
-        locals.push(Value::Nil);
-    }
-
-    run_loop(
-        module,
-        fn_index,
-        locals,
-        record.captures.len(),
-        lexical_env,
-        engine,
-    )
+    let mut locals = Vec::new();
+    bind_locals(record, captures, args, &mut locals)?;
+    run_loop(module, fn_index, locals, lexical_env, engine)
 }
 
-fn run_loop(
-    module: Arc<ModuleArtifact>,
-    fn_index: usize,
-    mut locals: Vec<Value>,
-    captures_count: usize,
-    lexical_env: &Arc<Env>,
-    engine: &dyn EvalEngine,
-) -> Result<Value, EvalError> {
-    let mut pc: usize = 0;
-    // `locals` is the frame: captures then parameters, addressed by
-    // `Local`/`Store`. The operand stack is a separate vector, because
-    // sharing one storage means every push shifts the slot a later
-    // `Local` reads — which made `(+ x 1)` read the constant where it
-    // expected `x` and silently produce wrong answers.
-    let mut stack: Vec<Value> = Vec::new();
-    let mut handlers: Vec<HandlerFrame> = Vec::new();
-    // PC stack for tail-call re-entry: when a TailCall runs, we replace the
-    // current locals with the new call's locals and jump pc to 0.
-    // The current code is straight-line (no proper call stack frames yet),
-    // so TailCall is implemented as an in-frame re-bind. For ordinary calls
-    // we recurse through `invoke_closure` / `bind_call`.
-
-    let code = module
-        .functions
-        .get(fn_index)
-        .ok_or_else(|| EvalError::custom("function index out of range"))?
-        .code
-        .clone();
-
-    // Helpers operating on the closure's captures table. Stored separately
-    // from locals so we can mutate them and propagate to other closures.
-    let mut captures_storage: Vector<Value> = if captures_count > 0 {
-        locals[0..captures_count].iter().cloned().collect()
-    } else {
-        Vector::new()
-    };
-
-    loop {
-        engine.spend(1)?;
-        if pc >= code.len() {
-            return Err(EvalError::custom("PC ran off end of code"));
+fn bind_locals(
+    record: &FunctionRecord,
+    captures: Vector<Rc<RefCell<BindingCell>>>,
+    args: Vector<Value>,
+    locals: &mut Vec<LocalSlot>,
+) -> Result<(), EvalError> {
+    let required = record.params.len();
+    if record.rest.is_some() {
+        if args.len() < required {
+            return Err(EvalError::wrong_arg_count_min(required, args.len()));
         }
-        let instr = code.get(pc).cloned().unwrap();
-        match instr {
-            Instruction::Const(i) => {
-                let v = constant_to_value(&module.constants, &module.constants[i])?;
-                stack.push(v);
-                pc += 1;
-            }
-            Instruction::Pop => {
-                stack.pop();
-                pc += 1;
-            }
-            Instruction::Dup => {
-                let v = stack
-                    .last()
-                    .cloned()
-                    .ok_or_else(|| EvalError::custom("dup on empty stack"))?;
-                stack.push(v);
-                pc += 1;
-            }
-            Instruction::Local(i) => {
-                // Reads a frame slot and pushes its value. The frame
-                // occupies the low indices and the operand stack grows
-                // above it, so a push cannot move the slot a later
-                // `Local` reads — which is what made every two-operand
-                // call read its constant in place of its variable.
-                let slot = i;
-                let v = locals.get(slot).cloned().ok_or_else(|| {
-                    EvalError::custom(format!("local slot {slot} is out of range"))
-                })?;
-                stack.push(v);
-                pc += 1;
-            }
-            Instruction::Capture(i) => {
-                let v = captures_storage
-                    .get(i)
-                    .cloned()
-                    .ok_or_else(|| EvalError::custom("capture index out of range"))?;
-                stack.push(v);
-                pc += 1;
-            }
-            Instruction::Store(i) => {
-                let v = stack
-                    .last()
-                    .cloned()
-                    .ok_or_else(|| EvalError::custom("store on empty stack"))?;
-                if i < captures_count {
-                    captures_storage[i] = v;
-                } else {
-                    locals[i] = v;
-                }
-                pc += 1;
-            }
-            Instruction::StoreCapture(i) => {
-                let v = stack
-                    .last()
-                    .cloned()
-                    .ok_or_else(|| EvalError::custom("store-capture on empty stack"))?;
-                captures_storage[i] = v;
-                pc += 1;
-            }
-            Instruction::Bind(i) => {
-                let v = stack
-                    .pop()
-                    .ok_or_else(|| EvalError::custom("bind on empty stack"))?;
-                if i < captures_count {
-                    captures_storage[i] = v;
-                } else {
-                    if locals.len() <= i {
-                        locals.resize(i + 1, Value::Nil);
-                    }
-                    locals[i] = v;
-                }
-                pc += 1;
-            }
-            Instruction::Global(name) => {
-                let v = lookup_global(engine, &name, lexical_env)?;
-                stack.push(v);
-                pc += 1;
-            }
-            Instruction::SetGlobal(name) => {
-                let v = stack
-                    .last()
-                    .cloned()
-                    .ok_or_else(|| EvalError::custom("set-global on empty stack"))?;
-                set_global(engine, &name, v, lexical_env)?;
-                pc += 1;
-            }
-            Instruction::Define(name) => {
-                let v = stack
-                    .last()
-                    .cloned()
-                    .ok_or_else(|| EvalError::custom("define on empty stack"))?;
-                engine.env().set(name, v);
-                pc += 1;
-            }
-            Instruction::Jump(target) => {
-                pc = target;
-            }
-            Instruction::JumpFalse(target) => {
-                let v = stack.last().cloned().unwrap_or(Value::Nil);
-                if !crate::value::is_truthy(&v) {
-                    pc = target;
-                } else {
-                    pc += 1;
-                }
-            }
-            Instruction::JumpTrue(target) => {
-                let v = stack.last().cloned().unwrap_or(Value::Nil);
-                if crate::value::is_truthy(&v) {
-                    pc = target;
-                } else {
-                    pc += 1;
-                }
-            }
-            Instruction::Closure(idx) => {
-                // A closure captures the values named by the *target*
-                // function's capture list. Those names refer to this
-                // frame's own slots — captures and parameters alike — so
-                // snapshotting `captures_storage` alone would drop every
-                // value that arrived as a parameter and a closure over a
-                // parameter would capture nil.
-                let record = module.functions.get(idx);
-                let closure = Closure {
-                    module: Arc::clone(&module),
-                    fn_index: idx,
-                    captures: match record {
-                        Some(target) => {
-                            let got =
-                                snapshot_captures(&target.captures, &captures_storage, &locals);
-                            if std::env::var_os("ZIO_TRACE_CAPTURE").is_some() {
-                                eprintln!(
-                                    "closure {idx}: names={:?} frame={:?} caps={:?} -> {:?}",
-                                    target.captures, locals, captures_storage, got
-                                );
-                            }
-                            got
-                        }
-                        None => Vector::new(),
-                    },
-                };
-                let func = Arc::new(Function {
-                    params: record.map(|r| r.params.clone()).unwrap_or_default(),
-                    rest_param: record.and_then(|r| r.rest.clone()),
-                    body: Sexp::Nil,
-                    env: Arc::new(Env::new(Some(lexical_env.clone()))),
-                    compiled: Some(Arc::new(closure)),
-                });
-                stack.push(Value::Function(func));
-                pc += 1;
-            }
-            Instruction::Call(n) => {
-                // The compiler emits the function first, then the args in
-                // source order; the stack ends up [func, arg0, ..., argN].
-                // Drain those and split: the head is the callee.
-                // Drain from the operand stack only. Draining from the
-                // end of `locals` would work today because the frame is
-                // below the stack, but taking the count from the frame
-                // base makes the separation explicit rather than
-                // incidental.
-                let start = stack.len().saturating_sub(n + 1);
-                let drained: Vec<Value> = stack.drain(start..).collect();
-                let mut iter = drained.into_iter();
-                let func = iter.next().expect("call drained an empty slice");
-                let args: Vector<Value> = iter.collect();
-                let result = call_value(func, args, engine)?;
-                stack.push(result);
-                pc += 1;
-            }
-            Instruction::TailCall(n) => {
-                // Drain from the operand stack only. Draining from the
-                // end of `locals` would work today because the frame is
-                // below the stack, but taking the count from the frame
-                // base makes the separation explicit rather than
-                // incidental.
-                let start = stack.len().saturating_sub(n + 1);
-                let drained: Vec<Value> = stack.drain(start..).collect();
-                let mut iter = drained.into_iter();
-                let func = iter.next().expect("tail-call drained an empty slice");
-                let args: Vector<Value> = iter.collect();
-                // Tail-call: re-bind current frame with the new call.
-                // If the callee is a closure in the same module, re-run the
-                // loop with new locals. Otherwise, recurse through
-                // `invoke_closure`.
-                match &func {
-                    Value::Function(f) if f.compiled.is_some() => {
-                        let closure = f.compiled.as_ref().unwrap();
-                        let same_module =
-                            Arc::ptr_eq(&closure.module, &module) && closure.fn_index == fn_index;
-                        if same_module {
-                            let rec = &module.functions[closure.fn_index];
-                            // Re-bind the frame in place. A tail call
-                            // reuses this activation, so the operand
-                            // stack restarts empty while the new
-                            // parameters land in fresh frame slots.
-                            let mut frame: Vec<Value> = Vec::with_capacity(rec.locals);
-                            for c in closure.captures.iter() {
-                                frame.push(c.clone());
-                            }
-                            for a in args.iter() {
-                                frame.push(a.clone());
-                            }
-                            while frame.len() < rec.locals {
-                                frame.push(Value::Nil);
-                            }
-                            locals = frame;
-                            stack.clear();
-                            captures_storage = closure.captures.clone();
-                            pc = 0;
-                            continue;
-                        }
-                        let result = invoke_closure(closure, args, &f.env, engine)?;
-                        return Ok(result);
-                    }
-                    _ => {}
-                }
-                match func {
-                    Value::Function(f) => {
-                        // Interpreted callee in tail position: fall through
-                        // to interpreter. The eval loop re-enters via
-                        // eval_expr.
-                        let env = if f.rest_param.is_some() {
-                            Env::bind_variadic(&f.env, &f.params, &f.rest_param, &args)?
-                        } else {
-                            Env::bind(&f.env, &f.params, &args)?
-                        };
-                        let result = engine.eval_expr(&f.body, &env, true)?;
-                        return Ok(result.into_value());
-                    }
-                    Value::NativeFunction(nf) => {
-                        let result = nf.call(args, engine)?;
-                        return Ok(result);
-                    }
-                    other => {
-                        return Err(EvalError::not_a_function(format!("{other}")));
-                    }
-                }
-            }
-            Instruction::Return => {
-                return Ok(stack.last().cloned().unwrap_or(Value::Nil));
-            }
-            Instruction::VectorN(n) => {
-                let start = stack.len().saturating_sub(n);
-                let items: Vector<Value> = stack.drain(start..).collect();
-                stack.push(Value::Vector(items));
-                pc += 1;
-            }
-            Instruction::MapN(n) => {
-                let start = stack.len().saturating_sub(2 * n);
-                let mut pairs: Vector<(Value, Value)> = Vector::new();
-                let drained: Vec<Value> = stack.drain(start..).collect();
-                for chunk in drained.chunks(2) {
-                    if chunk.len() == 2 {
-                        pairs.push_back((chunk[0].clone(), chunk[1].clone()));
-                    }
-                }
-                let mut map: ImHashMap<Value, Value> = ImHashMap::new();
-                for (k, v) in pairs.iter() {
-                    map.insert(k.clone(), v.clone());
-                }
-                stack.push(Value::Map(map));
-                pc += 1;
-            }
-            Instruction::Handler(table) => {
-                handlers.push(HandlerFrame { table });
-                pc += 1;
-            }
-            Instruction::Unhandler => {
-                handlers.pop();
-                pc += 1;
-            }
-            Instruction::ClearError => {
-                handlers.pop();
-                pc += 1;
-            }
-            Instruction::Metadata(op) => {
-                let v = stack.last().cloned().unwrap_or(Value::Nil);
-                handle_metadata(engine, &op, v)?;
-                pc += 1;
-            }
-            Instruction::Macro(name) => {
-                // Already installed at defmacro time; nothing to do at runtime
-                // except drop the literal the compiler pushed.
-                stack.pop();
-                let _ = name;
-                pc += 1;
-            }
-            Instruction::MacroRules(name) => {
-                stack.pop();
-                let _ = name;
-                pc += 1;
-            }
-            Instruction::Module => {
-                stack.pop(); // discard the literal
-                pc += 1;
-            }
-            Instruction::Method => {
-                stack.pop();
-                pc += 1;
-            }
-            Instruction::Class(_) => {
-                stack.pop();
-                pc += 1;
-            }
-        }
+    } else if args.len() != required {
+        return Err(EvalError::wrong_arg_count(required, args.len()));
     }
-}
-
-fn handle_metadata(engine: &dyn EvalEngine, op: &str, payload: Value) -> Result<(), EvalError> {
-    let sexp = macros::value_to_sexp(&payload)?;
-    let forms: Vec<Sexp> = match sexp {
-        Sexp::List(v, _) | Sexp::Vector(v, _) => v.into_iter().collect(),
-        other => vec![other],
-    };
-    match op {
-        "require" => {
-            crate::special::module_forms::do_require(&forms, engine.env(), engine)?;
-        }
-        "export" => {
-            for s in forms {
-                let name = match s {
-                    Sexp::Symbol(n, _) | Sexp::Keyword(n, _) => n,
-                    _ => return Err(EvalError::custom("export requires symbols or keywords")),
-                };
-                engine.add_module_export(name);
-            }
-        }
-        "package" | "generic" => {
-            // Recorded at define time; runtime form is a no-op.
-        }
-        other => {
-            return Err(EvalError::custom(format!("unknown metadata op: {other}")));
-        }
+    let size = record
+        .locals
+        .max(captures.len() + required + usize::from(record.rest.is_some()));
+    locals.clear();
+    locals.reserve(size);
+    locals.extend(captures.into_iter().map(LocalSlot::Shared));
+    let mut args = args.into_iter();
+    locals.extend(
+        args.by_ref()
+            .take(required)
+            .map(|value| LocalSlot::Inline(BindingCell::Bound(value))),
+    );
+    if record.rest.is_some() {
+        locals.push(LocalSlot::Inline(BindingCell::Bound(Value::List(
+            args.collect(),
+        ))));
     }
+    locals.resize_with(size, || LocalSlot::Inline(BindingCell::Bound(Value::Nil)));
     Ok(())
 }
 
-/// Read one capture name out of the frame that created a closure.
-///
-/// A capture is `[:local n]` for a slot in this frame or `[:capture n]`
-/// for a slot in this frame's own capture table. The compiler emits the
-/// binding, not the value, so the value has to be read at closure-creation
-/// time — and it has to be read from the right place, which is the whole
-/// point: a parameter lives in the frame, a capture lives in the table.
-fn snapshot_capture(name: &Value, captures: &Vector<Value>, locals: &[Value]) -> Value {
-    let Value::Vector(parts) = name else {
-        return Value::Nil;
-    };
-    let Some(kind) = parts.front() else {
-        return Value::Nil;
-    };
-    let kind = match kind {
-        Value::Keyword(name) | Value::Symbol(name) => name.as_str(),
-        _ => return Value::Nil,
-    };
-    let Some(Value::Integer(index)) = parts.get(1) else {
-        return Value::Nil;
-    };
-    let index = *index as usize;
-    match kind {
-        "capture" => captures.get(index).cloned().unwrap_or(Value::Nil),
-        _ => locals.get(index).cloned().unwrap_or(Value::Nil),
+/// Suspended compiled calls live here, not on the Rust call stack.
+struct CallFrame {
+    module: Arc<ModuleArtifact>,
+    fn_index: usize,
+    locals: Vec<LocalSlot>,
+    env: Arc<Env>,
+    stack: Vec<Value>,
+    handlers: Vec<HandlerFrame>,
+    error_envs: Vec<Arc<Env>>,
+    source_id: Option<crate::span::SourceId>,
+    pc: usize,
+    call_pc: usize,
+}
+
+fn run_loop(
+    mut module: Arc<ModuleArtifact>,
+    mut fn_index: usize,
+    mut locals: Vec<LocalSlot>,
+    lexical_env: &Arc<Env>,
+    engine: &dyn EvalEngine,
+) -> Result<Value, EvalError> {
+    let mut pc = 0;
+    let mut env = lexical_env.clone();
+    let mut stack = Vec::new();
+    let mut handlers: Vec<HandlerFrame> = Vec::new();
+    let mut error_envs: Vec<Arc<Env>> = Vec::new();
+    let mut source_id = module
+        .source
+        .as_ref()
+        .map(|source| source.bind(&module.name, engine))
+        .transpose()?;
+    let mut calls: Vec<CallFrame> = Vec::new();
+    loop {
+        let fault_pc = pc;
+        let result = (|| -> Result<Option<Value>, EvalError> {
+            engine.spend(1)?;
+            let record = module
+                .functions
+                .get(fn_index)
+                .ok_or_else(|| EvalError::custom("function index out of range"))?;
+            let instr = record
+                .code
+                .get(pc)
+                .cloned()
+                .ok_or_else(|| EvalError::custom("PC ran off end of code"))?;
+            pc += 1;
+            match instr {
+                Instruction::Const(i) => stack.push(indexed_constant(&module.constants, i)?),
+                Instruction::Pop => {
+                    pop_stack(&mut stack)?;
+                }
+                Instruction::Dup => stack.push(
+                    stack
+                        .last()
+                        .cloned()
+                        .ok_or_else(|| EvalError::custom("dup on empty stack"))?,
+                ),
+                Instruction::Local(i) | Instruction::Capture(i) => {
+                    stack.push(
+                        locals
+                            .get(i)
+                            .ok_or_else(|| EvalError::custom("local index out of range"))?
+                            .read(engine)?,
+                    );
+                }
+                Instruction::Store(i) => {
+                    let value = stack
+                        .last()
+                        .cloned()
+                        .ok_or_else(|| EvalError::custom("store on empty stack"))?;
+                    locals
+                        .get_mut(i)
+                        .ok_or_else(|| EvalError::custom("local index out of range"))?
+                        .write(value);
+                }
+                Instruction::StoreCapture(i) | Instruction::SetLocal(i) => {
+                    let value = stack
+                        .last()
+                        .cloned()
+                        .ok_or_else(|| EvalError::custom("store on empty stack"))?;
+                    locals
+                        .get_mut(i)
+                        .ok_or_else(|| EvalError::custom("local index out of range"))?
+                        .assign_capture(value, engine)?;
+                }
+                Instruction::Bind(i) => {
+                    let value = pop_stack(&mut stack)?;
+                    *locals
+                        .get_mut(i)
+                        .ok_or_else(|| EvalError::custom("local index out of range"))? =
+                        LocalSlot::Inline(BindingCell::Bound(value));
+                }
+                Instruction::Declare(i, name, fallback) => {
+                    let fallback = match fallback {
+                        Some(BindingSource::Local(index) | BindingSource::Capture(index)) => {
+                            if index == i {
+                                return Err(EvalError::invalid_form(
+                                    "declaration cannot fall back to itself",
+                                ));
+                            }
+                            Some(BindingFallback::Cell(
+                                locals
+                                    .get_mut(index)
+                                    .ok_or_else(|| {
+                                        EvalError::invalid_form(
+                                            "declaration fallback index out of range",
+                                        )
+                                    })?
+                                    .capture(),
+                            ))
+                        }
+                        Some(BindingSource::Global(name)) => {
+                            Some(BindingFallback::Global(name, env.clone()))
+                        }
+                        None => None,
+                    };
+                    *locals.get_mut(i).ok_or_else(|| {
+                        EvalError::invalid_form("declaration index out of range")
+                    })? = LocalSlot::Inline(BindingCell::Unbound { name, fallback });
+                }
+                Instruction::Global(name) => stack.push(lookup_global(engine, &name, &env)?),
+                Instruction::SetGlobal(name) => {
+                    let value = stack
+                        .last()
+                        .cloned()
+                        .ok_or_else(|| EvalError::custom("set-global on empty stack"))?;
+                    set_global(engine, &name, value, &env)?;
+                }
+                Instruction::Define(name) => {
+                    let value = stack
+                        .last()
+                        .cloned()
+                        .ok_or_else(|| EvalError::custom("define on empty stack"))?;
+                    env.set(name, value);
+                }
+                Instruction::Jump(target) => pc = target,
+                Instruction::JumpFalse(target) => {
+                    if !crate::value::is_truthy(&pop_stack(&mut stack)?) {
+                        pc = target;
+                    }
+                }
+                Instruction::JumpTrue(target) => {
+                    if crate::value::is_truthy(&pop_stack(&mut stack)?) {
+                        pc = target;
+                    }
+                }
+                Instruction::Closure(index) => {
+                    let target = module
+                        .functions
+                        .get(index)
+                        .ok_or_else(|| EvalError::custom("closure references missing function"))?;
+                    let captures = snapshot_captures(&target.captures, &mut locals)?;
+                    stack.push(Value::Function(Arc::new(Function {
+                        params: target.params.clone(),
+                        rest_param: target.rest.clone(),
+                        body: Sexp::Nil,
+                        env: env.clone(),
+                        compiled: Some(Arc::new(Closure {
+                            module: module.clone(),
+                            fn_index: index,
+                            captures,
+                        })),
+                    })));
+                }
+                Instruction::Call(n) | Instruction::TailCall(n) => {
+                    let tail = matches!(instr, Instruction::TailCall(_));
+                    let start = stack
+                        .len()
+                        .checked_sub(n)
+                        .ok_or_else(|| EvalError::custom("call stack underflow"))?;
+                    let args = stack.drain(start..).collect();
+                    let func = pop_stack(&mut stack)?;
+                    if let Value::Function(f) = &func {
+                        if let Some(closure) = &f.compiled {
+                            let target =
+                                closure.module.functions.get(closure.fn_index).ok_or_else(
+                                    || EvalError::custom("closure references missing function"),
+                                )?;
+                            let next_module = closure.module.clone();
+                            let next_source = next_module
+                                .source
+                                .as_ref()
+                                .map(|source| source.bind(&next_module.name, engine))
+                                .transpose()?;
+                            if tail {
+                                bind_locals(target, closure.captures.clone(), args, &mut locals)?;
+                                module = next_module;
+                                stack.clear();
+                                handlers.clear();
+                                error_envs.clear();
+                            } else {
+                                let mut next_locals = Vec::new();
+                                bind_locals(
+                                    target,
+                                    closure.captures.clone(),
+                                    args,
+                                    &mut next_locals,
+                                )?;
+                                calls.push(CallFrame {
+                                    module: std::mem::replace(&mut module, next_module),
+                                    fn_index,
+                                    locals: std::mem::replace(&mut locals, next_locals),
+                                    env: env.clone(),
+                                    stack: std::mem::take(&mut stack),
+                                    handlers: std::mem::take(&mut handlers),
+                                    error_envs: std::mem::take(&mut error_envs),
+                                    source_id,
+                                    pc,
+                                    call_pc: fault_pc,
+                                });
+                            }
+                            source_id = next_source;
+                            fn_index = closure.fn_index;
+                            env = f.env.clone();
+                            pc = 0;
+                            return Ok(None);
+                        }
+                    }
+                    if tail {
+                        return call_value(func, args, engine).map(Some);
+                    }
+                    stack.push(call_value(func, args, engine)?);
+                }
+                Instruction::Return => return Ok(Some(stack.pop().unwrap_or(Value::Nil))),
+                Instruction::VectorN(n) => {
+                    let start = stack
+                        .len()
+                        .checked_sub(n)
+                        .ok_or_else(|| EvalError::custom("vector stack underflow"))?;
+                    let items = stack.drain(start..).collect();
+                    stack.push(Value::Vector(items));
+                }
+                Instruction::MapN(n) => {
+                    let start = stack
+                        .len()
+                        .checked_sub(2 * n)
+                        .ok_or_else(|| EvalError::custom("map stack underflow"))?;
+                    let mut items = stack.drain(start..);
+                    let mut map = ImHashMap::new();
+                    while let Some(key) = items.next() {
+                        map.insert(
+                            key,
+                            items
+                                .next()
+                                .ok_or_else(|| EvalError::custom("map stack underflow"))?,
+                        );
+                    }
+                    drop(items);
+                    stack.push(Value::Map(map));
+                }
+                Instruction::QuasiConj(splice) => {
+                    let item = pop_stack(&mut stack)?;
+                    let Value::Vector(mut items) = pop_stack(&mut stack)? else {
+                        return Err(EvalError::custom("quasiquote accumulator must be vector"));
+                    };
+                    if splice {
+                        match item {
+                            Value::List(values) | Value::Vector(values) => items.extend(values),
+                            other => {
+                                return Err(EvalError::type_error(
+                                    "sequential",
+                                    other.value_type(),
+                                ));
+                            }
+                        }
+                    } else {
+                        items.push_back(item);
+                    }
+                    stack.push(Value::Vector(items));
+                }
+                Instruction::QuasiList => {
+                    let Value::Vector(items) = pop_stack(&mut stack)? else {
+                        return Err(EvalError::custom("quasiquote accumulator must be vector"));
+                    };
+                    stack.push(Value::List(items));
+                }
+                Instruction::Handler(table) => handlers.push(HandlerFrame {
+                    table,
+                    stack_len: stack.len(),
+                    env: env.clone(),
+                    error_depth: error_envs.len(),
+                }),
+                Instruction::Unhandler => {
+                    handlers
+                        .pop()
+                        .ok_or_else(|| EvalError::custom("unbalanced handler"))?;
+                }
+                Instruction::ClearError => {
+                    env = error_envs
+                        .pop()
+                        .ok_or_else(|| EvalError::custom("unbalanced catch"))?;
+                }
+                Instruction::Metadata(op) => {
+                    let payload = pop_stack(&mut stack)?;
+                    stack.push(handle_metadata(engine, &env, &op, payload)?);
+                }
+                Instruction::Macro(name) => {
+                    let value = pop_stack(&mut stack)?;
+                    stack.push(install_macro_function(name, value, &env)?);
+                }
+                Instruction::MacroRules(name) => {
+                    let rules = pop_stack(&mut stack)?;
+                    install_rules(vector![Value::Symbol(name.clone()), rules], env.clone())?;
+                    stack.push(
+                        env.get(&name)
+                            .ok_or_else(|| EvalError::custom("installed macro missing"))?,
+                    );
+                }
+                Instruction::Module => {
+                    let exports = pop_stack(&mut stack)?;
+                    let name = pop_stack(&mut stack)?;
+                    let body = pop_stack(&mut stack)?;
+                    stack.push(install_module(name, exports, body, &env, engine)?);
+                }
+                Instruction::Method => {
+                    let metadata = pop_stack(&mut stack)?;
+                    let body = pop_stack(&mut stack)?;
+                    stack.push(install_method(metadata, body, &env)?);
+                }
+                Instruction::Class(n) => {
+                    let forms = metadata_forms(pop_stack(&mut stack)?)?;
+                    if n != 0 {
+                        return Err(EvalError::invalid_form(
+                            "compiled class initializers are not supported",
+                        ));
+                    }
+                    stack.push(
+                        crate::special::zos_forms::do_defclass(&forms, &env, engine)?.into_value(),
+                    );
+                }
+            }
+            Ok(None)
+        })();
+        match result {
+            Ok(Some(value)) => {
+                let Some(frame) = calls.pop() else {
+                    return Ok(value);
+                };
+                module = frame.module;
+                fn_index = frame.fn_index;
+                locals = frame.locals;
+                env = frame.env;
+                stack = frame.stack;
+                handlers = frame.handlers;
+                error_envs = frame.error_envs;
+                source_id = frame.source_id;
+                pc = frame.pc;
+                stack.push(value);
+            }
+            Ok(None) => {}
+            Err(mut error) => {
+                let mut error_pc = fault_pc;
+                loop {
+                    error = attach_instruction_span(error, &module, fn_index, error_pc, source_id);
+                    let kind = crate::special::zos_forms::extract_error_type(&error);
+                    let mut caught = false;
+                    while let Some(handler) = handlers.pop() {
+                        if let Some((_, target)) = handler
+                            .table
+                            .iter()
+                            .find(|(name, _)| name == kind || name == "any")
+                        {
+                            stack.truncate(handler.stack_len);
+                            error_envs.truncate(handler.error_depth);
+                            error_envs.push(handler.env.clone());
+                            env = Arc::new(Env::new(Some(handler.env)));
+                            env.set("*error*".into(), Value::String(error.to_string()));
+                            pc = *target;
+                            caught = true;
+                            break;
+                        }
+                    }
+                    if caught {
+                        break;
+                    }
+                    let Some(frame) = calls.pop() else {
+                        return Err(error);
+                    };
+                    module = frame.module;
+                    fn_index = frame.fn_index;
+                    locals = frame.locals;
+                    env = frame.env;
+                    stack = frame.stack;
+                    handlers = frame.handlers;
+                    error_envs = frame.error_envs;
+                    source_id = frame.source_id;
+                    pc = frame.pc;
+                    error_pc = frame.call_pc;
+                }
+            }
+        }
     }
 }
 
-/// Snapshot every capture a nested function declares, in its order.
+fn pop_stack(stack: &mut Vec<Value>) -> Result<Value, EvalError> {
+    stack
+        .pop()
+        .ok_or_else(|| EvalError::custom("operand stack underflow"))
+}
+
+fn metadata_forms(payload: Value) -> Result<Vec<Sexp>, EvalError> {
+    match macros::value_to_sexp(&payload)? {
+        Sexp::List(items, _) | Sexp::Vector(items, _) => Ok(items.into_iter().collect()),
+        other => Ok(vec![other]),
+    }
+}
+
+fn handle_metadata(
+    engine: &dyn EvalEngine,
+    env: &Arc<Env>,
+    op: &str,
+    payload: Value,
+) -> Result<Value, EvalError> {
+    let forms = metadata_forms(payload)?;
+    let result = match op {
+        "require" => crate::special::module_forms::do_require(&forms, env, engine),
+        "export" => crate::special::module_forms::do_export(&forms, env, engine),
+        "package" => crate::special::zos_forms::do_defpackage(&forms, env, engine),
+        "generic" => crate::special::zos_forms::do_defgeneric(&forms, env, engine),
+        other => return Err(EvalError::custom(format!("unknown metadata op: {other}"))),
+    }?;
+    Ok(result.into_value())
+}
+
+fn snapshot_capture(
+    name: &Value,
+    locals: &mut [LocalSlot],
+) -> Result<Rc<RefCell<BindingCell>>, EvalError> {
+    let Value::Vector(parts) = name else {
+        return Err(EvalError::invalid_form("capture descriptor must be vector"));
+    };
+    if parts.len() != 2
+        || !matches!(parts.front(), Some(Value::Keyword(kind)) if kind == "local" || kind == "capture")
+    {
+        return Err(EvalError::invalid_form("invalid capture descriptor"));
+    }
+    let Some(Value::Integer(index)) = parts.get(1) else {
+        return Err(EvalError::invalid_form("capture index must be integer"));
+    };
+    let index =
+        usize::try_from(*index).map_err(|_| EvalError::invalid_form("negative capture index"))?;
+    Ok(locals
+        .get_mut(index)
+        .ok_or_else(|| EvalError::invalid_form("capture index out of range"))?
+        .capture())
+}
+
 fn snapshot_captures(
     names: &Vector<Value>,
-    captures: &Vector<Value>,
-    locals: &[Value],
-) -> Vector<Value> {
+    locals: &mut [LocalSlot],
+) -> Result<Vector<Rc<RefCell<BindingCell>>>, EvalError> {
     names
         .iter()
-        .map(|name| snapshot_capture(name, captures, locals))
+        .map(|name| snapshot_capture(name, locals))
         .collect()
+}
+
+fn install_macro_function(name: String, value: Value, env: &Arc<Env>) -> Result<Value, EvalError> {
+    let Value::Function(function) = value else {
+        return Err(EvalError::type_error("function", value.value_type()));
+    };
+    let value = Value::Macro(Arc::new(Macro {
+        name: name.clone(),
+        params: function.params.clone(),
+        rest_param: function.rest_param.clone(),
+        body: function.body.clone(),
+        env: function.env.clone(),
+        compiled: function.compiled.clone(),
+    }));
+    env.set(name, value.clone());
+    Ok(value)
+}
+
+fn install_module(
+    name: Value,
+    exports: Value,
+    body: Value,
+    env: &Arc<Env>,
+    engine: &dyn EvalEngine,
+) -> Result<Value, EvalError> {
+    let name = crate::module::parse_module_name(&name)?;
+    let (Value::List(exports) | Value::Vector(exports)) = exports else {
+        return Err(EvalError::invalid_form(
+            "module :export must be a list or vector",
+        ));
+    };
+    let mut names = Vec::with_capacity(exports.len());
+    for export in exports {
+        match export {
+            Value::Symbol(name) | Value::Keyword(name) => names.push(name),
+            other => {
+                return Err(EvalError::invalid_form(format!(
+                    "module export symbols must be keywords or symbols, got {}",
+                    other.value_type()
+                )));
+            }
+        }
+    }
+    let Value::Function(function) = body else {
+        return Err(EvalError::type_error("function", body.value_type()));
+    };
+    let module_env = Arc::new(Env::new(Some(env.clone())));
+    let mut function = (*function).clone();
+    function.env = module_env.clone();
+    engine.push_module_exports();
+    let result = call_value(Value::Function(Arc::new(function)), Vector::new(), engine);
+    let declared = engine.take_module_exports();
+    let result = result?;
+    for name in declared {
+        if !names.contains(&name) {
+            names.push(name);
+        }
+    }
+    let module = crate::module::Module {
+        name,
+        env: module_env,
+        exports: names,
+        source: None,
+    };
+    module.validate_exports()?;
+    engine.register_module(module);
+    Ok(result)
+}
+
+fn install_method(metadata: Value, body: Value, env: &Arc<Env>) -> Result<Value, EvalError> {
+    use crate::zos::gf::{Method, MethodQualifier, Specializer};
+    let forms = metadata_forms(metadata)?;
+    let Some(Sexp::Symbol(name, _)) = forms.first() else {
+        return Err(EvalError::type_error("symbol", "gf name"));
+    };
+    let (qualifier, index) = match forms.get(1) {
+        Some(Sexp::Keyword(kind, _)) if kind == "before" => (MethodQualifier::Before, 2),
+        Some(Sexp::Keyword(kind, _)) if kind == "after" => (MethodQualifier::After, 2),
+        Some(Sexp::Keyword(kind, _)) if kind == "around" => (MethodQualifier::Around, 2),
+        _ => (MethodQualifier::Primary, 1),
+    };
+    let Some(Sexp::List(specs, _) | Sexp::Vector(specs, _)) = forms.get(index) else {
+        return Err(EvalError::type_error("list", "specializers"));
+    };
+    let mut specializers = Vec::with_capacity(specs.len());
+    for spec in specs {
+        match spec {
+            Sexp::Symbol(_, _) => specializers.push(Specializer::T),
+            Sexp::List(pair, _) if pair.len() == 2 => {
+                if let (Sexp::Symbol(_, _), Sexp::Symbol(kind, _)) = (&pair[0], &pair[1]) {
+                    specializers.push(Specializer::Exact(kind.clone()));
+                }
+            }
+            other => {
+                return Err(EvalError::invalid_form(format!(
+                    "invalid specializer: {other}"
+                )));
+            }
+        }
+    }
+    let Value::Function(body) = body else {
+        return Err(EvalError::type_error("function", body.value_type()));
+    };
+    let gf = env
+        .get(name)
+        .ok_or_else(|| EvalError::custom(format!("generic function not found: {name}")))?;
+    let Value::Object(object) = &gf else {
+        return Err(EvalError::type_error("GenericFunction", gf.value_type()));
+    };
+    let gf = crate::zos::gf::gf_shared(object.as_ref())
+        .ok_or_else(|| EvalError::type_error("GenericFunction", "non-GF object"))?;
+    gf.borrow_mut().add_method(Arc::new(Method {
+        specializers,
+        qualifier,
+        body,
+    }));
+    Ok(Value::Nil)
+}
+
+fn attach_instruction_span(
+    error: EvalError,
+    module: &ModuleArtifact,
+    fn_index: usize,
+    pc: usize,
+    source_id: Option<crate::span::SourceId>,
+) -> EvalError {
+    let context = match &error {
+        EvalError::SymbolNotFound(_, span)
+        | EvalError::InvalidForm(_, span)
+        | EvalError::MacroError(_, span)
+        | EvalError::Custom(_, span) => span,
+        EvalError::NotAFunction { span, .. }
+        | EvalError::WrongArgCount { span, .. }
+        | EvalError::WrongArgCountMin { span, .. }
+        | EvalError::WrongArgCountRange { span, .. }
+        | EvalError::IndexOutOfBounds { span, .. }
+        | EvalError::TypeError { span, .. }
+        | EvalError::DivisionByZero { span }
+        | EvalError::RecurNotTail { span }
+        | EvalError::RecurWithoutLoop { span } => span,
+    };
+    if context.span.is_some() {
+        return error;
+    }
+    let Some(Some((line, col))) = module.functions.get(fn_index).and_then(|f| f.debug.get(pc))
+    else {
+        return error;
+    };
+    let span = source_id.and_then(|source_id| {
+        let mut span = *module.source.as_ref()?.spans.get()?.get(&(*line, *col))?;
+        span.source_id = source_id;
+        Some(span)
+    });
+    error.with_opt_span(span)
 }
 
 fn lookup_global(
@@ -940,6 +1516,9 @@ fn lookup_global(
         return Ok(v);
     }
     if let Some(v) = engine.env().get(name) {
+        return Ok(v);
+    }
+    if let Some(v) = crate::special::module_forms::resolve_qualified(engine, name) {
         return Ok(v);
     }
     Err(EvalError::symbol_not_found(name))
@@ -964,10 +1543,6 @@ fn set_global(
 
 // ─── Source / compile path ──────────────────────────────────────────────
 
-fn parse_source(name: &str, source: &str) -> Result<Vec<Sexp>, EvalError> {
-    crate::reader::reader::read_program(source).map_err(|e| e.into_eval(name))
-}
-
 /// Parse `source` and register it in the context's SourceMap, so a form
 /// that falls through to the interpreter reports an error against the
 /// file it came from.
@@ -989,8 +1564,10 @@ fn parse_source_registered(
         .map_err(|e| e.into_eval(name))
 }
 
-/// Run every top-level form in `source`. Each form is compiled and executed
-/// against `ctx`. This is the language's natural source loader.
+/// Run every top-level form in `source` through the AST evaluator.
+/// This is the language's natural source loader — the bootstrap path for
+/// the bundle and ordinary interpreted runs; compiled execution happens
+/// only through explicit artifacts (`compile_source` / `execute_module`).
 pub(crate) fn eval_source_text(
     ctx: &EvalContext,
     name: &str,
@@ -999,70 +1576,9 @@ pub(crate) fn eval_source_text(
     let forms = parse_source_registered(ctx, name, source)?;
     let mut last = Value::Nil;
     for sexp in forms {
-        last = compile_and_run(ctx, &sexp)?;
+        last = crate::eval::eval_in_context(&sexp, ctx)?;
     }
     Ok(last)
-}
-
-/// Compile one form and execute it. If the form is a `(fn ...)` /
-/// `(defn ...)` body, the closure carries the bytecode; other forms
-/// (special forms, native calls) fall through to the interpreter via
-/// `EvalRuntime::eval_expr`.
-pub(crate) fn compile_and_run(ctx: &EvalContext, sexp: &Sexp) -> Result<Value, EvalError> {
-    // Stage-0 behavior: try to compile, but if compilation rejects the form,
-    // run it through the interpreter. This matches the user's spec: ordinary
-    // function/method/initializer bodies compile; special forms and metadata
-    // remain native, dispatched through `eval_expr`.
-    //
-    // The source name is not needed here: a form that fails to compile
-    // falls through to the interpreter, which reports the error against
-    // the form's own span.
-    if let Some((Some(func_val), defined)) = try_compile_top_level(sexp)? {
-        ctx.env.set(defined, func_val);
-        return Ok(Value::Nil);
-    }
-    crate::eval::eval_in_context(sexp, ctx)
-}
-
-fn try_compile_top_level(sexp: &Sexp) -> Result<Option<(Option<Value>, String)>, EvalError> {
-    let Sexp::List(items, _) = sexp else {
-        return Ok(None);
-    };
-    let Some(first) = items.front() else {
-        return Ok(None);
-    };
-    let Sexp::Symbol(op, _) = first else {
-        return Ok(None);
-    };
-    match op.as_str() {
-        "defn" => {
-            if items.len() < 3 {
-                return Ok(None);
-            }
-            let name = match &items[1] {
-                Sexp::Symbol(n, _) => n.clone(),
-                _ => return Ok(None),
-            };
-            let mut lowered = items.clone();
-            // Replace (defn name [params] body...) with (def name (fn ...))
-            lowered[1] = Sexp::Symbol(name.clone(), None);
-            let lowered = Sexp::List(lowered, None);
-            let _ = lowered;
-            // Fall back to interpreter for defn — compilation is exposed
-            // through the explicit `compile_source` entry point. Top-level
-            // forms keep using eval_expr so legacy semantics are preserved
-            // until the compiler is wired into the special forms.
-            return Ok(None);
-        }
-        "fn" => {
-            // Anonymous fn: compile to closure, return it.
-            let form_vec: Vector<Value> = items.iter().map(|s| Value::from(s.clone())).collect();
-            let zio_compile = std::env::var("__ZIO_COMPILE__").ok();
-            let _ = (form_vec, zio_compile);
-            return Ok(None);
-        }
-        _ => Ok(None),
-    }
 }
 
 // ─── Module value <-> artifact ──────────────────────────────────────────
@@ -1085,6 +1601,11 @@ fn value_to_artifact(v: &Value) -> Result<ModuleArtifact, EvalError> {
             )));
         }
     };
+    if version != MODULE_VERSION {
+        return Err(EvalError::custom(format!(
+            "unsupported module version {version}, expected {MODULE_VERSION}"
+        )));
+    }
     let name = match get("name")? {
         Value::String(s) => s,
         other => {
@@ -1132,6 +1653,18 @@ fn value_to_artifact(v: &Value) -> Result<ModuleArtifact, EvalError> {
         Some(Value::String(n)) => Some(n.clone()),
         _ => None,
     };
+    let source = match map
+        .get(&Value::Keyword("source".into()))
+        .or_else(|| map.get(&Value::String("source".into())))
+    {
+        Some(Value::String(text)) => Some(Arc::new(SourceProvenance::new(text.clone()))),
+        Some(Value::Nil) | None => None,
+        Some(_) => {
+            return Err(EvalError::invalid_form(
+                "module source must be string or nil",
+            ));
+        }
+    };
     Ok(ModuleArtifact {
         version: version as u32,
         name,
@@ -1139,6 +1672,7 @@ fn value_to_artifact(v: &Value) -> Result<ModuleArtifact, EvalError> {
         functions: fn_records,
         constants: consts,
         entry_name,
+        source,
     })
 }
 
@@ -1182,10 +1716,8 @@ fn value_to_record(v: &Value) -> Result<FunctionRecord, EvalError> {
             )));
         }
     };
-    // Captures are already-bound values, not names: the compiler emits
-    // whatever the enclosing scope held at the closure site, and the VM
-    // installs them into the callee's capture slots directly. Decoding
-    // them as strings would reject every real closure.
+    // The compiler emits lexical descriptors. Closure creation resolves them
+    // to shared cells, including reservations that have not been defined yet.
     let captures: Vector<Value> = match get("captures")? {
         Value::Vector(v) | Value::List(v) => v,
         Value::Nil => Vector::new(),
@@ -1225,7 +1757,7 @@ fn value_to_record(v: &Value) -> Result<FunctionRecord, EvalError> {
         Some(Value::String(n)) => Some(n.clone()),
         _ => None,
     };
-    Ok(FunctionRecord {
+    let record = FunctionRecord {
         name,
         params,
         rest,
@@ -1233,7 +1765,44 @@ fn value_to_record(v: &Value) -> Result<FunctionRecord, EvalError> {
         captures,
         code,
         debug,
-    })
+    };
+    validate_declarations(&record)?;
+    Ok(record)
+}
+
+fn validate_declarations(record: &FunctionRecord) -> Result<(), EvalError> {
+    let bound = record
+        .captures
+        .len()
+        .checked_add(record.params.len())
+        .and_then(|count| count.checked_add(usize::from(record.rest.is_some())))
+        .ok_or_else(|| EvalError::invalid_form("local count overflow"))?;
+    let size = record.locals.max(bound);
+    for instruction in &record.code {
+        if let Instruction::Declare(index, _, fallback) = instruction {
+            if *index < bound || *index >= size {
+                return Err(EvalError::invalid_form(
+                    "declaration index outside reserved locals",
+                ));
+            }
+            match fallback {
+                Some(BindingSource::Local(outer) | BindingSource::Capture(outer))
+                    if *outer >= size || outer == index =>
+                {
+                    return Err(EvalError::invalid_form(
+                        "invalid declaration fallback index",
+                    ));
+                }
+                _ => {}
+            }
+        }
+        if let Instruction::SetLocal(index) = instruction {
+            if *index >= size {
+                return Err(EvalError::invalid_form("set-local index out of range"));
+            }
+        }
+    }
+    Ok(())
 }
 
 fn value_to_instruction(v: &Value) -> Result<Instruction, EvalError> {
@@ -1316,7 +1885,31 @@ fn value_to_instruction(v: &Value) -> Result<Instruction, EvalError> {
         "capture" => Instruction::Capture(int_arg(1)?),
         "store" => Instruction::Store(int_arg(1)?),
         "store-capture" => Instruction::StoreCapture(int_arg(1)?),
+        "set-local" => match (items.len(), arg(1)?) {
+            (2, Value::Integer(index)) => Instruction::SetLocal(
+                usize::try_from(index)
+                    .map_err(|_| EvalError::invalid_form("negative set-local index"))?,
+            ),
+            _ => {
+                return Err(EvalError::invalid_form(
+                    "set-local requires one integer index",
+                ));
+            }
+        },
         "bind" => Instruction::Bind(int_arg(1)?),
+        "declare" => {
+            if items.len() != 4 {
+                return Err(EvalError::invalid_form(
+                    "declare requires index, name and fallback",
+                ));
+            }
+            let index = match arg(1)? {
+                Value::Integer(index) => usize::try_from(index)
+                    .map_err(|_| EvalError::invalid_form("negative declaration index"))?,
+                _ => return Err(EvalError::invalid_form("declaration index must be integer")),
+            };
+            Instruction::Declare(index, str_arg(2)?, value_to_binding_source(&arg(3)?)?)
+        }
         "global" => Instruction::Global(str_arg(1)?),
         "set-global" => Instruction::SetGlobal(str_arg(1)?),
         "define" => Instruction::Define(str_arg(1)?),
@@ -1329,6 +1922,11 @@ fn value_to_instruction(v: &Value) -> Result<Instruction, EvalError> {
         "return" => Instruction::Return,
         "vector" => Instruction::VectorN(int_arg(1)?),
         "map" => Instruction::MapN(int_arg(1)?),
+        "quasi-conj" => match (items.len(), arg(1)?) {
+            (2, Value::Boolean(splice)) => Instruction::QuasiConj(splice),
+            _ => return Err(EvalError::invalid_form("quasi-conj requires one boolean")),
+        },
+        "quasi-list" if items.len() == 1 => Instruction::QuasiList,
         "handler" => Instruction::Handler(table_arg(1)?),
         "unhandler" => Instruction::Unhandler,
         "clear-error" => Instruction::ClearError,
@@ -1340,6 +1938,53 @@ fn value_to_instruction(v: &Value) -> Result<Instruction, EvalError> {
         "class" => Instruction::Class(int_arg(1)?),
         other => return Err(EvalError::custom(format!("unknown opcode: {other}"))),
     })
+}
+
+fn value_to_binding_source(value: &Value) -> Result<Option<BindingSource>, EvalError> {
+    if matches!(value, Value::Nil) {
+        return Ok(None);
+    }
+    let Value::Vector(parts) = value else {
+        return Err(EvalError::invalid_form(
+            "declaration fallback must be vector or nil",
+        ));
+    };
+    if parts.len() != 2 {
+        return Err(EvalError::invalid_form("invalid declaration fallback"));
+    }
+    match (&parts[0], &parts[1]) {
+        (Value::Keyword(kind), Value::Integer(index)) if kind == "local" || kind == "capture" => {
+            let index = usize::try_from(*index)
+                .map_err(|_| EvalError::invalid_form("negative declaration fallback index"))?;
+            Ok(Some(if kind == "local" {
+                BindingSource::Local(index)
+            } else {
+                BindingSource::Capture(index)
+            }))
+        }
+        (Value::Keyword(kind), Value::String(name)) if kind == "global" => {
+            Ok(Some(BindingSource::Global(name.clone())))
+        }
+        _ => Err(EvalError::invalid_form("invalid declaration fallback")),
+    }
+}
+
+fn binding_source_to_value(source: &Option<BindingSource>) -> Value {
+    match source {
+        Some(BindingSource::Local(index)) => Value::Vector(vector![
+            Value::Keyword("local".into()),
+            Value::Integer(*index as i64)
+        ]),
+        Some(BindingSource::Capture(index)) => Value::Vector(vector![
+            Value::Keyword("capture".into()),
+            Value::Integer(*index as i64)
+        ]),
+        Some(BindingSource::Global(name)) => Value::Vector(vector![
+            Value::Keyword("global".into()),
+            Value::String(name.clone())
+        ]),
+        None => Value::Nil,
+    }
 }
 
 fn value_to_constant(v: &Value) -> Result<Constant, EvalError> {
@@ -1621,11 +2266,26 @@ fn artifact_to_value(a: &ModuleArtifact) -> Value {
         Value::Keyword("constants".into()),
         Value::Vector(a.constants.iter().map(constant_to_value_marker).collect()),
     );
+    if let Some(source) = &a.source {
+        map.insert(
+            Value::Keyword("source".into()),
+            Value::String(source.text.clone()),
+        );
+    }
+    if let Some(name) = &a.entry_name {
+        map.insert(
+            Value::Keyword("entry-name".into()),
+            Value::String(name.clone()),
+        );
+    }
     Value::Map(map)
 }
 
 fn record_to_value(r: &FunctionRecord) -> Value {
     let mut map: ImHashMap<Value, Value> = ImHashMap::new();
+    if let Some(name) = &r.name {
+        map.insert(Value::Keyword("name".into()), Value::String(name.clone()));
+    }
     map.insert(
         Value::Keyword("params".into()),
         Value::Vector(r.params.iter().map(|s| Value::String(s.clone())).collect()),
@@ -1681,7 +2341,17 @@ fn instruction_to_value(i: &Instruction) -> Value {
             Value::Keyword("store-capture".into()),
             Value::Integer(*n as i64),
         ),
+        Instruction::SetLocal(n) => vv(
+            Value::Keyword("set-local".into()),
+            Value::Integer(*n as i64),
+        ),
         Instruction::Bind(n) => vv(Value::Keyword("bind".into()), Value::Integer(*n as i64)),
+        Instruction::Declare(index, name, fallback) => Value::Vector(vector![
+            Value::Keyword("declare".into()),
+            Value::Integer(*index as i64),
+            Value::String(name.clone()),
+            binding_source_to_value(fallback),
+        ]),
         Instruction::Global(s) => vv(Value::Keyword("global".into()), Value::String(s.clone())),
         Instruction::SetGlobal(s) => vv(
             Value::Keyword("set-global".into()),
@@ -1706,6 +2376,10 @@ fn instruction_to_value(i: &Instruction) -> Value {
         Instruction::Return => v(Value::Keyword("return".into())),
         Instruction::VectorN(n) => vv(Value::Keyword("vector".into()), Value::Integer(*n as i64)),
         Instruction::MapN(n) => vv(Value::Keyword("map".into()), Value::Integer(*n as i64)),
+        Instruction::QuasiConj(splice) => {
+            vv(Value::Keyword("quasi-conj".into()), Value::Boolean(*splice))
+        }
+        Instruction::QuasiList => v(Value::Keyword("quasi-list".into())),
         Instruction::Handler(table) => vv(
             Value::Keyword("handler".into()),
             Value::Vector(
@@ -1818,6 +2492,8 @@ struct WireModule {
     entry_name: Option<String>,
     functions: Vec<WireFunction>,
     constants: Vec<WireConstant>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    source: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -1826,9 +2502,7 @@ struct WireFunction {
     params: Vec<String>,
     rest: Option<String>,
     locals: usize,
-    /// Captures cross the wire as values, not names: a captured binding
-    /// may be an integer, a map, or a cell, and a name-only encoding
-    /// would make a closure unrepresentable.
+    /// Lexical descriptors; shared runtime cells do not cross the artifact wire.
     captures: Vec<serde_json::Value>,
     code: Vec<WireInstruction>,
     debug: Vec<Option<(usize, usize)>>,
@@ -1851,8 +2525,12 @@ enum WireInstruction {
     Store(usize),
     #[serde(rename = "store-capture")]
     StoreCapture(usize),
+    #[serde(rename = "set-local")]
+    SetLocal(usize),
     #[serde(rename = "bind")]
     Bind(usize),
+    #[serde(rename = "declare")]
+    Declare(usize, String, Option<BindingSource>),
     #[serde(rename = "global")]
     Global(String),
     #[serde(rename = "set-global")]
@@ -1877,6 +2555,10 @@ enum WireInstruction {
     VectorN(usize),
     #[serde(rename = "map")]
     MapN(usize),
+    #[serde(rename = "quasi-conj")]
+    QuasiConj(bool),
+    #[serde(rename = "quasi-list")]
+    QuasiList,
     #[serde(rename = "handler")]
     Handler(Vec<(String, usize)>),
     #[serde(rename = "unhandler")]
@@ -1931,6 +2613,7 @@ impl ModuleArtifact {
             name: self.name.clone(),
             entry: self.entry,
             entry_name: self.entry_name.clone(),
+            source: self.source.as_ref().map(|source| source.text.clone()),
             functions: self
                 .functions
                 .iter()
@@ -1962,7 +2645,12 @@ impl ModuleArtifact {
         const MAX_CONSTANTS: usize = 1 << 20;
         const MAX_FUNCTIONS: usize = 1 << 16;
         const MAX_CODE_PER_FN: usize = 1 << 20;
-        const MAX_INSTR_ARGS: usize = 4;
+        if w.version != MODULE_VERSION {
+            return Err(EvalError::custom(format!(
+                "unsupported module version {}, expected {MODULE_VERSION}",
+                w.version
+            )));
+        }
         if w.functions.len() > MAX_FUNCTIONS {
             return Err(EvalError::custom(format!(
                 "function count {} exceeds ceiling {MAX_FUNCTIONS}",
@@ -1985,12 +2673,9 @@ impl ModuleArtifact {
             }
             let mut code: Vector<Instruction> = Vector::new();
             for instr in f.code.iter() {
-                if MAX_INSTR_ARGS < 2 {
-                    return Err(EvalError::custom("instr arg overflow"));
-                }
                 code.push_back(wire_to_instruction(instr)?);
             }
-            functions.push_back(FunctionRecord {
+            let record = FunctionRecord {
                 name: f.name.clone(),
                 params: f.params.iter().cloned().collect(),
                 rest: f.rest.clone(),
@@ -1998,14 +2683,13 @@ impl ModuleArtifact {
                 captures: f
                     .captures
                     .iter()
-                    .map(|value| {
-                        crate::builtins::json::from_json(value.clone())
-                            .map_err(|error| EvalError::custom(format!("capture: {error}")))
-                    })
+                    .map(capture_from_wire)
                     .collect::<Result<_, _>>()?,
                 code,
                 debug: f.debug.iter().cloned().collect(),
-            });
+            };
+            validate_declarations(&record)?;
+            functions.push_back(record);
         }
         let mut constants: Vector<Constant> = Vector::new();
         for c in w.constants.iter() {
@@ -2018,6 +2702,10 @@ impl ModuleArtifact {
             functions,
             constants,
             entry_name: w.entry_name.clone(),
+            source: w
+                .source
+                .as_ref()
+                .map(|text| Arc::new(SourceProvenance::new(text.clone()))),
         })
     }
 }
@@ -2031,7 +2719,11 @@ fn instruction_to_wire(i: &Instruction) -> WireInstruction {
         Instruction::Capture(n) => WireInstruction::Capture(*n),
         Instruction::Store(n) => WireInstruction::Store(*n),
         Instruction::StoreCapture(n) => WireInstruction::StoreCapture(*n),
+        Instruction::SetLocal(n) => WireInstruction::SetLocal(*n),
         Instruction::Bind(n) => WireInstruction::Bind(*n),
+        Instruction::Declare(index, name, fallback) => {
+            WireInstruction::Declare(*index, name.clone(), fallback.clone())
+        }
         Instruction::Global(s) => WireInstruction::Global(s.clone()),
         Instruction::SetGlobal(s) => WireInstruction::SetGlobal(s.clone()),
         Instruction::Define(s) => WireInstruction::Define(s.clone()),
@@ -2044,6 +2736,8 @@ fn instruction_to_wire(i: &Instruction) -> WireInstruction {
         Instruction::Return => WireInstruction::Return,
         Instruction::VectorN(n) => WireInstruction::VectorN(*n),
         Instruction::MapN(n) => WireInstruction::MapN(*n),
+        Instruction::QuasiConj(splice) => WireInstruction::QuasiConj(*splice),
+        Instruction::QuasiList => WireInstruction::QuasiList,
         Instruction::Handler(table) => {
             WireInstruction::Handler(table.iter().map(|(a, b)| (a.clone(), *b)).collect())
         }
@@ -2067,7 +2761,11 @@ fn wire_to_instruction(w: &WireInstruction) -> Result<Instruction, EvalError> {
         WireInstruction::Capture(n) => Instruction::Capture(*n),
         WireInstruction::Store(n) => Instruction::Store(*n),
         WireInstruction::StoreCapture(n) => Instruction::StoreCapture(*n),
+        WireInstruction::SetLocal(n) => Instruction::SetLocal(*n),
         WireInstruction::Bind(n) => Instruction::Bind(*n),
+        WireInstruction::Declare(index, name, fallback) => {
+            Instruction::Declare(*index, name.clone(), fallback.clone())
+        }
         WireInstruction::Global(s) => Instruction::Global(s.clone()),
         WireInstruction::SetGlobal(s) => Instruction::SetGlobal(s.clone()),
         WireInstruction::Define(s) => Instruction::Define(s.clone()),
@@ -2080,6 +2778,8 @@ fn wire_to_instruction(w: &WireInstruction) -> Result<Instruction, EvalError> {
         WireInstruction::Return => Instruction::Return,
         WireInstruction::VectorN(n) => Instruction::VectorN(*n),
         WireInstruction::MapN(n) => Instruction::MapN(*n),
+        WireInstruction::QuasiConj(splice) => Instruction::QuasiConj(*splice),
+        WireInstruction::QuasiList => Instruction::QuasiList,
         WireInstruction::Handler(t) => {
             let mut table = Vec::with_capacity(t.len());
             for pair in t.iter() {
@@ -2162,15 +2862,90 @@ fn compiler_name(args: Vector<Value>) -> Result<String, EvalError> {
     })
 }
 
-fn compiler_position(args: Vector<Value>) -> Result<Sexp, EvalError> {
-    let _ = args;
-    // The reader's spans live on the Sexp tree, and a form handed to the
-    // compiler as a `Value` has lost them. Carrying them would mean
-    // re-deriving positions from a value that no longer knows its
-    // source, which is guesswork dressed up as a location — worse than
-    // none. The interpreted evaluator keeps its spans; the VM reports
-    // the failure without one.
-    Ok(Sexp::Nil)
+fn compiler_argument(args: &Vector<Value>) -> Result<&Value, EvalError> {
+    if args.len() != 1 {
+        return Err(EvalError::wrong_arg_count(1, args.len()));
+    }
+    Ok(&args[0])
+}
+
+fn compiler_form(value: &Value) -> Result<Value, EvalError> {
+    use crate::syntax::{NodeKind, SyntaxNode};
+    let Some(node) = SyntaxNode::from_value(value) else {
+        return Ok(value.clone());
+    };
+    Ok(match node.kind {
+        NodeKind::List => Value::List(node.children.iter().map(SyntaxNode::to_value).collect()),
+        NodeKind::Vector => Value::Vector(node.children.iter().map(SyntaxNode::to_value).collect()),
+        NodeKind::Map => {
+            let mut map = ImHashMap::new();
+            let mut children = node.children.iter();
+            while let Some(key) = children.next() {
+                map.insert(
+                    key.to_value(),
+                    children.next().expect("validated syntax map").to_value(),
+                );
+            }
+            Value::Map(map)
+        }
+        _ => Value::from(node.to_sexp()?),
+    })
+}
+
+fn compiler_datum(value: &Value) -> Result<Value, EvalError> {
+    if let Some(node) = crate::syntax::SyntaxNode::from_value(value) {
+        return Ok(Value::from(node.to_sexp()?));
+    }
+    Ok(match value {
+        Value::List(items) => {
+            Value::List(items.iter().map(compiler_datum).collect::<Result<_, _>>()?)
+        }
+        Value::Vector(items) => {
+            Value::Vector(items.iter().map(compiler_datum).collect::<Result<_, _>>()?)
+        }
+        Value::Map(items) => Value::Map(
+            items
+                .iter()
+                .map(|(k, v)| Ok((compiler_datum(k)?, compiler_datum(v)?)))
+                .collect::<Result<_, EvalError>>()?,
+        ),
+        _ => value.clone(),
+    })
+}
+
+fn compiler_sexp(value: &Value) -> Result<Sexp, EvalError> {
+    if let Some(node) = crate::syntax::SyntaxNode::from_value(value) {
+        return node.to_sexp();
+    }
+    Ok(match value {
+        Value::List(items) => Sexp::List(
+            items.iter().map(compiler_sexp).collect::<Result<_, _>>()?,
+            None,
+        ),
+        Value::Vector(items) => Sexp::Vector(
+            items.iter().map(compiler_sexp).collect::<Result<_, _>>()?,
+            None,
+        ),
+        Value::Map(items) => Sexp::Map(
+            items
+                .iter()
+                .map(|(k, v)| Ok((compiler_sexp(k)?, compiler_sexp(v)?)))
+                .collect::<Result<_, EvalError>>()?,
+            None,
+        ),
+        _ => macros::value_to_sexp(value)?,
+    })
+}
+
+fn compiler_position(args: Vector<Value>) -> Result<Value, EvalError> {
+    let span =
+        crate::syntax::SyntaxNode::from_value(compiler_argument(&args)?).and_then(|node| node.span);
+    Ok(span.map_or(Value::Nil, |span| {
+        Value::Vector(vector![
+            Value::Integer(span.line as i64),
+            Value::Integer(span.col as i64),
+        ])
+    }))
 }
 
 fn compiler_order_keys(args: Vector<Value>) -> Result<Value, EvalError> {
@@ -2180,10 +2955,63 @@ fn compiler_order_keys(args: Vector<Value>) -> Result<Value, EvalError> {
     let Value::Map(m) = one else {
         return Err(EvalError::type_error("map", one.value_type()));
     };
-    // Deterministic ordering: by Value discriminant then Display.
-    let mut keys: Vec<Value> = m.keys().cloned().collect();
-    keys.sort_by(|a, b| format!("{a}").cmp(&format!("{b}")));
-    Ok(Value::Vector(keys.into_iter().collect()))
+    // Syntax keys carry unordered metadata maps. Order their datum instead,
+    // with explicit type tags and recursively canonical map entries.
+    let mut keys = m
+        .keys()
+        .map(|key| {
+            let node = crate::syntax::SyntaxNode::from_value(key);
+            let position = node
+                .as_ref()
+                .and_then(|node| node.span)
+                .map(|span| (span.start, span.end, span.line, span.col));
+            let datum = match node {
+                Some(node) => Value::from(node.to_sexp()?),
+                None => compiler_datum(key)?,
+            };
+            Ok(((canonical_key(&datum)?, position), key.clone()))
+        })
+        .collect::<Result<Vec<_>, EvalError>>()?;
+    keys.sort_by(|a, b| a.0.cmp(&b.0));
+    Ok(Value::Vector(
+        keys.into_iter().map(|(_, key)| key).collect(),
+    ))
+}
+
+fn canonical_key(value: &Value) -> Result<String, EvalError> {
+    let payload = match value {
+        Value::List(items) | Value::Vector(items) => serde_json::Value::Array(
+            items
+                .iter()
+                .map(canonical_key)
+                .map(|key| key.map(serde_json::Value::String))
+                .collect::<Result<_, _>>()?,
+        ),
+        Value::Map(items) => {
+            let mut pairs = items
+                .iter()
+                .map(|(key, value)| Ok((canonical_key(key)?, canonical_key(value)?)))
+                .collect::<Result<Vec<_>, EvalError>>()?;
+            pairs.sort();
+            serde_json::to_value(pairs).map_err(|error| EvalError::custom(error.to_string()))?
+        }
+        Value::Float(number) => serde_json::Value::from(number.to_bits()),
+        Value::Nil
+        | Value::Boolean(_)
+        | Value::Integer(_)
+        | Value::String(_)
+        | Value::Symbol(_)
+        | Value::Keyword(_)
+        | Value::Char(_) => serde_json::Value::String(value.to_string()),
+        other => {
+            return Err(EvalError::type_error(
+                "portable map key",
+                other.value_type(),
+            ));
+        }
+    };
+    serde_json::to_string(&(value.value_type(), payload))
+        .map_err(|error| EvalError::custom(error.to_string()))
 }
 
 fn compiler_float_bits(args: Vector<Value>) -> Result<i64, EvalError> {
@@ -2198,9 +3026,69 @@ fn compiler_float_bits(args: Vector<Value>) -> Result<i64, EvalError> {
     Ok(bits)
 }
 
-fn compiler_fail(args: Vector<Value>) -> Result<EvalError, EvalError> {
-    let _ = args;
-    Ok(EvalError::custom("compiler failure"))
+fn compiler_fail(args: Vector<Value>, engine: &dyn EvalEngine) -> Result<EvalError, EvalError> {
+    if args.len() != 4 {
+        return Err(EvalError::wrong_arg_count(4, args.len()));
+    }
+    let Value::String(name) = &args[0] else {
+        return Err(EvalError::type_error("string", args[0].value_type()));
+    };
+    let Value::Keyword(kind) = &args[2] else {
+        return Err(EvalError::type_error("keyword", args[2].value_type()));
+    };
+    let Value::String(message) = &args[3] else {
+        return Err(EvalError::type_error("string", args[3].value_type()));
+    };
+    let error = match kind.as_str() {
+        "recur-not-tail" => EvalError::recur_not_tail(),
+        "recur-without-loop" => EvalError::recur_without_loop(),
+        "invalid-form" => EvalError::invalid_form(message),
+        _ => return Err(EvalError::invalid_form("unknown compiler error kind")),
+    };
+    let span = match &args[1] {
+        Value::Vector(position) if position.len() == 2 => match (&position[0], &position[1]) {
+            (Value::Integer(line), Value::Integer(col)) if *line > 0 && *col > 0 => {
+                if let Some(source) = compilation_provenance(name, engine) {
+                    let source_id = source.bind(name, engine)?;
+                    source
+                        .spans
+                        .get()
+                        .and_then(|spans| spans.get(&(*line as usize, *col as usize)))
+                        .copied()
+                        .map(|mut span| {
+                            span.source_id = source_id;
+                            span
+                        })
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        },
+        _ => None,
+    };
+    Ok(error.with_opt_span(span))
+}
+
+fn capture_from_wire(value: &serde_json::Value) -> Result<Value, EvalError> {
+    let value = crate::builtins::json::from_json(value.clone())?;
+    let Value::Vector(mut parts) = value else {
+        return Err(EvalError::invalid_form("capture descriptor must be vector"));
+    };
+    if parts.len() != 2 {
+        return Err(EvalError::invalid_form("invalid capture descriptor"));
+    }
+    let kind = match &parts[0] {
+        Value::String(kind) | Value::Keyword(kind) if kind == "local" || kind == "capture" => {
+            kind.clone()
+        }
+        _ => return Err(EvalError::invalid_form("invalid capture kind")),
+    };
+    if !matches!(parts.get(1), Some(Value::Integer(index)) if *index >= 0) {
+        return Err(EvalError::invalid_form("invalid capture index"));
+    }
+    parts[0] = Value::Keyword(kind);
+    Ok(Value::Vector(parts))
 }
 
 fn install_rules(args: Vector<Value>, env: Arc<Env>) -> Result<(), EvalError> {
@@ -2215,15 +3103,8 @@ fn install_rules(args: Vector<Value>, env: Arc<Env>) -> Result<(), EvalError> {
         return Err(EvalError::type_error("symbol", name_val.value_type()));
     };
     let body_sexp = macros::value_to_sexp(body_val)?;
-    let sexp_name = match &body_sexp {
-        Sexp::List(items, _) if !items.is_empty() => match &items[0] {
-            Sexp::Symbol(n, _) => n.clone(),
-            _ => name.clone(),
-        },
-        _ => name.clone(),
-    };
     let macro_val = Value::Macro(Arc::new(Macro {
-        name: sexp_name,
+        name: name.clone(),
         params: vector![],
         rest_param: None,
         body: body_sexp,
@@ -2234,94 +3115,126 @@ fn install_rules(args: Vector<Value>, env: Arc<Env>) -> Result<(), EvalError> {
     Ok(())
 }
 
-fn install_macro(args: Vector<Value>, env: Arc<Env>) -> Result<(), EvalError> {
-    let mut iter = args.iter();
-    let name_val = iter
-        .next()
-        .ok_or_else(|| EvalError::wrong_arg_count(2, 0))?;
-    let module_val = iter
-        .next()
-        .ok_or_else(|| EvalError::wrong_arg_count(2, 1))?;
-    let Value::Symbol(name) = name_val else {
-        return Err(EvalError::type_error("symbol", name_val.value_type()));
+fn install_macro(
+    args: Vector<Value>,
+    env: Arc<Env>,
+    engine: &dyn EvalEngine,
+) -> Result<(), EvalError> {
+    if args.len() != 2 {
+        return Err(EvalError::wrong_arg_count(2, args.len()));
+    }
+    let Value::Symbol(name) = &args[0] else {
+        return Err(EvalError::type_error("symbol", args[0].value_type()));
     };
-    let artifact = value_to_artifact(module_val)?;
-    // The compiler names the callable in `:entry`; assuming index 0 would
-    // silently install the wrong function for any module whose entry is
-    // not its first.
-    let entry = artifact.entry;
-    let closure = Arc::new(Closure {
-        module: Arc::new(artifact),
-        fn_index: entry,
-        captures: Vector::new(),
-    });
-    let func = Arc::new(Function {
-        params: vector![],
-        rest_param: Some("args".into()),
-        body: Sexp::Nil,
-        env: Arc::new(Env::new(Some(env.clone()))),
-        compiled: Some(Arc::clone(&closure)),
-    });
-    let macro_val = Value::Macro(Arc::new(Macro {
-        name: name.clone(),
-        params: vector![],
-        rest_param: Some("args".into()),
-        body: Sexp::Nil,
-        env: env.clone(),
-        compiled: Some(Arc::clone(&closure)),
-    }));
-    env.set(name.clone(), Value::Function(func));
-    env.set(name.clone(), macro_val);
+    let mut artifact = value_to_artifact(&args[1])?;
+    if artifact.source.is_none() {
+        artifact.source = compilation_provenance(&artifact.name, engine);
+    }
+    let module = Arc::new(artifact);
+    let entry = module.entry;
+    let record = module
+        .functions
+        .get(entry)
+        .ok_or_else(|| EvalError::custom("entry function missing"))?;
+    let function = bind_call(
+        module.clone(),
+        entry,
+        Vector::new(),
+        record,
+        Vector::new(),
+        &env,
+        engine,
+    )?;
+    install_macro_function(name.clone(), function, &env)?;
     Ok(())
 }
 
-fn install_compiled_compiler(ctx: &EvalContext, module: &Value) -> Result<(), EvalError> {
+/// Install a compiled frontend bundle from `module` into `ctx`.
+///
+/// Ordering is load-bearing. First the artifact's provenance is bound
+/// with the *bootstrap* (interpreted) Zi reader — the compiled reader's
+/// own bodies cannot exist before their declarations execute — and the
+/// resulting registration is recorded as a trusted implementation
+/// source. Then every name the artifact declares is removed from the
+/// context's root scope, so a stale interpreted helper cannot mask a
+/// missing compiled definition. Only then does the artifact's entry
+/// execute, defining the compiled frontend. Finally the four contract
+/// entries (`zi-read`, `zi-expand`, `zi-apply`, `zio--compile`) are
+/// verified to be compiled functions; anything less fails closed.
+pub fn install_compiled_compiler(ctx: &EvalContext, module: &Value) -> Result<(), EvalError> {
     let artifact = value_to_artifact(module)?;
-    // `:entry` is the module's top-level body — it takes no arguments.
-    // `zio--compile` is an ordinary function inside that module, so the
-    // compiled compiler has to point at *its* index, not the entry, or
-    // every call fails an arity check against a zero-parameter body.
-    // Matching on arity alone is not enough: several compiler helpers
-    // take two arguments, and binding one of those as the compiler
-    // fails on the first `get` with a string. The module records the
-    // exported name so the binding is by name, not by shape.
-    let index = artifact
-        .entry_name
-        .as_deref()
-        .and_then(|name| {
-            artifact.functions.iter().position(|record| {
-                record.params.len() == 2
-                    && record.rest.is_none()
-                    && record.name.as_deref() == Some(name)
-            })
-        })
-        .or_else(|| {
-            artifact
-                .functions
-                .iter()
-                .position(|record| record.params.len() == 2 && record.rest.is_none())
-        })
-        .ok_or_else(|| {
-            EvalError::custom("compiled compiler module has no two-argument entry function")
-        })?;
-    let module_arc = Arc::new(artifact);
-    let closure = Arc::new(Closure {
-        module: Arc::clone(&module_arc),
-        fn_index: index,
-        captures: Vector::new(),
+    let named = |name: &str| {
+        artifact
+            .functions
+            .iter()
+            .any(|record| record.name.as_deref() == Some(name))
+    };
+    if !artifact.functions.iter().any(|record| {
+        record.name.as_deref() == Some("zio--compile")
+            && record.params.len() == 2
+            && record.rest.is_none()
+    }) {
+        return Err(EvalError::custom(
+            "compiled compiler module has no named two-argument zio--compile function",
+        ));
+    }
+    for required in ["zi-read", "zi-expand", "zi-apply"] {
+        if !named(required) {
+            return Err(EvalError::custom(format!(
+                "compiled compiler module has no named {required} function"
+            )));
+        }
+    }
+    // Bind provenance while the interpreted reader is still the reader of
+    // record: span metadata decodes through it once and is cached for the
+    // artifact's own execution.
+    if let Some(source) = &artifact.source {
+        let id = source.bind(&artifact.name, ctx)?;
+        record_bundle_source(ctx.source_map(), id);
+    }
+    // Remove every previous frontend binding, including helpers omitted
+    // by this artifact. Missing declarations must not fall back to Stage 0.
+    COMPILER_BINDINGS.with(|bindings| {
+        for previous in bindings
+            .borrow()
+            .iter()
+            .filter(|entry| std::ptr::eq(entry.map.as_ptr(), Arc::as_ptr(ctx.source_map())))
+        {
+            for name in &previous.names {
+                ctx.env.delete_owned(name);
+            }
+        }
     });
-    let func = Arc::new(Function {
-        // The compiled compiler takes the same two arguments the
-        // interpreted one does. An empty parameter list with a rest
-        // would make every stage-2 call an arity error, and a bootstrap
-        // that only ever ran the interpreted path would never notice.
-        params: vector!["name".to_string(), "forms".to_string()],
-        rest_param: None,
-        body: Sexp::Nil,
-        env: Arc::new(Env::new(Some(ctx.env.clone()))),
-        compiled: Some(Arc::clone(&closure)),
-    });
-    ctx.env.set("zio--compile".into(), Value::Function(func));
+    let mut names = Vec::new();
+    for record in artifact.functions.iter() {
+        for instruction in record.code.iter() {
+            let declared = match instruction {
+                Instruction::Define(name)
+                | Instruction::SetGlobal(name)
+                | Instruction::Macro(name)
+                | Instruction::MacroRules(name) => Some(name),
+                _ => None,
+            };
+            if let Some(name) = declared {
+                ctx.env.delete_owned(name);
+                names.push(name.clone());
+            }
+        }
+    }
+    // Execute declarations, installing helpers as well as the entry point.
+    // Replacing only zio--compile silently kept Stage 2 on AST helper bodies.
+    run_artifact(ctx, &artifact)?;
+    record_compiler_bindings(ctx, names);
+    for name in ["zi-read", "zi-expand", "zi-apply", "zio--compile"] {
+        match ctx.env.get_owned(name) {
+            Some(Value::Function(function)) if function.compiled.is_some() => {}
+            _ => {
+                return Err(EvalError::custom(format!(
+                    "compiler artifact did not install a compiled {name}"
+                )));
+            }
+        }
+    }
     Ok(())
 }
 

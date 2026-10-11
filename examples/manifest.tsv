@@ -6,3 +6,5 @@ datalog-concept.zio|runnable|zio-datalog library: planned capability.
 scripting.zio|runnable|=== Scripting scenario ===
 learn-demo.zio|runnable|=== Homoiconic learner ===
 pipeline-demo.zio|runnable|=== Pipeline DSL ===
+toolchain/semantics.zio|runnable|[3 9223372036854775807]
+toolchain/meta-eval.zio|runnable|[3 9223372036854775807]

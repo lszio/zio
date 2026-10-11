@@ -1,4 +1,5 @@
-;; Portable stack compiler. Only reader, one-step expansion and VM mechanisms are native.
+;; Portable stack compiler. Reader and expansion are Zio; native hooks provide
+;; value/source projections and VM mechanisms. Binding policy lives in analyze.zio.
 ;; State is persistent; local/capture indexes are selected here, never by the VM.
 (defn zc-get [v i] (get v i nil))
 (defn zc-tail [v n] (slice v n (count v)))
@@ -6,24 +7,19 @@
   (loop [j 0 out []]
     (if (= j (count v)) out
       (recur (+ j 1) (vector-conj out (if (= j i) x (get v j)))))))
-(defn zc-concat [a b] (reduce vector-conj a b))
-(defn zc-fail [s message] (compiler/fail (get s :name) (get s :position) message))
+(defn zc-fail [s message] (compiler/fail (get s :source-name) (get s :position) :invalid-form message))
 (defn zc-check [s ok message] (if ok s (zc-fail s message)))
 (defn zc-order [m] (compiler/order-keys m))
-(defn zc-literal [x]
-  (cond
-    ((nil? x) [:nil])
-    ((list? x) [:list (map zc-literal x)])
-    ((vector? x) [:vector (map zc-literal x)])
-    ((map? x) [:map (map (fn [k] [(zc-literal k) (zc-literal (get x k))]) (zc-order x))])
-    ((symbol? x) [:symbol (str x)])
-    ((keyword? x) [:keyword (compiler/name x)])
-    ((string? x) [:string x])
-    ((= (type x) :integer) [:integer x])
-    ((= (type x) :float) [:float (compiler/float-bits x)])
-    ((= (type x) :character) [:char (str x)])
-    ((= (type x) :boolean) [:boolean x])
-    (else (error "unsupported portable literal"))))
+;; Strict syntax provenance: a form carries its own span first, and a
+;; macro-generated node carries the call site of the expansion that made
+;; it. Positions fall back in that order and no further.
+(defn zc-position [raw]
+  (let [direct (compiler/position raw)]
+    (if direct direct
+      (let [origin (if (map? raw) (get raw :origin nil) nil)
+            site (if origin (get origin :call-site nil) nil)]
+        (if (if site (get site :line nil) false)
+          [(get site :line) (get site :col)] nil)))))
 (defn zc-emit [s instruction]
   (put (put s :code (vector-conj (get s :code) instruction))
     :debug (vector-conj (get s :debug) (get s :position))))
@@ -35,11 +31,14 @@
 (defn zc-intern [s table x]
   (cond
     ((vector? x)
-      (zc-intern-tag s table {:kind :vector :value (zc-intern-seq s table x)}))
+      (let [r (zc-intern-seq s table x)]
+        (zc-intern-tag (first r) table {:kind :vector :value (second r)})))
     ((list? x)
-      (zc-intern-tag s table {:kind :list :value (zc-intern-seq s table x)}))
+      (let [r (zc-intern-seq s table x)]
+        (zc-intern-tag (first r) table {:kind :list :value (second r)})))
     ((map? x)
-      (zc-intern-tag s table {:kind :map :value (zc-intern-pairs s table x)}))
+      (let [r (zc-intern-pairs s table x)]
+        (zc-intern-tag (first r) table {:kind :map :value (second r)})))
     (else (zc-intern-tag s table (zc-const-tag s x)))))
 (defn zc-intern-tag [s table tag]
   (let [at (zc-const-find table tag)]
@@ -55,15 +54,15 @@
         (recur (+ i 1))))))
 (defn zc-intern-seq [s table x]
   (loop [i 0 state s indices []]
-    (if (>= i (count x)) indices
+    (if (>= i (count x)) [state indices]
       (let [r (zc-intern state table (nth x i))]
         (recur (+ i 1) (first r) (vector-conj indices (second r)))))))
 (defn zc-intern-pairs [s table x]
   (loop [ks (zc-order x) state s pairs []]
-    (if (= (count ks) 0) pairs
+    (if (= (count ks) 0) [state pairs]
       (let [k (first ks)
             rk (zc-intern state table k)
-            rv (zc-intern (first rk) (nth rk 1) (get x k))]
+            rv (zc-intern (first rk) table (get x k))]
         (recur (rest ks) (first rv) (vector-conj pairs [(second rk) (second rv)]))))))
 (defn zc-const-tag [s x]
   (cond
@@ -80,15 +79,9 @@
   (let [r (zc-intern s [] x)]
     (zc-emit (first r) [:const (second r)])))
 (defn zc-patch [s i instruction] (put s :code (zc-vset (get s :code) i instruction)))
-(defn zc-alloc [s name]
-  (let [i (get s :locals)]
-    (put (put s :locals (+ i 1)) :env (put (get s :env) name [:local i]))))
-(defn zc-load [s name]
-  (let [binding (get (get s :env) name nil)]
-    (if binding (zc-emit s binding) (zc-emit s [:global (str name)]))))
 (defn zc-sequence [s forms tail]
   (if (= (count forms) 0) (zc-constant s nil)
-    (loop [i 0 state s]
+    (loop [i 0 state (zc-reserve-forms s forms)]
       (let* [last (= (+ i 1) (count forms))
              next (zc-expr state (get forms i) (if last tail false))]
         (if last next (recur (+ i 1) (zc-emit next [:pop])))))))
@@ -99,30 +92,16 @@
 (defn zc-record [s]
   {:name (get s :name) :params (get s :params) :rest (get s :rest) :locals (get s :locals)
    :captures (get s :captures) :code (get s :code) :debug (get s :debug)})
-(defn zc-params [s raw]
-  (zc-check s (if (vector? raw) true (list? raw)) "function parameters must be sequential")
-  (loop [i 0 names [] rest nil]
-    (if (= i (count raw)) [names rest]
-      (let [p (get raw i)]
-        (zc-check s (symbol? p) "parameter must be a symbol")
-        (if (= p '&)
-          (do
-            (zc-check s (= (+ i 2) (count raw)) "rest parameter must be final")
-            (zc-check s (symbol? (get raw (+ i 1))) "rest parameter must be a symbol")
-            [names (str (get raw (+ i 1)))])
-          (recur (+ i 1) (vector-conj names (str p)) rest))))))
 (defn zc-function-mode [s name raw body depth]
   (let* [parsed (zc-params s raw)
          params (get parsed 0) rest (get parsed 1)
-         captured (zc-order (get s :env))
-         bindings (loop [i 0 env {}]
-                    (if (= i (count captured)) env
-                      (recur (+ i 1) (put env (get captured i) [:capture i]))))
+         plan (zc-capture-plan s)
+         visible (get plan 0) captured (get plan 1) bindings (get plan 2)
          index (count (get s :functions))
-         child (put (put (put (put (put (put (put (put (put (put (put s
-                   :code []) :debug []) :locals 0) :env bindings) :loop nil)
-                   :depth depth) :params params) :rest rest) :name name)
-                   :captures (map (fn [k] (get (get s :env) k)) captured))
+         child (assoc s :code [] :debug [] :locals 0 :env bindings
+                   :owned {} :forward {} :loop nil :depth depth
+                   :params params :rest rest :name name
+                   :captures (map (fn [k] (get visible k)) captured)
                    :functions (vector-conj (get s :functions) nil))
          ;; Parameters live AFTER this function's own captures, so the
          ;; first parameter starts at the capture count. Allocating from
@@ -158,55 +137,46 @@
              next (zc-short (zc-emit (zc-emit first [branch 0]) [:pop]) (zc-tail args 1) tail mode)]
         (zc-patch next index [branch (count (get next :code))])))))
 (defn zc-cond [s args tail]
-  (if (= (count args) 0) (zc-constant s nil)
-    (let [clause (get args 0)]
-      (zc-check s (if (list? clause) (> (count clause) 0) false) "cond clause must be a nonempty list")
-      (if (= (get clause 0) 'else) (zc-sequence s (zc-tail clause 1) tail)
-        (zc-if s (vector (get clause 0)
-          (cons 'do (apply list (zc-tail clause 1)))
-          (cons 'cond (apply list (zc-tail args 1)))) tail)))))
-(defn zc-bindings [s bindings sequential]
-  (zc-check s (if (vector? bindings) true (list? bindings)) "bindings must be sequential")
-  (zc-check s (= (mod (count bindings) 2) 0) "bindings must have even length")
-  (let [outer (get s :env)]
-    (loop [i 0 state s slots []]
-      (if (= i (count bindings))
-        ;; The `:bind` was already emitted per binding, in source order,
-        ;; so each initializer saw the previous ones. Re-binding here
-        ;; would pop a stack that no longer holds those values and
-        ;; report "bind on empty stack" on the last one.
-        [state slots]
-        (let* [name (get bindings i)
-               checked (zc-check state (symbol? name) "binding name must be a symbol")
-                 ;; Both `let` and `let*` are sequential, matching
-               ;; Clojure: an initializer sees the bindings before it.
-               scope checked
-               initialized (zc-expr scope (get bindings (+ i 1)) false)
-               allocated (zc-alloc (put initialized :env (get state :env)) name)
-               slot (- (get allocated :locals) 1)
-               bound (if sequential (zc-emit allocated [:bind slot]) allocated)]
-          (recur (+ i 2) bound (vector-conj slots slot)))))))
-
+  ;; Lower clauses iteratively: rebuilding nested cond/if forms makes the
+  ;; bootstrap compiler consume the Rust stack in proportion to clause count.
+  (loop [i 0 state s exits []]
+    (if (= i (count args))
+      (let* [finished (zc-constant state nil) end (count (get finished :code))]
+        (reduce (fn [out jump] (zc-patch out jump [:jump end])) finished exits))
+      (let [clause (compiler/form (get args i))]
+        (zc-check state (if (list? clause) (> (count clause) 0) false)
+          "cond clause must be a nonempty list")
+        (if (= (compiler/form (get clause 0)) 'else)
+          (let* [finished (zc-sequence state (zc-tail clause 1) tail)
+                 end (count (get finished :code))]
+            (reduce (fn [out jump] (zc-patch out jump [:jump end])) finished exits))
+          (let* [tested (zc-expr state (get clause 0) false)
+                 false-index (count (get tested :code))
+                 selected (zc-sequence (zc-emit tested [:jump-false 0]) (zc-tail clause 1) tail)
+                 exit-index (count (get selected :code))
+                 next (zc-emit selected [:jump 0])
+                 patched (zc-patch next false-index [:jump-false (count (get next :code))])]
+            (recur (+ i 1) patched (vector-conj exits exit-index))))))))
 (defn zc-let [s args tail mode]
   (zc-check s (> (count args) 1) "let/loop requires bindings and body")
-  ;; `loop` binds like `let*`: each initial value may name the one
-  ;; before it, and — the part that matters at runtime — the variables
-  ;; are actually stored, because `recur` rebinds them by slot. A loop
-  ;; whose slots were never bound reads nil on the first iteration.
-  (let* [bound (zc-bindings s (get args 0) true)
+  ;; let/let* initializers are sequential; loop initializers all see the outer scope.
+  (let* [scope (put (put (put (put s :env (zc-visible s)) :owned {}) :forward {})
+                 :depth (+ (get s :depth) 1))
+         prepared (if (= mode 'loop) scope (zc-reserve-forms scope (zc-tail args 1)))
+         bound (zc-bindings prepared (get args 0) (not (= mode 'loop)) s)
          state (get bound 0) slots (get bound 1)
          start (count (get state :code))
-         loop-frame {:start start :slots slots}
-         inner (put (put state :depth (+ (get s :depth) 1)) :loop (if (= mode 'loop) loop-frame (get s :loop)))
+         loop-frame {:start start :slots slots :catch-depth (get s :catch-depth 0)}
+         inner (put state :loop (if (= mode 'loop) loop-frame (get s :loop)))
          compiled (zc-sequence inner (zc-tail args 1) (if (= mode 'loop) true tail))]
-    (put (put (put compiled :env (get s :env)) :depth (get s :depth)) :loop (get s :loop))))
+    (zc-scope compiled s)))
 (defn zc-recur [s args tail]
-  (zc-check s tail "recur must be in tail position")
-  (let [frame (get s :loop)]
-    (zc-check s frame "recur requires a loop")
+  (let [frame (zc-recur-frame s tail)]
     (zc-check s (= (count args) (count (get frame :slots))) "recur argument count mismatch")
-    (let [evaluated (zc-many s args)]
-      (zc-emit (loop [i (- (count args) 1) state evaluated]
+    (let* [evaluated (zc-many s args)
+           unwound (loop [n (- (get s :catch-depth 0) (get frame :catch-depth 0)) state evaluated]
+                     (if (= n 0) state (recur (- n 1) (zc-emit state [:clear-error]))))]
+      (zc-emit (loop [i (- (count args) 1) state unwound]
                  (if (< i 0) state
                    (recur (- i 1) (zc-emit state [:bind (get (get frame :slots) i)]))))
                [:jump (get frame :start)]))))
@@ -214,39 +184,44 @@
   (zc-check s (symbol? name) "definition requires a symbol")
   (if (= (get s :depth) 0)
     (zc-emit (zc-expr s expression false) [:define (str name)])
-    (let* [existing (get (get s :env) name nil)
-           allocated (if existing s (zc-alloc s name))
-           binding (get (get allocated :env) name)
-           prebound (if existing allocated (zc-emit (zc-constant allocated nil) [:bind (get binding 1)]))
-           evaluated (zc-expr prebound expression false)]
-      (zc-emit evaluated [(if (= (get binding 0) :local) :store :store-capture) (get binding 1)]))))
+    (let* [reserved (zc-reserve s name)
+           binding (get (get reserved :owned) name (get (get reserved :forward) name nil))
+           evaluated (zc-expr reserved expression false)]
+      (zc-emit (zc-own evaluated name binding) [:store (get binding 1)]))))
 (defn zc-set [s args]
   (zc-check s (= (count args) 2) "set! requires name and value")
-  (let [name (get args 0)]
+  (let [name (compiler/datum (get args 0))]
     (zc-check s (symbol? name) "set! requires a symbol")
     (let* [evaluated (zc-expr s (get args 1) false)
-           binding (get (get s :env) name nil)]
+           binding (get (get evaluated :env) name nil)]
       (if binding
-        (zc-emit evaluated [(if (= (get binding 0) :local) :store :store-capture) (get binding 1)])
+        (zc-emit evaluated [(if (= (get binding 0) :local) :set-local :store-capture) (get binding 1)])
         (zc-emit evaluated [:set-global (str name)])))))
 (defn zc-macro [s args]
   (zc-check s (> (count args) 1) "defmacro requires name and body")
-  (let [name (get args 0) second (get args 1)]
+  (let [name (compiler/datum (get args 0)) second (compiler/form (get args 1))]
     (zc-check s (symbol? name) "macro name must be a symbol")
-    (if (if (list? second) (= (zc-get second 0) 'syntax-rules) false)
-      (do (compiler/install-rules name second)
-        (zc-emit (zc-constant s second) [:macro-rules (str name)]))
-      (let* [compiled (zc-function s second (zc-tail args 2))
-             artifact (zio--compile (get s :name) [(cons 'fn (apply list (zc-tail args 1)))])]
-        (zc-check s (= (count (get s :env)) 0) "local macro declarations require explicit top-level bindings")
+    (if (if (list? second) (= (compiler/form (zc-get second 0)) 'syntax-rules) false)
+      (let [rules (compiler/datum (get args 1))]
+        (compiler/install-rules name rules)
+        (zc-emit (zc-constant s rules) [:macro-rules (str name)]))
+      (let* [checked (zc-check s (= (count (get s :env)) 0) "local macro declarations require explicit top-level bindings")
+             compiled (zc-function checked (get args 1) (zc-tail args 2))
+             index (get (get (get compiled :code) (- (count (get compiled :code)) 1)) 1)
+             entry 0
+             wrapper {:name nil :params [] :rest nil :locals 0 :captures []
+                      :code [[:closure index] [:return]] :debug [(get s :position) (get s :position)]}
+             artifact {:version 1 :name (get s :source-name) :entry entry :entry-name (str name)
+                       :functions (reduce (fn [out record] (vector-conj out (if record record wrapper))) [] (get compiled :functions))
+                       :constants (get compiled :constants)}]
         (compiler/install-macro name artifact)
         (zc-emit compiled [:macro (str name)])))))
 (defn zc-try [s args tail]
   (zc-check s (> (count args) 0) "try requires a body")
   (let* [split (loop [i (count args)]
                 (if (= i 0) i
-                  (let [form (get args (- i 1))]
-                    (if (if (list? form) (= (zc-get form 0) 'catch) false)
+                  (let [form (compiler/form (get args (- i 1)))]
+                    (if (if (list? form) (= (compiler/form (zc-get form 0)) 'catch) false)
                       (recur (- i 1)) i))))
          catches (zc-tail args split)
          body (slice args 0 split)
@@ -257,10 +232,17 @@
          initial (zc-emit success [:jump 0])
          handlers (loop [i (- (count catches) 1) state initial targets [] exits []]
                     (if (< i 0) [state targets exits]
-                      (let* [clause (get catches i)
-                             type-name (compiler/name (get clause 1))
+                      (let* [clause (compiler/form (get catches i))
+                             kind (compiler/datum (zc-get clause 1))
+                             type-name (if (if (symbol? kind) true (keyword? kind)) (compiler/name kind) "any")
                              target (count (get state :code))
-                             handled (zc-emit (zc-sequence state (zc-tail clause 2) false) [:clear-error])
+                             scope (put (put (put (put (put state :env (zc-visible state))
+                                       :owned {}) :forward {}) :depth (+ (get s :depth) 1))
+                                       :catch-depth (+ (get s :catch-depth 0) 1))
+                             handled (zc-emit
+                                       (put (zc-scope
+                                         (zc-sequence scope (if (> (count clause) 2) (zc-tail clause 2) []) tail) state)
+                                         :catch-depth (get s :catch-depth 0)) [:clear-error])
                              exit (count (get handled :code))]
                         (recur (- i 1) (zc-emit handled [:jump 0])
                           (vector-conj targets [type-name target]) (vector-conj exits exit)))))
@@ -268,45 +250,100 @@
          patched (reduce (fn [state i] (zc-patch state i [:jump end])) result (get handlers 2))]
     (zc-patch (zc-patch patched handler-index [:handler (get handlers 1)]) jump-index [:jump end])))
 (defn zc-metadata [s op args]
-  (zc-emit (zc-constant s (apply list args)) [:metadata op]))
+  (zc-emit (zc-constant s (compiler/datum (apply list args))) [:metadata (compiler/name op)]))
 (defn zc-module [s args]
   (zc-check s (> (count args) 0) "module requires a name")
-  (let* [explicit (= (zc-get args 1) :export)
-         exports (if explicit (get args 2) [])
+  (let* [explicit (= (compiler/datum (zc-get args 1)) :export)
+         exports (if explicit (compiler/datum (get args 2)) [])
          start (if explicit 3 1)
          compiled (zc-function-mode s nil [] (zc-tail args start) 0)]
-    (zc-emit (zc-constant (zc-constant compiled (get args 0)) exports) [:module])))
+    (zc-emit (zc-constant (zc-constant compiled (compiler/datum (get args 0))) exports) [:module])))
 (defn zc-method [s args]
   (zc-check s (> (count args) 2) "defmethod requires name, specializers and body")
-  (let* [qualified (keyword? (get args 1))
+  (let* [qualified (keyword? (compiler/datum (get args 1)))
          index (if qualified 2 1)
-         specs (get args index)
+         specs (compiler/datum (get args index))
          params (map (fn [spec] (if (symbol? spec) spec (get spec 0))) specs)
          compiled (zc-function s params (zc-tail args (+ index 1)))
          metadata (slice args 0 (+ index 1))]
-    (zc-emit (zc-constant compiled (apply list metadata)) [:method])))
+    (zc-emit (zc-constant compiled (compiler/datum (apply list metadata))) [:method])))
 (defn zc-class [s args]
   (zc-check s (> (count args) 2) "defclass requires name, supers and slots")
-  (let [slots (get args 2)]
-    (loop [i 0 state s initializers []]
-      (if (= i (count slots))
-        (zc-emit (zc-constant state (apply list args)) [:class (count initializers)])
-        (let* [slot (get slots i)
-               init (loop [j 1]
-                      (if (>= j (count slot)) nil
-                        (if (= (get slot j) :initform) (+ j 1) (recur (+ j 2)))))
-               next (if init (zc-function state [] [(get slot init)]) (zc-constant state nil))]
-          (recur (+ i 1) next (vector-conj initializers i)))))))
+  (zc-emit (zc-constant s (compiler/datum (apply list args))) [:class 0]))
+(defn zc-quasi-seq [s items depth as-list]
+  (let [compiled
+        (loop [i 0 state (zc-emit s [:vector 0])]
+          (if (= i (count items)) state
+            (let* [raw (get items i)
+                   wrapped (zc-wrapper raw)
+                   splice (if (= depth 1)
+                            (if wrapped (= (get wrapped 0) 'unquote-splicing) false) false)
+                   evaluated (if splice (zc-expr state (get wrapped 1) false)
+                               (zc-quasi state raw depth))]
+              (recur (+ i 1) (zc-emit evaluated [:quasi-conj splice])))))]
+    (if as-list (zc-emit compiled [:quasi-list]) compiled)))
+(defn zc-quasi [s raw depth]
+  (let* [position (zc-position raw)
+         located (if position (put s :position position) s)
+         x (compiler/form raw)
+         wrapped (zc-wrapper raw)]
+    (if wrapped
+      (let [op (get wrapped 0) inner (get wrapped 1)]
+        (cond
+          ((if (= op 'unquote) (= depth 1) false) (zc-expr located inner false))
+          ((if (= op 'unquote-splicing) (= depth 1) false)
+            (zc-fail located "unquote-splicing outside of a list or vector template"))
+          (else
+            (let* [head (zc-emit (zc-constant (zc-emit located [:vector 0]) op) [:quasi-conj false])
+                   nested (zc-quasi head inner (if (= op 'quasiquote) (+ depth 1) (- depth 1)))]
+              (zc-emit (zc-emit nested [:quasi-conj false]) [:quasi-list])))))
+      (cond
+        ((list? x) (zc-quasi-seq located x depth true))
+        ((vector? x) (zc-quasi-seq located x depth false))
+        ((map? x)
+          (let [ks (zc-order x)]
+            (zc-emit (reduce (fn [state k]
+                              (zc-quasi (zc-quasi state k depth) (get x k) depth)) located ks)
+              [:map (count ks)])))
+        (else (zc-constant located (compiler/datum raw)))))))
+(defn zc-defn [s args]
+  (zc-check s (> (count args) 2) "defn requires name, params and body")
+  (let [name (compiler/datum (get args 0))]
+    (zc-check s (symbol? name) "defn requires a symbol")
+    (if (= (get s :depth) 0)
+      (zc-emit (zc-named-function s (str name) (get args 1) (zc-tail args 2)) [:define (str name)])
+      (let* [reserved (zc-reserve s name)
+             binding (get (get reserved :owned) name (get (get reserved :forward) name nil))
+             compiled (zc-named-function reserved (str name) (get args 1) (zc-tail args 2))]
+        (zc-emit (zc-own compiled name binding) [:store (get binding 1)])))))
+;; One-step expansion through the real Zi expander. The descriptor comes
+;; from the live environment, so compiled procedural macros, interpreted
+;; macro bodies and syntax-rules all expand through zi-expand itself.
+(defn zc-expand-once [x]
+  (if (map? x)
+    (let [children (get x :children nil)]
+      (if (if (vector? children) (> (count children) 0) false)
+        (let [head (get children 0)]
+          (if (= (get head :kind nil) :symbol)
+            (let* [found (interpreter/env :lookup 0 (get head :value))
+                   descriptor (if (get found 0) (interpreter/callable-info (get found 1)) nil)]
+              (if (if descriptor (= (get descriptor :kind nil) :macro) false)
+                (zi-expand descriptor (zc-tail children 1) x)
+                x))
+            x))
+        x))
+    x))
 (defn zc-expand [s x]
   (loop [current x n 0]
     (do
       (zc-check s (< n 1024) "macro expansion limit exceeded")
-      (let [next (macroexpand-1 current)]
+      (let [next (zc-expand-once current)]
         (if (= next current) current (recur next (+ n 1)))))))
 (defn zc-expr [s raw tail]
-  (let* [position (compiler/position raw)
-         located (put s :position position)
-         x (if (list? raw) (zc-expand located raw) raw)]
+  (let* [position (zc-position raw)
+         located (if position (put s :position position) s)
+         form (compiler/form raw)
+         x (if (list? form) (compiler/form (zc-expand located raw)) form)]
     (cond
       ((symbol? x) (zc-load located x))
       ((vector? x) (zc-emit (zc-many located x) [:vector (count x)]))
@@ -315,21 +352,15 @@
                      [:map (count ks)])))
       ((list? x)
         (if (= (count x) 0) (zc-constant located nil)
-          (let [op (get x 0) args (zc-tail x 1)]
+          (let [op (compiler/form (get x 0)) args (zc-tail x 1)]
             (cond
-              ((= op 'quote) (do (zc-check located (= (count args) 1) "quote requires one argument") (zc-constant located (get args 0))))
+              ((= op 'quote) (do (zc-check located (= (count args) 1) "quote requires one argument") (zc-constant located (compiler/datum (get args 0)))))
+              ((= op 'quasiquote) (do (zc-check located (= (count args) 1) "quasiquote requires one argument") (zc-quasi located (get args 0) 1)))
               ((= op 'if) (zc-if located args tail))
               ((= op 'do) (zc-sequence located args tail))
               ((= op 'fn) (zc-function located (get args 0) (zc-tail args 1)))
-              ((= op 'def) (do (zc-check located (= (count args) 2) "def requires two arguments") (zc-def located (get args 0) (get args 1))))
-              ((= op 'defn) (do (zc-check located (> (count args) 2) "defn requires name, params and body")
-                            ;; The function must be compiled on `located` and its
-                            ;; resulting state kept: the closure instruction it
-                            ;; emits is what puts the function in the table, and
-                            ;; emitting on the pre-compilation state would drop
-                            ;; it while still defining the name.
-                            (zc-emit (zc-named-function located (str (get args 0)) (get args 1) (zc-tail args 2))
-                              [:define (str (get args 0))])))
+              ((= op 'def) (do (zc-check located (= (count args) 2) "def requires two arguments") (zc-def located (compiler/datum (get args 0)) (get args 1))))
+              ((= op 'defn) (zc-defn located args))
               ((= op 'set!) (zc-set located args))
               ((= op 'let) (zc-let located args tail op))
               ((= op 'let*) (zc-let located args tail op))
@@ -347,12 +378,12 @@
               ((= op 'defgeneric) (zc-metadata located :generic args))
               ((= op 'defclass) (zc-class located args))
               ((= op 'defmethod) (zc-method located args))
-              ((= op 'call-next-method) (zc-emit (zc-many (zc-emit located [:global "*next-method*"]) args) [(if tail :tail-call :call) (count args)]))
-              (else (zc-emit (zc-many (zc-expr located op false) args) [(if tail :tail-call :call) (count args)]))))))
+              ((= op 'call-next-method) (zc-emit (put (zc-many (zc-emit located [:global "*next-method*"]) args) :position (get located :position)) [(if tail :tail-call :call) (count args)]))
+              (else (zc-emit (put (zc-many (zc-expr located (get x 0) false) args) :position (get located :position)) [(if tail :tail-call :call) (count args)]))))))
       (else (zc-constant located x)))))
 (defn zio--compile [name forms]
-  (let* [state {:name name :position nil :code [] :debug [] :locals 0 :env {}
-               :depth 0 :loop nil :params [] :rest nil :captures []
+  (let* [state {:name name :source-name name :position nil :code [] :debug [] :locals 0 :env {}
+               :owned {} :forward {} :depth 0 :loop nil :params [] :rest nil :captures []
                :functions [nil] :constants []}
          compiled (zc-emit (zc-sequence state forms false) [:return])
          functions (zc-vset (get compiled :functions) 0 (zc-record compiled))]

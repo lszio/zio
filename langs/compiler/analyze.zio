@@ -1,0 +1,138 @@
+;; Portable scope and tail analysis for the stack compiler. This file owns
+;; every decision about where a name lives — local slots, captures, forward
+;; reservations or globals — and which positions are tail positions. Code
+;; selection and emission stay in compiler.zio; the state map and the
+;; native syntax/error projections are shared between both files.
+(defn zc-alloc [s name]
+  (let* [i (get s :locals) binding [:local i]]
+    (put (put (put s :locals (+ i 1)) :env (put (get s :env) name binding))
+      :owned (put (get s :owned) name binding))))
+;; Reservations are captured, but ordinary expressions retain the outer lookup
+;; until the definition executes. Declare creates a fresh, genuinely unbound cell.
+(defn zc-reserve [s name]
+  (if (get (get s :owned) name nil) s
+    (if (get (get s :forward) name nil) s
+      (let* [i (get s :locals)
+             fallback (get (get s :env) name [:global (str name)])
+             reserved (put (put s :locals (+ i 1)) :forward
+                        (put (get s :forward) name [:local i]))]
+        (zc-emit reserved [:declare i (str name) fallback])))))
+(defn zc-visible [s]
+  (reduce (fn [env name] (put env name (get (get s :forward) name)))
+    (get s :env) (zc-order (get s :forward))))
+(defn zc-own [s name binding]
+  (put (put s :env (put (get s :env) name binding))
+    :owned (put (get s :owned) name binding)))
+(defn zc-load [s name]
+  (let [binding (get (get s :env) name nil)]
+    (if binding (zc-emit s binding) (zc-emit s [:global (str name)]))))
+(defn zc-scope [s outer]
+  (put (put (put (put (put s :env (get outer :env)) :owned (get outer :owned))
+    :forward (get outer :forward)) :depth (get outer :depth)) :loop (get outer :loop)))
+;; Capture policy: every name visible where the function is declared becomes
+;; a capture of the child function, rebound there as a :capture slot. The
+;; fourth element is the capture base parameters are allocated above.
+(defn zc-capture-plan [s]
+  (let* [visible (zc-visible s)
+         captured (zc-order visible)
+         bindings (loop [i 0 env {}]
+                    (if (= i (count captured)) env
+                      (recur (+ i 1) (put env (get captured i) [:capture i]))))]
+    [visible captured bindings (count captured)]))
+;; Tail policy: recur must sit in tail position inside its own loop. Both
+;; facts are compile-time, checked before any argument code is emitted.
+(defn zc-recur-frame [s tail]
+  (if tail nil
+    (compiler/fail (get s :source-name) (get s :position) :recur-not-tail "recur must be in tail position"))
+  (let [frame (get s :loop)]
+    (if frame frame
+      (compiler/fail (get s :source-name) (get s :position) :recur-without-loop "recur requires a loop"))))
+(defn zc-wrapper [raw]
+  (let [x (compiler/form raw)]
+    (if (if (list? x) (= (count x) 2) false)
+      (let [op (compiler/form (get x 0))]
+        (if (if (= op 'unquote) true
+              (if (= op 'unquote-splicing) true (= op 'quasiquote)))
+          [op (get x 1)] nil))
+      nil)))
+;; Inspect syntax without expanding macros ahead of their declaration phase.
+;; New lexical scopes and quoted data cannot define names in this scope.
+(defn zc-reserve-form [s raw]
+  (let [x (compiler/form raw)]
+    (cond
+      ((vector? x) (zc-reserve-forms s x))
+      ((map? x)
+        (reduce (fn [state k] (zc-reserve-form (zc-reserve-form state k) (get x k)))
+          s (zc-order x)))
+      ((list? x)
+        (if (= (count x) 0) s
+          (let [op (compiler/form (get x 0))]
+            (cond
+              ((= op 'def)
+                (let [name (compiler/datum (zc-get x 1))]
+                  (zc-reserve-form (if (symbol? name) (zc-reserve s name) s) (zc-get x 2))))
+              ((= op 'defn)
+                (let [name (compiler/datum (zc-get x 1))]
+                  (if (symbol? name) (zc-reserve s name) s)))
+              ((= op 'quasiquote) (zc-reserve-quasi s (zc-get x 1) 1))
+              ((or (= op 'fn) (= op 'let) (= op 'let*) (= op 'loop)
+                   (= op 'module) (= op 'defmacro) (= op 'defmethod)
+                   (= op 'quote) (= op 'catch)) s)
+              (else (zc-reserve-forms s x))))))
+      (else s))))
+(defn zc-reserve-forms [s forms]
+  (if (= (get s :depth) 0) s
+    (reduce zc-reserve-form s forms)))
+;; Only matching-depth unquotes execute in the enclosing lexical scope.
+(defn zc-reserve-quasi [s raw depth]
+  (let* [x (compiler/form raw) wrapped (zc-wrapper raw)]
+    (if wrapped
+      (let [op (get wrapped 0) inner (get wrapped 1)]
+        (cond
+          ((= op 'quasiquote) (zc-reserve-quasi s inner (+ depth 1)))
+          ((= depth 1) (zc-reserve-form s inner))
+          (else (zc-reserve-quasi s inner (- depth 1)))))
+      (cond
+        ((or (list? x) (vector? x))
+          (reduce (fn [state child] (zc-reserve-quasi state child depth)) s x))
+        ((map? x)
+          (reduce
+            (fn [state key]
+              (zc-reserve-quasi (zc-reserve-quasi state key depth) (get x key) depth))
+            s (zc-order x)))
+        (else s)))))
+(defn zc-params [s input]
+  (let [raw (compiler/datum input)]
+    (zc-check s (if (vector? raw) true (list? raw)) "function parameters must be sequential")
+    (loop [i 0 names [] rest nil]
+      (if (= i (count raw)) [names rest]
+        (let [p (get raw i)]
+          (zc-check s (symbol? p) "parameter must be a symbol")
+          (if (= p '&)
+            (do
+              (zc-check s (= (+ i 2) (count raw)) "rest parameter must be final")
+              (zc-check s (symbol? (get raw (+ i 1))) "rest parameter must be a symbol")
+              [names (str (get raw (+ i 1)))])
+            (recur (+ i 1) (vector-conj names (str p)) rest)))))))
+(defn zc-bindings [s input sequential outer]
+  (let [bindings (compiler/form input)]
+    (zc-check s (if (vector? bindings) true (list? bindings)) "bindings must be sequential")
+    (zc-check s (= (mod (count bindings) 2) 0) "bindings must have even length")
+    (loop [i 0 state s slots []]
+      (if (= i (count bindings))
+        [(if sequential state
+           (loop [j (- (count slots) 1) bound state]
+             (if (< j 0) bound
+               (recur (- j 1) (zc-emit bound [:bind (get slots j)]))))) slots]
+        (let* [name (compiler/datum (get bindings i))
+               checked (zc-check state (symbol? name) "binding name must be a symbol")
+               scope (if sequential checked (zc-scope checked outer))
+               initialized (zc-expr scope (get bindings (+ i 1)) false)
+               restored (if sequential initialized (zc-scope initialized state))
+               existing (if sequential
+                          (get (get restored :owned) name (get (get restored :forward) name nil)) nil)
+               allocated (if existing (zc-own restored name existing) (zc-alloc restored name))
+               binding (get (get allocated :owned) name)
+               slot (get binding 1)
+               bound (if sequential (zc-emit allocated [(if existing :store :bind) slot]) allocated)]
+          (recur (+ i 2) bound (vector-conj slots slot)))))))

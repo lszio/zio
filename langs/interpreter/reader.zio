@@ -1,0 +1,264 @@
+;; doc: (zi-r-node kind value children span) — constructs the strict syntax wire.
+;; doc: Reader-origin nodes, including quote sugar, stay :source; expansion owns provenance changes.
+(defn zi-r-node [kind value children span]
+  {:kind kind :value value :children children :span span
+   :origin {:kind :source :by "" :call-site nil}})
+(defn zi-r-span [token source-id end]
+  {:source source-id :start (get token :start) :end end
+   :line (get token :line) :col (get token :col)})
+(defn zi-r-field [record key default]
+  (if (nil? record) default (get record key default)))
+(defn zi-r-char [chars i] (zi-r-field (get chars i nil) :text nil))
+(defn zi-r-byte [chars i eof] (zi-r-field (get chars i nil) :byte eof))
+(defn zi-r-boundary [entry hash-boundary]
+  (if (nil? entry) true
+    (if (get entry :space) true
+      (if (str-contains? "()[]{}'\";" (get entry :text)) true
+        (if hash-boundary (= (get entry :text) "#") false)))))
+(defn zi-r-atom-end [chars start hash-boundary]
+  (loop [i start]
+    (if (zi-r-boundary (get chars i nil) hash-boundary) i
+      (recur (+ i 1)))))
+(defn zi-r-string-end [chars start]
+  (loop [i (+ start 1) escaped false]
+    (let [c (zi-r-char chars i)]
+      (cond
+        ((nil? c) i)
+        (escaped (recur (+ i 1) false))
+        ((= c "\\") (recur (+ i 1) true))
+        ((= c "\"") (+ i 1))
+        (else (recur (+ i 1) false))))))
+(defn zi-r-comment-end [chars start]
+  (loop [i start]
+    (let [c (zi-r-char chars i)]
+      (if (nil? c) i
+        (if (= c "\n") (+ i 1) (recur (+ i 1)))))))
+(defn zi-r-text [chars start end]
+  (loop [i start parts []]
+    (if (= i end) (apply str parts)
+      (recur (+ i 1) (vector-conj parts (zi-r-char chars i))))))
+(defn zi-r-token [chars start end eof]
+  (let [entry (get chars start)]
+    {:text (zi-r-text chars start end) :start (get entry :byte)
+     :end (zi-r-byte chars end eof) :line (get entry :line) :col (get entry :col)}))
+;; doc: (zi-r-lex chars eof-byte) — tokenizes Unicode scalar records entirely in Zio.
+;; doc: Boundaries intentionally differ for ordinary, #-prefixed, and character atoms.
+(defn zi-r-lex [chars eof]
+  (loop [i 0 tokens []]
+    (if (= i (count chars)) tokens
+      (let* [entry (get chars i) c (get entry :text)]
+        (cond
+          ((get entry :space) (recur (+ i 1) tokens))
+          ((= c ";") (recur (zi-r-comment-end chars i) tokens))
+          (else
+            (let [end
+              (cond
+                ((str-contains? "()[]{}'`" c) (+ i 1))
+                ((= c "~") (if (= (zi-r-char chars (+ i 1)) "@") (+ i 2) (+ i 1)))
+                ((= c "\"") (zi-r-string-end chars i))
+                ((= c "#")
+                  (let [next (zi-r-char chars (+ i 1))]
+                    (if (nil? next) (+ i 1)
+                      (if (str-contains? "({\\" next) (+ i 1)
+                        (zi-r-atom-end chars (+ i 1) false)))))
+                ((= c "\\")
+                  (if (= (+ i 1) (count chars)) (+ i 1)
+                    (if (zi-r-boundary (get chars (+ i 1)) false) (+ i 2)
+                      (zi-r-atom-end chars (+ i 2) false))))
+                (else (zi-r-atom-end chars i true)))]
+              (recur end (vector-conj tokens (zi-r-token chars i end eof))))))))))
+(defn zi-r-unescape [text span]
+  (let* [chars (interpreter/chars text) n (count chars)]
+    (if (< n 2) (interpreter/reader-error :string "unterminated literal" span)
+      (if (= (zi-r-char chars (- n 1)) "\"")
+        (let [slashes
+          (loop [i (- n 2) total 0]
+            (if (< i 0) total
+              (if (= (zi-r-char chars i) "\\") (recur (- i 1) (+ total 1)) total)))]
+          (if (= (mod slashes 2) 1)
+            (interpreter/reader-error :string "unterminated literal" span)
+            (loop [i 1 parts []]
+              (if (= i (- n 1)) (apply str parts)
+                (let [c (zi-r-char chars i)]
+                  (if (= c "\\")
+                    (if (>= (+ i 1) (- n 1))
+                      (interpreter/reader-error :string "dangling escape" span)
+                      (let* [next (zi-r-char chars (+ i 1)) decoded
+                        (cond
+                          ((= next "n") "\n")
+                          ((= next "t") "\t")
+                          ((= next "r") "\r")
+                          ((= next "\\") "\\")
+                          ((= next "\"") "\"")
+                          (else (str "\\" next)))]
+                        (recur (+ i 2) (vector-conj parts decoded))))
+                    (recur (+ i 1) (vector-conj parts c))))))))
+        (interpreter/reader-error :string "unterminated literal" span)))))
+(defn zi-r-atom [token source-id]
+  (let* [text (get token :text) span (zi-r-span token source-id (get token :end))]
+    (cond
+      ((str-starts-with? text "\"") (zi-r-node :string (zi-r-unescape text span) [] span))
+      ((str-starts-with? text ":")
+        (let [chars (interpreter/chars text)]
+          (zi-r-node :keyword (zi-r-text chars 1 (count chars)) [] span)))
+      ((= text "nil") (zi-r-node :nil nil [] nil))
+      ((= text "true") (zi-r-node :boolean "true" [] nil))
+      ((= text "false") (zi-r-node :boolean "false" [] nil))
+      (else
+        (let [integer (interpreter/scalar :integer-text text)]
+          (if (nil? integer)
+            (let [float (interpreter/scalar :float-text text)]
+              (if (nil? float) (zi-r-node :symbol text [] span)
+                (zi-r-node :float float [] span)))
+            (zi-r-node :integer integer [] span)))))))
+(defn zi-r-close? [text]
+  (if (= text ")") true (if (= text "]") true (= text "}"))))
+(defn zi-r-quote-name [text]
+  (cond
+    ((= text "'") "quote")
+    ((= text "`") "quasiquote")
+    ((= text "~") "unquote")
+    ((= text "~@") "unquote-splicing")
+    (else nil)))
+(defn zi-r-frame [kind close token children]
+  {:kind kind :close close :token token :children children})
+;; Render syntax keys with Sexp's scalar display, without dropping their spans.
+(defn zi-r-display-work [children map-kind todo]
+  (loop [i (- (count children) 1) work todo]
+    (if (< i 0) work
+      (let [with-child (cons (get children i) work)]
+        (recur (- i 1)
+          (if (= i 0) with-child
+            (cons (if map-kind (if (= (mod i 2) 0) ", " " ") " ") with-child)))))))
+(defn zi-r-display [node]
+  (loop [todo (list node) parts []]
+    (if (nil? todo) (apply str parts)
+      (let* [item (car todo) tail (cdr todo)]
+        (if (string? item) (recur tail (vector-conj parts item))
+          (let* [kind (get item :kind) value (get item :value)]
+            (cond
+              ((= kind :nil) (recur tail (vector-conj parts "nil")))
+              ((= kind :keyword) (recur tail (vector-conj parts (str ":" value))))
+              ((= kind :char) (recur tail (vector-conj parts (str "#\\" value))))
+              ((= kind :string)
+                (recur tail (vector-conj parts (interpreter/scalar :string-debug value))))
+              ((= kind :list)
+                (recur (cons "(" (zi-r-display-work (get item :children) false (cons ")" tail))) parts))
+              ((= kind :vector)
+                (recur (cons "[" (zi-r-display-work (get item :children) false (cons "]" tail))) parts))
+              ((= kind :map)
+                (recur (cons "{" (zi-r-display-work (get item :children) true (cons "}" tail))) parts))
+              (else (recur tail (vector-conj parts value))))))))))
+(defn zi-r-sort-text [text]
+  (map (fn [entry] (interpreter/scalar :char-code (get entry :text))) (interpreter/chars text)))
+(defn zi-r-less [a b]
+  (let* [left (get a :sort) right (get b :sort)]
+    (loop [i 0]
+      (cond
+        ((= i (count left))
+          (if (= i (count right)) (< (get a :index) (get b :index)) true))
+        ((= i (count right)) false)
+        ((= (get left i) (get right i)) (recur (+ i 1)))
+        (else (< (get left i) (get right i)))))))
+(defn zi-r-map [children]
+  (let [table
+    (loop [i 0 out {}]
+      (if (= i (count children)) out
+        (let [key (get children i)]
+          (recur (+ i 2)
+            (put out key {:key key :value (get children (+ i 1)) :index i
+                          :sort (zi-r-sort-text (zi-r-display key))})))))]
+    (reduce (fn [out pair] (vector-conj (vector-conj out (get pair :key)) (get pair :value)))
+      [] (sort zi-r-less (vals table)))))
+;; Deliver completed nodes iteratively, including arbitrarily nested reader quotes.
+(defn zi-r-deliver [node stack forms tokens next eof source-id]
+  (loop [value node frames stack]
+    (if (nil? frames) [nil (vector-conj forms value)]
+      (let* [frame (car frames) tail (cdr frames)]
+        (if (= (get frame :kind) :quote)
+          (let* [token (get frame :token) start (get token :start)
+                 inner-span (get value :span)
+                 end (if (nil? inner-span) (zi-r-field (get tokens next nil) :start eof) (get inner-span :end))
+                 symbol (zi-r-node :symbol (get frame :name) [] (zi-r-span token source-id start))]
+            (recur (zi-r-node :list nil [symbol value] (zi-r-span token source-id end)) tail))
+          [(cons (put frame :children (vector-conj (get frame :children) value)) tail) forms])))))
+(defn zi-r-character [token payload source-id]
+  (let* [text (get payload :text) chars (interpreter/chars text)
+         span (zi-r-span token source-id (get payload :end))]
+    (if (str-starts-with? text "\\")
+      (if (> (count chars) 1)
+        (let* [name (zi-r-text chars 1 (count chars)) value
+          (cond
+            ((= name "space") " ")
+            ((= name "newline") "\n")
+            ((= name "tab") "\t")
+            ((= (count chars) 2) (zi-r-char chars 1))
+            (else (interpreter/reader-error :token name span)))]
+          (zi-r-node :char value [] span))
+        (interpreter/reader-error :token text span))
+      (interpreter/reader-error :token text span))))
+(defn zi-r-read [source source-id single]
+  (let* [chars (interpreter/chars source) eof (interpreter/byte-count source)
+         tokens (zi-r-lex chars eof)]
+    (loop [i 0 stack nil forms []]
+      (if (if single (= (count forms) 1) false)
+        (if (= i (count tokens)) (get forms 0)
+          (let [trailing (get tokens i)]
+            (interpreter/reader-error :token (get trailing :text)
+              (zi-r-span trailing source-id (get trailing :end)))))
+        (if (= i (count tokens))
+          (if (nil? stack) (if single (zi-r-node :nil nil [] nil) forms)
+            (interpreter/reader-error :eof nil (zi-r-span (get (car stack) :token) source-id eof)))
+        (let* [token (get tokens i) text (get token :text) next (+ i 1)
+               quote-name (zi-r-quote-name text)]
+          (cond
+            (quote-name
+              (let [following (zi-r-field (get tokens next nil) :text nil)]
+                (if (nil? following)
+                  (interpreter/reader-error :quote nil (zi-r-span token source-id (get token :end)))
+                  (if (zi-r-close? following)
+                    (interpreter/reader-error :quote nil (zi-r-span token source-id (get token :end)))
+                    (recur next (cons {:kind :quote :name quote-name :token token} stack) forms)))))
+            ((= text "#")
+              (let [payload (get tokens next nil)]
+                (if (nil? payload)
+                  (interpreter/reader-error :eof nil (zi-r-span token source-id (get token :end)))
+                  (let* [dispatch (get payload :text) after (+ i 2)]
+                    (cond
+                      ((= dispatch "(")
+                        (recur after (cons (zi-r-frame :vector ")" token []) stack) forms))
+                      ((= dispatch "{")
+                        (recur after (cons (zi-r-frame :list "}" token
+                          [(zi-r-node :symbol "set" [] nil)]) stack) forms))
+                      (else
+                        (let [delivered (zi-r-deliver (zi-r-character token payload source-id)
+                                          stack forms tokens after eof source-id)]
+                          (recur after (get delivered 0) (get delivered 1)))))))))
+            ((= text "(") (recur next (cons (zi-r-frame :list ")" token []) stack) forms))
+            ((= text "[") (recur next (cons (zi-r-frame :vector "]" token []) stack) forms))
+            ((= text "{") (recur next (cons (zi-r-frame :map "}" token []) stack) forms))
+            ((zi-r-close? text)
+              (if (nil? stack)
+                (interpreter/reader-error :token text (zi-r-span token source-id (get token :end)))
+                (let* [frame (car stack) kind (get frame :kind)
+                       children (get frame :children)
+                       span (zi-r-span (get frame :token) source-id (get token :end))]
+                  (if (= text (get frame :close))
+                    (if (if (= kind :map) (= (mod (count children) 2) 1) false)
+                      (interpreter/reader-error :odd-map nil span)
+                      (let* [value (zi-r-node kind nil (if (= kind :map) (zi-r-map children) children) span)
+                             delivered (zi-r-deliver value (cdr stack) forms tokens next eof source-id)]
+                        (recur next (get delivered 0) (get delivered 1))))
+                    (interpreter/reader-error :token text (zi-r-span token source-id (get token :end)))))))
+            (else
+              (let [delivered (zi-r-deliver (zi-r-atom token source-id)
+                                stack forms tokens next eof source-id)]
+                (recur next (get delivered 0) (get delivered 1)))))))))))
+;; doc: (zi-read source source-id) — reads all current-language forms as strict SyntaxNode maps.
+;; doc: Source spans retain UTF8 byte ranges and byte columns; nil/boolean are spanless.
+;; doc: Malformed input raises categorical reader errors at the same locations as the native reader.
+;; doc: This path uses scalar/Unicode/error mechanisms only, never native tokenization or parsing.
+(defn zi-read [source source-id] (zi-r-read source source-id false))
+;; doc: (zi-read-one source source-id) — reads one datum, or nil for empty input.
+;; doc: A trailing token fails immediately, before parsing it, matching native read-string semantics.
+(defn zi-read-one [source source-id] (zi-r-read source source-id true))

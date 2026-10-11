@@ -2,13 +2,28 @@
 
 > A General-Purpose Lisp.
 
-Zio 是一门用 Rust 引导实现的通用 Lisp 语言。当前采用 language-first 平铺目录：
-语言在 `langs/core/`、`langs/cli/`，Zio 库在 `libs/`，通用 Rust 基础设施在
-`contribs/native/loom/`，语言站点与 Grove 分别在 `apps/site/`、`apps/grove/`。
-本轮完成结构切换，**不是 Grove Rust 业务已整体改写为 Zio**，也不是编译器自举完成。
-目标是领域库与应用业务用 Zio 表达，必要运行时、可信宿主和 transport adapter 保留原生实现。
-当前能力以[特性矩阵](docs/feature-matrix.md)为准，目录合同见
-[系统架构](docs/zio-architecture.md)与[批准计划](docs/superpowers/plans/2026-10-07-language-first-layout.md)。
+Zio 是语义独立的通用 Lisp，Rust 承担引导实现、运行时机制与可信宿主，
+而不是语言语义的定义。当前语言在 `langs/core/`、`langs/cli/`，Zio 库在
+`libs/`，原生机制在 `contribs/native/`，站点与独立应用在 `apps/`。
+当前语法与语义以[语言参考](docs/language-reference.md)为入口，能力状态以
+[特性矩阵](docs/feature-matrix.md)为准，四层目录合同见[系统架构](docs/zio-architecture.md)。
+
+**目标（规划）**有两条独立主线：用 Zio 编写元循环求值器与自举编译器；
+保存、恢复运行时镜像，并导出应用 bin 与 WASM。外部解释型与编译型语言
+通过引擎库接入，`inline` 是外语代码入口，不等于一律直接 `eval`，
+更不是任意 Rust 源码直接求值。完整开发发行包目标是一次配齐解释器、
+编译器、LSP、语法资源、WASM 与文档；这不是当前 installer 的完成状态。
+已有 bytecode VM、Zio 编译器和自举合同、LSP 与 tree-sitter 资源不等于两条
+主线均已完成。详见[语言与工具链设计](docs/superpowers/specs/2026-10-11-zio-language-toolchain-design.md)
+与[执行计划](docs/superpowers/plans/2026-10-11-zio-language-toolchain.md)。
+
+L01 提供显式 Zio reader／元循环求值／宏展开入口；L02 **首轮工具链自举已验收**：
+完整 Zio 前端在 fresh context 编译自身，Stage 1/2/3 规范制品逐字节相同。
+运行 `cargo run -p zio-cli -- self-build --verify`，默认写入
+`target/zio-self-build/stage-{1,2,3}.json`；可用 `--out-dir PATH` 指定目录。
+验收包含编译后的 reader／expander／evaluator／compiler 与 sum=10、closure=15。
+Rust 引导和 VM 机制保留，默认源码执行器不变；这不是镜像、独立应用导出或完整发行包。
+入口和机制边界见[语言参考](docs/language-reference.md#编译前端与自举命令)。
 
 仓库数量不在 README 中手工维护；运行 `tools/project-status.sh` 可重新生成
 [项目状态](docs/status.md)。
@@ -27,7 +42,7 @@ Zio = Lisp 核心（同像性 + eval/apply + 宏）
 
 核心原则：**核心最小，其余是库**。Zio 扩展库位于 `libs/`，能力成熟度
 各异并以[特性矩阵](docs/feature-matrix.md)为准：persistent 集合与
-Datalog 存储为 Experimental，Datalog 查询求值仍为 Planned。
+Datalog 合取查询子集为 Experimental，规则与聚合等扩展仍为 Planned。
 已有 Zio agent 生成/执行与学习合同见特性矩阵，不等于 Grove 业务整体迁移完成。
 core 内置的并发原语（`future-call` / `chan`）当前是同步占位语义，
 见 [ADR-012](docs/adrs.md)。
@@ -39,6 +54,8 @@ core 内置的并发原语（`future-call` / `chan`）当前是同步占位语�
 ```bash
 cd zio
 cargo run -p zio-cli
+cargo run -p zio-cli -- examples/toolchain/semantics.zio
+cargo run -p zio-cli -- examples/toolchain/meta-eval.zio
 ```
 
 ```text
@@ -61,7 +78,7 @@ zio> (require :my.module)
 ## 安装与发布
 
 ```bash
-# 从源码构建独立发行版（不依赖 checkout）
+# 从源码构建当前原生发行树（不依赖 checkout）
 tools/install.sh /tmp/zio          # 调试构建
 ZIO_PROFILE=release tools/install.sh /opt/zio
 
@@ -70,7 +87,14 @@ source /tmp/zio/bin/zio-env.sh    # PATH 与 ZIO_PATH
 /tmp/zio/bin/grove --help         # 产品
 ```
 
-`docs/release.md` 记录打标签、GitHub Actions 发布流水线与 crates.io 发布流程。
+当前原生发行树与浏览器 WASM 分开构建；installer 同时包含 Grove 启动器，
+但 Grove 是可选独立应用，不是语言完整发行目标的必要组成。规划中的应用
+bin 首轮是 bytecode + runtime 打包，不是机器码 AOT；应用 bin/WASM 不携带
+LSP 等开发工具，动态能力按真实依赖保留。WASM 浏览器与 WASI 目标分别验收。
+外部语言引擎尚不能宣称已全套捆绑。
+
+[`docs/release.md`](docs/release.md) 记录现有发行方式、目标边界、
+打标签、GitHub Actions 发布流水线与 crates.io 发布流程。
 `push v*` 标签触发 `.github/workflows/release.yml`：先校验标签与 workspace
 版本一致，再跑完整测试与自举契约，通过后构建五个平台目标、发布四个 crate、
 并附带校验和与 WASM 产物创建 GitHub Release。
@@ -190,6 +214,8 @@ Experimental，状态见[特性矩阵](docs/feature-matrix.md)。
 | [docs/zio-philosophy.md](docs/zio-philosophy.md) | 语言哲学、设计定理、设计原则、特性来源 |
 | [docs/zos-spec.md](docs/zos-spec.md) | **ZOS 完整规范**（Object/Class/GF/Method/MOP/Condition） |
 | [docs/zio-architecture.md](docs/zio-architecture.md) | 系统架构总览、分层、组件状态 |
+| [语言与工具链设计](docs/superpowers/specs/2026-10-11-zio-language-toolchain-design.md) | 通用 Lisp、自举、运行时镜像、外部引擎与完整发行目标（规划） |
+| [语言与工具链计划](docs/superpowers/plans/2026-10-11-zio-language-toolchain.md) | 分阶段实施与验收；不是本轮已交付能力 |
 | [docs/eval-pipeline.md](docs/eval-pipeline.md) | Eval 循环、TCO、宏、编译器管线 |
 | [docs/roadmap.md](docs/roadmap.md) | 分 Phase 路线图、交付标准、依赖分析、应用蓝图 |
 | [docs/synthesis-plan.md](docs/synthesis-plan.md) | 程序合成模块计划：学习型提议（LLM 主线，遗传/RL/NN 扩展位）× eval 裁判 × 语言化记忆（含论文与汇报规划） |

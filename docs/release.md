@@ -1,11 +1,48 @@
 # Releasing Zio
 
-Two artifacts come out of a release: a native distribution built by
-`tools/install.sh`, and the browser engine built by
-`tools/build-wasm.sh`. Both are produced by the same tagged commit, and
-the tag is checked against the workspace version before anything is
-built, because a release whose binaries announce the wrong version is a
-wrong answer rather than a failed one.
+Zio is a semantically independent general-purpose Lisp. Rust supplies the
+bootstrap implementation, runtime mechanisms and trusted host. The current
+release produces two separate artifacts: a native distribution built by
+`tools/install.sh`, and the browser engine built by `tools/build-wasm.sh`.
+Both come from the same tagged commit; the tag is checked against the workspace
+version before anything is built. These are the existing release paths, not
+yet the unified complete developer distribution described below.
+
+## Complete distribution target (planned)
+
+The [language and toolchain design](superpowers/specs/2026-10-11-zio-language-toolchain-design.md)
+and [implementation plan](superpowers/plans/2026-10-11-zio-language-toolchain.md)
+define two separate goals: a Zio metacircular evaluator and self-hosting
+compiler; and runtime image save/restore with application bin/WASM export.
+The repository already has a bytecode VM, a Zio compiler and self-hosting
+contracts, LSP and tree-sitter resources. Their existence is not evidence that
+the complete bootstrap or image lifecycle has been delivered.
+
+The planned complete developer package includes the interpreter, compiler,
+LSP, syntax resources, WASM and documentation in one release. External
+interpreted and compiled languages integrate through engine libraries;
+`inline` denotes foreign-code entry, not necessarily immediate `eval`.
+It does not promise evaluation of arbitrary Rust source, or mean that external
+engines are already bundled. Any new CLI/API in the design is a proposal, not
+an available release command.
+
+Minimal application artifacts are a different product:
+
+- The initial bin export means bytecode plus its runtime, not machine-code AOT.
+- Application bin/WASM artifacts do not carry LSP or other development tools.
+  Dynamic evaluation, modules and foreign engines must be retained according
+  to actual application dependencies; they cannot be removed merely because
+  the application was compiled.
+- Browser WASM and WASI are distinct targets with distinct host capabilities.
+  The existing JavaScript bridge is WASM-only, and dotted JavaScript resolution
+  is interpreter-only; the native CLI does not supply JavaScript.
+- Images must preserve object sharing, cycles and closures. External resources
+  require explicit reconstruction or saving must be rejected; restoring an
+  image must obtain fresh host grants rather than restoring authority.
+
+Grove is an optional independent application, not a required component of the
+language distribution target. The current installer includes Grove; the
+archive layout and commands below describe that existing fact.
 
 ## Before tagging
 

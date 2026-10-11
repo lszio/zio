@@ -231,7 +231,7 @@ fn match_single(
         (Sexp::Symbol(s, _), Sexp::Symbol(a, _)) if literals.contains(s) => s == a,
 
         // Pattern variable
-        (Sexp::Symbol(s, _), _) if !s.starts_with("...") => {
+        (Sexp::Symbol(s, _), _) if !literals.contains(s) && !s.starts_with("...") => {
             if in_ellipsis {
                 // Ellipsis repetition: each element adds a binding.
                 bindings.push((s.clone(), arg.clone()));

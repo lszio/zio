@@ -376,6 +376,30 @@ impl EvalError {
             None => self,
         }
     }
+
+    /// Supply an enclosing location only when the raising expression has none.
+    pub fn with_fallback_span(self, span: Option<Span>) -> Self {
+        let context = match &self {
+            Self::SymbolNotFound(_, context)
+            | Self::InvalidForm(_, context)
+            | Self::MacroError(_, context)
+            | Self::Custom(_, context) => context,
+            Self::NotAFunction { span, .. }
+            | Self::WrongArgCount { span, .. }
+            | Self::WrongArgCountMin { span, .. }
+            | Self::WrongArgCountRange { span, .. }
+            | Self::IndexOutOfBounds { span, .. }
+            | Self::TypeError { span, .. }
+            | Self::DivisionByZero { span }
+            | Self::RecurNotTail { span }
+            | Self::RecurWithoutLoop { span } => span,
+        };
+        if context.span.is_none() {
+            self.with_opt_span(span)
+        } else {
+            self
+        }
+    }
 }
 
 impl std::cmp::PartialEq<str> for EvalError {

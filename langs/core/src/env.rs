@@ -53,6 +53,14 @@ impl Env {
         self.data.borrow().get(key).cloned()
     }
 
+    /// Remove `key` from this scope only. Inherited bindings are left
+    /// alone: a definition installed later re-binds the name here, so a
+    /// stale same-scope binding can be cleared without touching outer
+    /// capabilities.
+    pub fn delete_owned(&self, key: &str) -> Option<Value> {
+        self.data.borrow_mut().remove(key)
+    }
+
     /// Bind parameters to arguments in a new child environment.
     pub fn bind(
         outer: &Arc<Env>,

@@ -465,7 +465,7 @@ fn forged_syntax_never_defaults_or_truncates() {
     let node = SyntaxNode {
         kind: NodeKind::Integer,
         value: Some("bad".into()),
-        children: im::Vector::new(),
+        children: Vec::new(),
         span: None,
         origin: Origin::Source,
     };
@@ -474,7 +474,7 @@ fn forged_syntax_never_defaults_or_truncates() {
     let mut map_node = node.clone();
     map_node.kind = NodeKind::Map;
     map_node.value = None;
-    map_node.children.push_back(SyntaxNode {
+    map_node.children.push(SyntaxNode {
         kind: NodeKind::Integer,
         value: Some("1".into()),
         ..node

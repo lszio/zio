@@ -559,6 +559,7 @@ const USAGE: &str = "Usage: zio [--lib-dir DIR]... [--entry NAME] [--step-limit 
        zio --app PATH --app-root DIR [--app-share DIR] [--app-resource-root DIR]\n\
        \x20        [--app-web-root DIR] [--app-tensor-backend FILE] [--app-tensor-python FILE]\n\
        \x20        [--app-root-dir DIR] [--app-bind ADDR] [--app-workers N] [--args ARG]...\n\
+       zio self-build [--verify] [--out-dir DIR]\n\
        \n\
        --entry NAME     call NAME after the source loads, with no arguments\n\
        --step-limit N   stop after N evaluator steps (required with --entry)\n\
@@ -567,9 +568,111 @@ const USAGE: &str = "Usage: zio [--lib-dir DIR]... [--entry NAME] [--step-limit 
        --args ARG       pass ARG to the application entry (repeatable)\n\
        '-'              read the source from stdin\n";
 
+/// Build canonical compiler stages and exercise the latest portable compiler.
+fn run_self_build(output_dir: &Path, verify: bool) -> Result<(), EvalError> {
+    use zio_core::bytecode;
+    let ctx = language_context(ModuleRoots::empty())?;
+    let build = bytecode::self_build(&ctx)?;
+    if build.normalized.len() != 3 || build.modules.len() != 3 {
+        return Err(EvalError::custom("self-build did not produce stages 1/2/3"));
+    }
+    std::fs::create_dir_all(output_dir)
+        .map_err(|e| EvalError::custom(format!("create {}: {e}", output_dir.display())))?;
+    println!("Stage 0: interpreted Zio frontend -> Stage 1");
+    let mut bytes = Vec::with_capacity(3);
+    for (index, normalized) in build.normalized.iter().enumerate() {
+        let path = output_dir.join(format!("stage-{}.json", index + 1));
+        std::fs::write(&path, normalized.as_bytes())
+            .map_err(|e| EvalError::custom(format!("write {}: {e}", path.display())))?;
+        let stored = std::fs::read(&path)
+            .map_err(|e| EvalError::custom(format!("read {}: {e}", path.display())))?;
+        if stored != normalized.as_bytes() {
+            return Err(EvalError::custom(format!(
+                "canonical stage changed after writing {}",
+                path.display()
+            )));
+        }
+        println!(
+            "Stage {}: {} ({} bytes)",
+            index + 1,
+            path.display(),
+            stored.len()
+        );
+        bytes.push(stored);
+    }
+    let equal = bytes[0] == bytes[1] && bytes[1] == bytes[2];
+    println!("Stage 1/2/3 canonical bytes equal: {equal}");
+    if !build.equal || !equal {
+        return Err(EvalError::custom("self-build canonical stages differ"));
+    }
+    if !verify {
+        return Ok(());
+    }
+    let mut final_ctx = None;
+    for (index, stored) in bytes.iter().enumerate() {
+        let stage_ctx = language_context(ModuleRoots::empty())?;
+        let portable =
+            bytecode::deserialize_module(std::str::from_utf8(stored).map_err(|e| {
+                EvalError::custom(format!("stage {} is not UTF-8: {e}", index + 1))
+            })?)?;
+        bytecode::install_compiled_compiler(&stage_ctx, &portable)?;
+        for name in ["zi-read", "zi-expand", "zi-apply", "zio--compile"] {
+            if !matches!(stage_ctx.env.get(name),
+                Some(Value::Function(function)) if function.compiled.is_some())
+            {
+                return Err(EvalError::custom(format!(
+                    "stage {} did not install compiled {name}",
+                    index + 1
+                )));
+            }
+            println!("Stage {} entry: {name} (compiled)", index + 1);
+        }
+        final_ctx = Some(stage_ctx);
+    }
+    let final_ctx =
+        final_ctx.ok_or_else(|| EvalError::custom("self-build has no final compiler"))?;
+    let answer = "(defn total [xs] (loop [i 0 acc 0] (if (= i (count xs)) acc (recur (+ i 1) (+ acc (nth xs i)))))) (defn adder [k] (fn [x] (+ x k))) {:sum (total [1 2 3 4]) :closure ((adder 10) 5)}";
+    let module = bytecode::compile_source(&final_ctx, "self-build-answer.zio", answer)?;
+    let value = bytecode::execute_module(&final_ctx, &module)?;
+    let Value::Map(values) = value else {
+        return Err(EvalError::custom("self-build known answer is not a map"));
+    };
+    if values.get(&Value::Keyword("sum".into())) != Some(&Value::Integer(10))
+        || values.get(&Value::Keyword("closure".into())) != Some(&Value::Integer(15))
+    {
+        return Err(EvalError::custom("self-build known answer differs"));
+    }
+    println!("Known answer: sum=10 closure=15");
+    println!("Self-build verified: fresh compiled frontend + exact file bytes");
+    Ok(())
+}
+
 /// `zio [--flags] [script]` — flags may precede the script path.
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().is_some_and(|arg| arg == "self-build") {
+        let default_dir = Path::new("target/zio-self-build");
+        let (verify, output_dir) = match &args[1..] {
+            [] => (false, default_dir),
+            [flag] if flag == "--verify" => (true, default_dir),
+            [flag, path] if flag == "--out-dir" => (false, Path::new(path)),
+            [verify, flag, path] if verify == "--verify" && flag == "--out-dir" => {
+                (true, Path::new(path))
+            }
+            [flag, path, verify] if flag == "--out-dir" && verify == "--verify" => {
+                (true, Path::new(path))
+            }
+            _ => {
+                eprintln!("Usage: zio self-build [--verify] [--out-dir DIR]");
+                std::process::exit(2);
+            }
+        };
+        if let Err(error) = run_self_build(output_dir, verify) {
+            eprintln!("Error: {error}");
+            std::process::exit(1);
+        }
+        return;
+    }
     let mut extra_roots: Vec<PathBuf> = Vec::new();
     let mut script: Option<String> = None;
     let mut bounded = BoundedRun {

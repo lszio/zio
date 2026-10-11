@@ -1,11 +1,11 @@
 # Zio 语言哲学
 
-> Version 1.1 — 保留 ZOS 的核心收敛与独立应用边界（2026-10-05）
+> Version 1.2 — 语义独立、自举与运行时镜像（2026-10-11）
 >
-> 原则、目标与当前能力分开：AST evaluator 为 Stable，ZOS 子集、程序
-> 合成及 Grove CPU 组件为 Experimental；完整编译工具链、Loom/ACP
-> 与 Grove 可审查 agent 演化主线为 Planned。状态与证据见
-> [特性矩阵](feature-matrix.md)，定位以 [ADR-019](adrs.md#adr-019-grove-独立应用与同像性逻辑演化) 为准。
+> Zio 是语义独立的通用 Lisp；Rust 是引导与机制层，不是永久语言语义。
+> 当前源码、L00–L02 语义与首轮便携工具链自举验收、历史实跑和规划目标分别记录；镜像和完整发行仍需独立验收。
+> 权威目标见[语言与工具链规格](superpowers/specs/2026-10-11-zio-language-toolchain-design.md)，
+> 当前执行顺序见[主计划](superpowers/plans/2026-10-11-zio-language-toolchain.md)。
 
 ---
 
@@ -15,15 +15,17 @@
 
 Zio 是一门以同像性（homoiconicity）为基石的通用 Lisp 语言。代码即数据，数据即代码。宏在语法域变换程序，eval 在运行时域执行程序。两个域通过 Sexp ↔ Value 转换桥接。
 
-当前可验证的实现基础是：
+当前可检查的实现基础包括 Rust Reader、AST eval/apply、宏、标准库与
+Experimental ZOS 子集，以及 `langs/core/src/bytecode.rs` 的字节码运行时、
+`langs/compiler/compiler.zio` 的 Zio 编译器和 `langs/core/tests/self_hosting.rs`
+的自举对照测试。源码存在不等于本轮实跑验收，也不等于完整目标语义已经自举。
 
-```text
-Zio = Stable Lisp 核心（Reader + Sexp + AST eval/apply + 宏 + stdlib）
-    + Experimental ZOS 子集（Class + Generic Function dispatch）
-    + Rust 宿主（EvalContext + NativeFn）
-```
-
-Zio 库目标采用 Zio 实现并归入 `libs/`：Numa 持计算，Rill 持 CLI 组合，Loom 持 harness 组合。现有 Rust 通用传输/宿主合同位于 `contribs/native/loom/`，不是 Zio 库本体；普通语言 CLI 位于 `langs/cli/`，不装配 LLM replay。Grove 是 `apps/grove/` 独立应用，其 Rust 业务仍待后续迁为 Zio；语言介绍、文档与 playground 位于 `apps/site/`。本轮只完成结构切换，不证明完整库交付、Tree-sitter、LSP 或编译器自举。当前合同见[架构](zio-architecture.md)与[批准目录计划](superpowers/plans/2026-10-07-language-first-layout.md)。短名不等于已注册包 ID。
+四层目录保持 `langs/`、`libs/`、`contribs/`、`apps/`：语言与工具链在
+`langs/`，Zio 库在 `libs/`，可信宿主与外部引擎适配在 `contribs/`，消费它们的
+应用在 `apps/`。Numa 持计算，Rill 持 CLI 组合，Loom 持 harness 组合；
+短名不等于已注册包 ID。Grove 是独立应用，不是语言完整发行的必需组成。
+目录与现状见[架构](zio-architecture.md)，历史切换证据见
+[目录计划](superpowers/plans/2026-10-07-language-first-layout.md)。
 
 ### 1.2 核心命题
 
@@ -39,15 +41,14 @@ Zio 库目标采用 Zio 实现并归入 `libs/`：Numa 持计算，Rill 持 CLI 
 Zio 语言与生态的规划分解（不是当前组件清单）：
 
 ```text
-Zio 语言 = 当前 AST Lisp 核心 + 保留在核心的 Experimental ZOS 子集
-         + Planned Zio 展开 / 分析 / 编译器与最小执行后端
-         + Planned 后续 ZIR / JIT / 编辑器 / LSP / Debugger
+Zio 语言 = AST / bytecode 执行基础 + 核心 Experimental ZOS 子集
+         + 显式 Zio 元循环 reader / evaluator / expand + 自举分析 / 编译器目标
+         + 运行时镜像、bin / WASM 导出与完整开发发行目标
 官方 Zio 库 = Numa（计算） / Rill（CLI 组合） / Loom（Agent harness）
 独立应用 = Grove（消费语言与库，治理学习、评价、检查点与发布）
 依赖方向 = 库与 Grove → 语言；语言核心不反向依赖库或 Grove
 ```
 
-Zio 库目标采用 Zio 实现并归入 `libs/`：Numa 持计算，Rill 持 CLI 组合，Loom 持 harness 组合。现有 Rust 通用传输/宿主合同位于 `contribs/native/loom/`，不是 Zio 库本体；普通语言 CLI 位于 `langs/cli/`，不装配 LLM replay。Grove 是 `apps/grove/` 独立应用，其 Rust 业务仍待后续迁为 Zio；语言介绍、文档与 playground 位于 `apps/site/`。本轮只完成结构切换，不证明完整库交付、Tree-sitter、LSP 或编译器自举。当前合同见[架构](zio-architecture.md)与[批准目录计划](superpowers/plans/2026-10-07-language-first-layout.md)。短名不等于已注册包 ID。
 
 ---
 
@@ -55,10 +56,11 @@ Zio 库目标采用 Zio 实现并归入 `libs/`：Numa 持计算，Rill 持 CLI 
 
 ### 定理 1: 所有 mutable 状态必须显式
 
-**推论**: 无 thread-local 全局变量。所有可变状态由 `EvalContext` 持有，通过 `&dyn EvalEngine` trait 注入。
+**推论**：可变语言状态与宿主能力必须有显式归属和生命周期。当前
+`EvalContext` 与 `EvalEngine` 是 Rust 实现接口，不是未来 Zio 语义必须依附的合同。
 
-**状态**: 已达成。测试数量由[项目状态](status.md)生成，能力成熟度见
-[特性矩阵](feature-matrix.md)。
+**状态**：当前实现与限制见[架构](zio-architecture.md)及[特性矩阵](feature-matrix.md)；
+显式元循环求值器与后续镜像必须维持隔离和能力显式授权，不能靠隐藏全局状态恢复。
 
 **原理**: 隐藏的可变状态是测试、嵌入、并发的最大敌人。显式状态使系统可隔离、可 mock、可缩放。
 
@@ -70,9 +72,11 @@ Zio 库目标采用 Zio 实现并归入 `libs/`：Numa 持计算，Rill 持 CLI 
 
 ### 定理 3: 宏是用户扩展 eval 的方式
 
-**推论**: 没有特殊形式不可用宏替代。任何新语言特性首选宏方案，特殊形式只作为最后手段。
+**推论**：可由已有语义组合的新语法优先用宏实现；宏不能凭空创造求值顺序、
+词法绑定、控制转移或宿主能力。建立这些基础语义仍需要最小原语与特殊形式。
 
-**原理**: 同像性的核心价值在于「用户拥有跟语言实现者相同的扩展能力」。宏使 DSL 无需修改核心即可嵌入。
+**原理**：同像性让用户扩展语法和组合语义，而非保证任何特殊形式均能被宏替代。
+DSL 无需修改核心；核心语义扩展仍须规格与两种执行路径的行为对照。
 
 ### 定理 4: 核心收敛，库与应用独立
 
@@ -85,9 +89,12 @@ Grove。三库独立演进，公共能力有真实复用需求才抽取，不先
 
 ### 定理 5: 协议比实现重要
 
-**推论**: `EvalEngine` trait 是所有扩展的契约。MOP（Meta Object Protocol）是 ZOS 的扩展契约。实现可以替换，协议保持稳定。
+**推论**：语言层的值、求值、对象与模块语义是长期合同；`EvalEngine` 等 Rust
+trait 是当前机制层接口，可以随引导实现演进。ZOS 的 MOP 是语言级扩展方向，
+其完整语义不能由当前 trait 的形状代替。
 
-**原理**: 系统长期可演化的关键是接口的稳定性，而不是实现的性能。
+**原理**：实现可以替换，但语言行为必须有显式版本、迁移和对照验收；
+尚未发布的接口不作永久冻结承诺。
 
 ---
 
@@ -112,9 +119,9 @@ Library      → 模块级扩展
 四个扩展点形成**递进系统**：从最轻量的 Reader Macro 到最重量级的 MOP。
 
 ### 3.4 运行时优先（Runtime First）
-ZOS 描述的是**运行时对象**，不是语言语法。当前 Reader、Macro 和 AST
-evaluator 读取、变换并执行对象；未来 ZIR/bytecode compiler 与 JIT 仍为
-[Planned](feature-matrix.md)。
+ZOS 描述的是**运行时对象**，不是语言语法。当前 Reader、Macro、AST
+evaluator、Zio 元循环第三执行面与字节码运行时提供执行基础；完整 MOP、编译器自举、运行时镜像
+及优化 ZIR/JIT 按各自合同演进，不因编译器源码存在而视为全部完成。
 
 ### 3.5 机制而非策略（Mechanism over Policy）
 ZOS 只提供机制，不提供策略。Multiple Dispatch 是机制；Protocol 是策略。Immutable Entity、Datomic、AI Runtime 都是策略——全部通过宏 + MOP 构建。
@@ -142,26 +149,50 @@ Zio 的核心特性构成一个自洽的整体，不是其他语言特性的组�
 扩展的归属按职责决定，不要求所有性能或协议代码都写成宏/MOP：
 
 | 能力 | 起点与落点 | 状态 |
+|---|---|---|
 | Numa：数值数组/矩阵/向量与后端接口 | 复用 `libs/numa/vector.zio`、`apps/grove/workers/torch/` 的计算边界；连续 typed array 与公共计算接口按需求扩展，不持训练或发布治理 | 当前组件 Experimental；Numa Planned |
-| Numa：数值数组/矩阵/向量与后端接口 | 复用 `libs/numa/vector.zio`、`apps/grove/workers/torch/` 的计算边界；连续 typed array 与公共计算接口按需求扩展，不持训练或发布治理 | 当前组件 Experimental；Numa Planned |
-| Rill：CLI 应用组织 | 参数、子命令、帮助、命令组合、终端 I/O 与退出状态；`zio-cli` 当前为脚本/REPL 可执行入口，未来消费 Rill；不承担语言求值 | Rill Planned |
-| Grove 独立应用 | `apps/grove/native/learning/`、`apps/grove/native/app/` 和 Zio 策略；首条主线为真实 agent 逻辑与受控演化 | Rust 业务仍待迁为 Zio；能力见特性矩阵 |
-| Grove 独立应用 | `apps/grove/native/learning/`、`apps/grove/native/app/` 和 Zio 策略；首条主线为真实 agent 逻辑与受控演化 | Rust 业务仍待迁为 Zio；能力见特性矩阵 |
+| Rill：CLI 应用组织 | `libs/rill/cli.zio` 已有参数、子命令与帮助解析组件；终端 I/O、退出状态和独立发行按实际合同验收 | 现有组件；独立发行 Planned，本轮未实跑 |
+| Loom 与 Grove | Loom 持通用 harness 组合；Grove 持应用策略、学习与发布治理，不进入语言发行必需依赖 | 现有组件与目标分开，见特性矩阵 |
 | Datalog / Entity / Protocol / 集合 | 保留已有数据表达与占位模块；领域执行不因能加载文件而成立 | 各项状态见特性矩阵 |
 
-### 4.2 自举
-目标是 **Zio 编写自己的展开器、分析器和编译器**，Rust 保留最小运行时、
-宿主边界及必要性能原语。采用现有 AST evaluator 引导，明确首轮语言与
-ZOS 语义集合，再通过最小后端运行编译器并编译自身。
+### 4.2 元循环求值器与编译器自举
 
-```text
-Rust AST 引导 → Zio 展开/分析/编译器 → 编译器产物运行并编译自身
-             → 第二/第三代规范化产物与行为对照 → 工具链自举验收
-```
+目标是用 **Zio 编写 reader、求值器、展开器、分析器和编译器**；Rust Reader
+是当前引导基础，Rust 长期保留值/内存、执行后端、可信宿主及必要性能机制。
+元循环求值器与自举编译器
+是相关但不同的交付：前者用 Zio 表达 eval/apply，后者由编译器产物编译自身。
+L02 已验收完整 Zio 前端在 fresh context 编译自身，Stage 1/2/3 规范制品字节相同，
+并执行已知答案；Rust 引导与执行机制保留。Zio 编写 LSP、编辑器或 Grove 是应用自托管，
+不代替这两项验收，也不把便携字节码固定点泛化为镜像或完整发行。
 
-Zio 编写编辑器、LSP 或 Grove agent 是应用自托管，不等同编译器自举。
-Grove 产品主线与工具链分别验收、互不作为完成前提；执行顺序见
-[统一实现计划](superpowers/plans/2026-10-05-zio-grove-convergence.md)。
+### 4.3 运行时镜像与四类产物
+
+第二条主线是保存并恢复已建立的运行时环境，而非只序列化 AST 或编译模块。
+镜像必须保留对象身份、共享引用、循环、闭包捕获与所需代码/模块绑定；
+文件、连接、线程及外部引擎句柄不能直接搬运，必须显式声明重建方式，否则拒绝
+保存/恢复。恢复不继承原宿主权限，必须重新授予。
+
+以源码为输入，规划产物分为 **完整开发发行版、编译模块（便携字节码）、
+运行时镜像、应用产物** 四类。应用产物的子类型是 native bin、
+WASM-browser 和 WASM-WASI，不把 bin/WASM 拆成两个顶层类别。
+首轮 bin 是 bytecode/初始镜像 + runtime 的打包，不是机器码 AOT；
+浏览器 WASM 与 WASI 分别声明能力和验收。模块制品不等于镜像。
+同 runtime/格式版本的 portable 镜像子集要求跨 native/browser/WASI 恢复；
+含平台资源的镜像仅在匹配 profile 与恢复器下恢复，否则拒绝。全部格式与边界见
+[新规格](superpowers/specs/2026-10-11-zio-language-toolchain-design.md)。
+
+### 4.4 外部语言与完整发行
+
+解释型与编译型外部语言通过引擎库接入。`inline` 是外语代码入口，不是所有
+引擎都必须执行的 `eval`：解释引擎可以执行代码，编译引擎可以产生模块或制品，
+各自声明值转换、生命周期、能力与错误合同，不能把外语语义变成 Zio 核心语义。
+当前 JS bridge 仅在 WASM，`js` dotted resolver 仅在解释器路径；native CLI
+没有 JS 引擎，不把它们误称为通用 inline 已交付。
+
+完整开发发行目标一次配齐解释器、编译器、LSP、语法/编辑器资源、WASM 与文档，
+不是让用户逐个补装才能获得完整工具链。最小应用产物可裁剪开发工具与未使用
+引擎；Grove 不随语言发行强制装配。执行依赖与验收以
+[主计划](superpowers/plans/2026-10-11-zio-language-toolchain.md)为准。
 ---
 
 ## 5 什么是 ZOS
@@ -274,7 +305,8 @@ ZOS（Zio Object System）是 Zio 的统一运行时对象模型。它不是传�
 ### 8.2 我们不承诺
 
 1. 与其他 Lisp 方言的完全兼容（ZOS 是自己的对象模型，不是移植）
-2. Java / JS / Python 生态兼容性（Zio 通过 Rust FFI 与 C ABI 对接）
-3. 无 GC 性能担保（当前使用 Arc + im 结构共享，不引入追踪式 GC）
-4. 通过 AOT 编译达到原生性能（JIT/VM 仍为
-   [Planned](feature-matrix.md)，不是当前加速器）
+2. Java / JS / Python 的无条件生态兼容；外部生态通过引擎库与明确宿主边界接入，
+   不等于拒绝 JS 生态，也不等于 native CLI 已有 JS
+3. 无 GC 或零开销性能担保；当前 Arc + im 机制不决定未来镜像/循环对象的内存方案
+4. 通过首轮 bin 导出获得机器码 AOT 或原生性能；字节码执行已存在，
+   优化 ZIR/JIT 和机器码后端须独立验收

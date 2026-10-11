@@ -531,7 +531,7 @@ pub fn do_try(
         Err(e) => {
             let error_type = extract_error_type(&e);
             for (catch_type, handler) in &catch_clauses {
-                if catch_type == "any" || catch_type == &error_type {
+                if catch_type == "any" || catch_type == error_type {
                     let catch_env = Arc::new(Env::new(Some(env.clone())));
                     catch_env.set("*error*".into(), Value::String(e.to_string()));
                     // The handler runs in the CALLER's tail position, not in
@@ -548,18 +548,15 @@ pub fn do_try(
 }
 
 /// Extract a simplified error type name from an EvalError.
-fn extract_error_type(e: &EvalError) -> String {
-    let s = e.to_string();
-    if s.starts_with("symbol not found") {
-        "symbol-not-found".into()
-    } else if s.starts_with("type error") {
-        "type-error".into()
-    } else if s.starts_with("wrong argument count") {
-        "wrong-arg-count".into()
-    } else if s.starts_with("division by zero") {
-        "division-by-zero".into()
-    } else {
-        "error".into()
+pub(crate) fn extract_error_type(e: &EvalError) -> &'static str {
+    match e {
+        EvalError::SymbolNotFound(..) => "symbol-not-found",
+        EvalError::TypeError { .. } => "type-error",
+        EvalError::WrongArgCount { .. }
+        | EvalError::WrongArgCountMin { .. }
+        | EvalError::WrongArgCountRange { .. } => "wrong-arg-count",
+        EvalError::DivisionByZero { .. } => "division-by-zero",
+        _ => "error",
     }
 }
 

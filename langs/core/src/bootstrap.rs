@@ -119,6 +119,7 @@ pub struct LoadProfile {
     io: Arc<dyn IoHost>,
     modules: std::rc::Rc<std::cell::RefCell<crate::module::ModuleTable>>,
     evaluator: SourceEvaluator,
+    meta_scope: std::rc::Rc<std::cell::Cell<usize>>,
 }
 
 pub type SourceEvaluator = fn(&EvalContext, &str, &str) -> Result<Value, EvalError>;
@@ -131,6 +132,7 @@ impl LoadProfile {
             io,
             modules: std::rc::Rc::new(std::cell::RefCell::new(crate::module::ModuleTable::new())),
             evaluator: eval_source,
+            meta_scope: std::rc::Rc::new(std::cell::Cell::new(0)),
         }
     }
 
@@ -175,7 +177,12 @@ impl LoadProfile {
                         profile.modules.clone(),
                     );
                     ctx.push_module_exports();
-                    let evaluation = (profile.evaluator)(&ctx, &path.to_string_lossy(), &source);
+                    let evaluation = if profile.meta_scope.get() != 0 {
+                        crate::interpreter::register_with_scope(&ctx, profile.meta_scope.clone());
+                        crate::interpreter::eval_source(&ctx, &path.to_string_lossy(), &source)
+                    } else {
+                        (profile.evaluator)(&ctx, &path.to_string_lossy(), &source)
+                    };
                     let exports = ctx.take_module_exports();
                     evaluation?;
                     let module = Module {
@@ -205,7 +212,9 @@ pub fn bootstrap(ctx: &EvalContext) -> Result<(), EvalError> {
     bootstrap_source(ctx, "core.zio", crate::stdlib_source())?;
     crate::syntax::register(&ctx.env);
     crate::bytecode::register(ctx);
-    crate::bytecode::bootstrap_compiler(ctx)
+    crate::bytecode::bootstrap_compiler(ctx)?;
+    crate::interpreter::register(ctx);
+    Ok(())
 }
 
 /// Parse and evaluate every top-level form of `source`, registering it
@@ -234,6 +243,7 @@ pub fn language_context_with_io(
         .with_evaluator(crate::bytecode::run_source);
     *ctx.loader.borrow_mut() = Some(profile.loader());
     bootstrap(&ctx)?;
+    crate::interpreter::register_with_scope(&ctx, profile.meta_scope.clone());
     Ok(ctx)
 }
 
