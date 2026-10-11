@@ -1,0 +1,3 @@
+[submodule "apps/grove"]
+	path = apps/grove
+	url = https://github.com/lszio/grove.git

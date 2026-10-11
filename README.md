@@ -93,11 +93,18 @@ bin 首轮是 bytecode + runtime 打包，不是机器码 AOT；应用 bin/WASM 
 LSP 等开发工具，动态能力按真实依赖保留。WASM 浏览器与 WASI 目标分别验收。
 外部语言引擎尚不能宣称已全套捆绑。
 
+Grove 源码在独立仓库 [lszio/grove](https://github.com/lszio/grove)，本仓库以
+submodule 挂载于 `apps/grove`（克隆用 `--recurse-submodules`）；构建与测试经
+`cargo test --manifest-path apps/grove/Cargo.toml --workspace`。
+
 [`docs/release.md`](docs/release.md) 记录现有发行方式、目标边界、
 打标签、GitHub Actions 发布流水线与 crates.io 发布流程。
 `push v*` 标签触发 `.github/workflows/release.yml`：先校验标签与 workspace
-版本一致，再跑完整测试与自举契约，通过后构建五个平台目标、发布四个 crate、
-并附带校验和与 WASM 产物创建 GitHub Release。
+版本一致，再跑完整测试（含 submodule 固定的 Grove 合同）与自举契约，通过后
+构建五个平台目标、发布四个 crate、发布 npm 包
+[`@lszio/zio-core`](https://www.npmjs.com/package/@lszio/zio-core)（WASM 引擎）、
+推送 Docker 镜像 `ghcr.io/lszio/zio`（含 `zio` 可执行文件），
+并附带校验和与 WASM 产物创建 GitHub Release。`NPM_TOKEN` 需配置为仓库 secret。
 
 ## 落地页
 
@@ -125,7 +132,8 @@ bun run build      # 产出 apps/site/dist
 
 运行与预览环境见 [docs/deployment.md](docs/deployment.md)。
 
-Grove 是 `apps/grove/` 的独立应用。`apps/grove/main.zio` 是实际 Zio 入口，
+Grove 是独立仓库 [lszio/grove](https://github.com/lszio/grove)，以 submodule
+形式挂载在 `apps/grove/`。`apps/grove/main.zio` 是实际 Zio 入口，
 由宿主按 keyword 授权预算后显式调用；CLI 分发走 `libs/rill/cli.zio`，
 HTTP 路由在 `apps/grove/api.zio`。
 

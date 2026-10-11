@@ -1,6 +1,11 @@
 [workspace]
 resolver = "2"
-members = ["langs/core", "langs/cli", "contribs/native/host", "contribs/native/loom", "contribs/language-server", "apps/grove/native/learning", "apps/grove/native/app"]
+members = ["langs/core", "langs/cli", "contribs/native/host", "contribs/native/loom", "contribs/language-server"]
+
+# Grove lives in its own repository (https://github.com/lszio/grove),
+# mounted as the apps/grove submodule with its own workspace. Build and
+# test it through its manifest:
+#   cargo test --manifest-path apps/grove/Cargo.toml --workspace
 
 [workspace.package]
 version = "0.2.0"

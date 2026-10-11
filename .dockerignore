@@ -1,7 +1,19 @@
-target
-apps/site/node_modules
-apps/site/dist
-apps/site/.astro
+# Context hygiene: the image builds zio-cli from source; everything the
+# workspace does not parse is ballast.
 .git
+.gnux
 .github
-*.md.bak
+.idea
+.vscode
+target
+dist
+**/node_modules
+**/__pycache__
+.venv
+apps
+docs
+npm
+*.md
+Dockerfile.zio
+.dockerignore
+.gitmodules

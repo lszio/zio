@@ -56,9 +56,22 @@ fn repl_ctx() -> Result<EvalContext, EvalError> {
 
 /// Run a script in the language context, without application host bindings.
 fn run_script(path: &str, extra_roots: &[PathBuf]) -> Result<Value, EvalError> {
+    // USAGE documents `-` as stdin for the plain run; the bounded run
+    // path has its own stdin handling and this is the shared case.
+    let (source, name) = if path == "-" {
+        let mut source = String::new();
+        io::stdin()
+            .read_to_string(&mut source)
+            .map_err(|e| EvalError::custom(format!("cannot read stdin: {e}")))?;
+        (source, "stdin.zio".to_string())
+    } else {
+        (
+            std::fs::read_to_string(path)
+                .map_err(|e| EvalError::custom(format!("cannot read {path}: {e}")))?,
+            path.to_string(),
+        )
+    };
     let ctx = script_ctx(path, extra_roots)?;
-    let source = std::fs::read_to_string(path)
-        .map_err(|e| EvalError::custom(format!("cannot read {path}: {e}")))?;
     // A script `load`s siblings by relative path for the same reason an
     // application does: the file it was handed may be anywhere, and the
     // files it ships with are next to it.
@@ -68,7 +81,7 @@ fn run_script(path: &str, extra_roots: &[PathBuf]) -> Result<Value, EvalError> {
     {
         *ctx.source_dir.borrow_mut() = Some(parent.to_path_buf());
     }
-    zio_core::bytecode::run_source(&ctx, path, &source)
+    zio_core::bytecode::run_source(&ctx, &name, &source)
 }
 
 /// A script's own directory is granted first, so a script sitting next to
