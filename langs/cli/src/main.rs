@@ -580,7 +580,7 @@ const USAGE: &str = "Usage: zio [--lib-dir DIR]... [--entry NAME] [--step-limit 
        zio image inspect IMAGE\n\
        zio image run IMAGE [--eval EXPR] [--grant-dir DIR]...\n\
        zio compile PROGRAM.zio -o OUT\n\
-       zio build INPUT --target native -o APP [--entry NAME] [--module NAME=PATH]...\n\
+       zio build INPUT --target native|browser|wasm-wasi -o APP [--entry NAME] [--module NAME=PATH]...\n\
        \n\
        --entry NAME     call NAME after the source loads, with no arguments\n\
        --step-limit N   stop after N evaluator steps (required with --entry)\n\

@@ -198,6 +198,171 @@ fn browser_bundle_runs_through_the_wasm_engine() {
     );
 }
 
+/// WASI contracts need both the wasm32-wasip1 target and a real
+/// runner; they skip with a reason when either is missing rather than
+/// claiming unrun behavior.
+fn wasi_ready() -> bool {
+    let wasmtime = Command::new("wasmtime").arg("--version").output();
+    if wasmtime.map(|o| !o.status.success()).unwrap_or(true) {
+        eprintln!("skipping WASI contracts: no wasmtime on PATH");
+        return false;
+    }
+    true
+}
+
+fn build_wasi(source: &Path, app: &Path, entry: Option<&str>) -> std::process::Output {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_zio-cli"));
+    command.current_dir(workspace_root()).args(["build"]);
+    command.arg(source).args(["--target", "wasm-wasi", "-o"]);
+    command.arg(app);
+    if let Some(entry) = entry {
+        command.args(["--entry", entry]);
+    }
+    command.output().expect("build runs")
+}
+
+#[test]
+fn wasi_app_runs_on_a_real_runtime() {
+    if !wasi_ready() {
+        return;
+    }
+    let work = scratch("wasi-source");
+    let app = work.join("app.wasm");
+    let build = build_wasi(
+        &workspace_root().join("examples/toolchain/app.zio"),
+        &app,
+        None,
+    );
+    assert!(
+        build.status.success(),
+        "wasi build failed: {}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+    let run = Command::new("wasmtime")
+        .current_dir(&work)
+        .arg("run")
+        .arg(&app)
+        .output()
+        .expect("wasmtime runs");
+    let stdout = String::from_utf8_lossy(&run.stdout);
+    assert!(run.status.success(), "wasmtime failed: {stdout}");
+    assert!(stdout.contains("49\n"), "static output missing: {stdout}");
+    assert!(stdout.contains("50"), "dynamic eval missing: {stdout}");
+}
+
+#[test]
+fn wasi_image_entry_keeps_restored_state() {
+    if !wasi_ready() {
+        return;
+    }
+    let work = scratch("wasi-image");
+    let image = work.join("session.zio-image");
+    let save = Command::new(env!("CARGO_BIN_EXE_zio-cli"))
+        .current_dir(workspace_root())
+        .args([
+            "image",
+            "save",
+            "examples/toolchain/image-session.zio",
+            "-o",
+        ])
+        .arg(&image)
+        .output()
+        .expect("save runs");
+    assert!(save.status.success());
+    let app = work.join("img.wasm");
+    let build = build_wasi(&image, &app, Some("((get root-0 :bump))"));
+    assert!(
+        build.status.success(),
+        "wasi image build failed: {}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+    let run = Command::new("wasmtime")
+        .current_dir(&work)
+        .arg("run")
+        .arg(&app)
+        .output()
+        .expect("wasmtime runs");
+    assert!(run.status.success());
+    assert_eq!(String::from_utf8_lossy(&run.stdout).trim(), "1");
+}
+
+#[test]
+fn wasi_file_access_needs_preopen_and_grant() {
+    if !wasi_ready() {
+        return;
+    }
+    let work = scratch("wasi-grant");
+    let granted = work.join("granted");
+    std::fs::create_dir_all(&granted).expect("granted dir");
+    std::fs::write(granted.join("resource.txt"), "granted payload").expect("resource");
+    let source = work.join("reads-file.zio");
+    let resource = granted.join("resource.txt");
+    std::fs::write(
+        &source,
+        format!("(println (slurp {:?}))\n", resource.display().to_string()),
+    )
+    .expect("source");
+    let app = work.join("file.wasm");
+    let build = build_wasi(&source, &app, None);
+    assert!(
+        build.status.success(),
+        "wasi build failed: {}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+
+    let bare = Command::new("wasmtime")
+        .current_dir(&work)
+        .args(["run", "--dir"])
+        .arg(&granted)
+        .arg(&app)
+        .output()
+        .expect("wasmtime runs");
+    let stderr = String::from_utf8_lossy(&bare.stderr);
+    assert!(
+        stderr.contains("outside every granted root"),
+        "a preopen without a grant was not refused: {stderr}"
+    );
+
+    let granted_run = Command::new("wasmtime")
+        .current_dir(&work)
+        .args(["run", "--dir"])
+        .arg(&granted)
+        .arg(&app)
+        .arg("--grant")
+        .arg(&granted)
+        .output()
+        .expect("wasmtime runs");
+    assert!(granted_run.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&granted_run.stdout).trim(),
+        "granted payload"
+    );
+}
+
+#[test]
+fn browser_only_dependencies_cannot_become_wasi_apps() {
+    let work = scratch("wasi-refuse");
+    let source = work.join("js-app.zio");
+    std::fs::write(&source, "(println (js/eval \"1+1\"))\n").expect("write source");
+    let build = Command::new(env!("CARGO_BIN_EXE_zio-cli"))
+        .args(["build"])
+        .arg(&source)
+        .args(["--target", "wasm-wasi", "-o"])
+        .arg(work.join("app.wasm"))
+        .output()
+        .expect("build runs");
+    assert!(!build.status.success(), "a browser-only app was accepted");
+    let stderr = String::from_utf8_lossy(&build.stderr);
+    assert!(
+        stderr.contains("browser-only"),
+        "the refusal did not name the dependency: {stderr}"
+    );
+    assert!(
+        !work.join("app.wasm").exists(),
+        "a refused build left an app"
+    );
+}
+
 #[test]
 fn undeclared_module_refuses_the_build() {
     let work = scratch("closure");

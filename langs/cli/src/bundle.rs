@@ -32,7 +32,7 @@ pub fn maybe_run_bundled() -> Option<Result<(), EvalError>> {
     }
 }
 
-pub const BUILD_USAGE: &str = "Usage: zio build INPUT --target {native|browser} -o APP [--entry NAME] [--module NAME=PATH]... [--glue URL]\n";
+pub const BUILD_USAGE: &str = "Usage: zio build INPUT --target {native|browser|wasm-wasi} -o APP [--entry NAME] [--module NAME=PATH]... [--glue URL]\n";
 
 struct BuildArgs {
     input: PathBuf,
@@ -166,9 +166,9 @@ fn declared_closure(modules: &BTreeMap<String, String>) -> Result<(), EvalError>
 
 pub fn run_build(argv: &[String]) -> Result<(), EvalError> {
     let args = parse_build(argv)?;
-    if args.target != "native" && args.target != "browser" {
+    if args.target != "native" && args.target != "browser" && args.target != "wasm-wasi" {
         return Err(EvalError::invalid_form(format!(
-            "build: unsupported target {:?}; expected native or browser",
+            "build: unsupported target {:?}; expected native, browser or wasm-wasi",
             args.target
         )));
     }
@@ -263,7 +263,7 @@ pub fn run_build(argv: &[String]) -> Result<(), EvalError> {
             };
             write_native_app(&base, &payload, &args.output)
         }
-        _ => {
+        "browser" => {
             let html = browser_html(&payload, &args.glue, &input_name);
             std::fs::write(&args.output, html.as_bytes()).map_err(|error| {
                 EvalError::custom(format!("cannot write {}: {error}", args.output.display()))
@@ -276,7 +276,117 @@ pub fn run_build(argv: &[String]) -> Result<(), EvalError> {
             );
             Ok(())
         }
+        // WASI cannot read its own module, so the payload is compiled
+        // into the runtime per application: one .wasm, no sidecar.
+        "wasm-wasi" => write_wasi_app(&payload, &input_name, &args.output),
+        _ => unreachable!("target was validated above"),
     }
+}
+
+/// Browser-only dependencies never make it into a WASI application:
+/// they exist only in the engine's `wasm` feature.
+fn refuse_browser_only(kind: &str, name: &str, text: &str, path: &str) -> Result<(), EvalError> {
+    use zio_core::sexp::Sexp;
+    let forms = zio_core::reader::reader::read_program(text)
+        .map_err(|error| EvalError::custom(format!("cannot read {path}: {error}")))?;
+    fn browser_symbol(head: &str) -> bool {
+        matches!(
+            head,
+            "js/eval" | "js/global" | "js/prop" | "js/require" | "globalThis"
+        )
+    }
+    fn scan(form: &Sexp, path: &str, kind: &str, name: &str) -> Result<(), EvalError> {
+        match form {
+            Sexp::List(items, _) => {
+                if let Some(Sexp::Symbol(head, _)) = items.iter().next()
+                    && browser_symbol(&head)
+                {
+                    return Err(EvalError::invalid_form(format!(
+                        "{path} uses browser-only {head:?} ({kind} {name}); a WASI application cannot"
+                    )));
+                }
+                for item in items.iter() {
+                    scan(item, path, kind, name)?;
+                }
+                Ok(())
+            }
+            Sexp::Vector(items, _) => {
+                for item in items.iter() {
+                    scan(item, path, kind, name)?;
+                }
+                Ok(())
+            }
+            Sexp::Map(entries, _) => {
+                for (key, value) in entries.iter() {
+                    scan(key, path, kind, name)?;
+                    scan(value, path, kind, name)?;
+                }
+                Ok(())
+            }
+            _ => Ok(()),
+        }
+    }
+    for form in &forms {
+        scan(form, path, kind, name)?;
+    }
+    Ok(())
+}
+
+fn write_wasi_app(payload: &str, input_name: &str, output: &Path) -> Result<(), EvalError> {
+    let bundle = Bundle::decode(payload)?;
+    if let zio_core::bundle::EntrySpec::Source { text, .. } = &bundle.entry {
+        refuse_browser_only("entry", input_name, text, input_name)?;
+    }
+    for (name, text) in &bundle.modules {
+        refuse_browser_only("module", name, text, &format!("module {name}"))?;
+    }
+    let exe = std::env::current_exe()
+        .map_err(|error| EvalError::custom(format!("cannot locate the runtime: {error}")))?;
+    // target/debug/zio-cli -> the workspace root, without a checkout
+    // path baked into the command.
+    let root = exe
+        .parent()
+        .and_then(Path::parent)
+        .and_then(Path::parent)
+        .ok_or_else(|| EvalError::custom("cannot locate the workspace root"))?
+        .to_path_buf();
+    let payload_file =
+        std::env::temp_dir().join(format!("zio-wasi-payload-{}.json", std::process::id()));
+    std::fs::write(&payload_file, payload.as_bytes())
+        .map_err(|error| EvalError::custom(format!("cannot stage the payload: {error}")))?;
+    let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
+    let status = std::process::Command::new(cargo)
+        .current_dir(&root)
+        .args([
+            "build",
+            "--release",
+            "-p",
+            "zio-wasi",
+            "--target",
+            "wasm32-wasip1",
+        ])
+        .env("ZIO_WASI_PAYLOAD", &payload_file)
+        .status()
+        .map_err(|error| EvalError::custom(format!("cannot build the WASI runtime: {error}")))?;
+    let _ = std::fs::remove_file(&payload_file);
+    if !status.success() {
+        return Err(EvalError::custom(
+            "the WASI runtime build failed; run tools/build-wasi.sh to check the target",
+        ));
+    }
+    let built = root.join("target/wasm32-wasip1/release/zio-wasi.wasm");
+    let bytes = std::fs::read(&built)
+        .map_err(|error| EvalError::custom(format!("cannot read {}: {error}", built.display())))?;
+    std::fs::write(output, &bytes).map_err(|error| {
+        EvalError::custom(format!("cannot write {}: {error}", output.display()))
+    })?;
+    println!(
+        "built {} ({} bytes, payload {})",
+        output.display(),
+        bytes.len(),
+        payload.len()
+    );
+    Ok(())
 }
 
 fn write_native_app(runtime: &[u8], payload: &str, output: &Path) -> Result<(), EvalError> {

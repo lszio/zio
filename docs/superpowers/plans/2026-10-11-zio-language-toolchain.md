@@ -269,14 +269,23 @@ Expected: 实际 WASM 运行输出已知值，恢复 shared state，不调用站
 
 **Files:** 新建 `langs/wasi/{Cargo.toml,src/main.rs}`、`tools/build-wasi.sh`；修改 root workspace、bundle、feature configuration；扩展 artifacts smoke。
 
-- [ ] 用 `wasm32-wasip1` 构建只依赖 WASI imports 的 runtime；不打开 browser `wasm` feature，避免 js-sys/globalThis 混入。真实运行器以固定版本作为验收工具，不是用户应用隐含依赖。
-- [ ] stdin/stdout/文件访问接现有 IoHost 与显式 preopen/grant。portable image 有相同闭包/模块结果；DOM、不可移植引擎／native资源在 build 阶段拒绝。
-- [ ] 源码/模块/镜像三输入导出 WASI，使用没有 preopen 的运行器执行；需文件例子只在显式 preopen 下成功。
+- [x] 用 `wasm32-wasip1` 构建只依赖 WASI imports 的 runtime；不打开 browser `wasm` feature，避免 js-sys/globalThis 混入。真实运行器以固定版本作为验收工具，不是用户应用隐含依赖。
+- [x] stdin/stdout/文件访问接现有 IoHost 与显式 preopen/grant。portable image 有相同闭包/模块结果；DOM、不可移植引擎／native资源在 build 阶段拒绝。
+- [x] 源码/模块/镜像三输入导出 WASI，使用没有 preopen 的运行器执行；需文件例子只在显式 preopen 下成功。
 
 Run: `zio build examples/toolchain/app.zio --target wasm-wasi -o /tmp/zio-app.wasm`；`wasmtime run /tmp/zio-app.wasm`（验收环境安装已锁定版本）。
 Expected: 已知49/50与镜像共享状态结果一致；无preopen文件访问拒绝；browser JS全局依赖不能生成此目标。
 
 **Exit:** A2 WASI 子项与 I3 WASI；WASM模块需要WASI宿主应在发行清单声明，不能叫本机裸bin。
+
+**A02 交付证据（2026-10-13，Linux x64，wasmtime-cli 24.0.0）：**
+
+- `langs/wasi`（`zio-wasi`）：只依赖 `zio-core`（`default-features = false`，不打开浏览器 `wasm` feature）；`build.rs` 按 `ZIO_WASI_PAYLOAD` 把 payload 编译进模块——WASI 无法读取自身文件，这是单文件 `.wasm` 的唯一诚实路径。`tools/build-wasi.sh` 构建运行时模板（43 KB）。
+- 真实运行：`wasmtime run /tmp/zio-app.wasm` 输出 49 与显式动态 eval 的 50；镜像入口 `((get root-0 :bump))` 输出 1（恢复状态与原生一致）。模块 imports 仅 `wasi_snapshot_preview1`（0 处 js-sys/globalThis/wasm-bindgen 字符串）。
+- 授权边界矩阵：无 preopen 无 grant → 按 grant 边界指名拒绝；preopen 无 grant → 仍拒绝；preopen + `--grant DIR` → 读到真实文件内容。包内文件优先，宿主文件只经显式 grant 透出（`run_payload_with(host, payload, true)`；CLI/wasm 保持 `run_payload` 的封闭语义）。
+- 构建期拒绝：入口或声明模块深层使用 `js/eval` 等浏览器专有符号 → 以 “browser-only … a WASI application cannot” 拒绝，且不留产物。
+- `bundle_contract.rs` 9 项全绿（原生 4、浏览器引擎 1、WASI 运行 3、拒绝 1）；缺 wasmtime/target 的环境按原因跳过而非假通过。
+- 边界：per-app 重编译换单文件（链接缓存后 ~30s）；grant 采用词法归一化（wasi-libc canonicalize 在普通 preopen 下不可用），符号链接逃逸为已知限制。
 
 ### J00：原生嵌入 JS 引擎
 

@@ -4,8 +4,8 @@
 
 | Fact | Value |
 | --- | --- |
-| Workspace crates | 5 |
-| Rust tests | 342 |
+| Workspace crates | 6 |
+| Rust tests | 346 |
 | Special forms | 25 |
 | Native bindings | 97 |
 | Runnable examples | 9 |

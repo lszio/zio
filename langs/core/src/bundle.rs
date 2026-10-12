@@ -122,14 +122,26 @@ pub fn read_payload(exe: &[u8]) -> Result<Option<String>, EvalError> {
 }
 
 /// Run a bundle payload against `io` as the whole authority the program
-/// has: stdout/console and stdin pass through to it, while every file
-/// lives inside the payload. Declared modules load first, in manifest
-/// order; a `require` of anything else cannot reach outward.
+/// has. The bundle is hermetic: files live in the payload, and nothing
+/// else is reachable.
 pub fn run_payload(io: Arc<dyn IoHost>, payload: &str) -> Result<String, EvalError> {
+    run_payload_with(io, payload, false)
+}
+
+/// Like [`run_payload`], but a path the payload does not contain falls
+/// through to the host I/O. Only a host that itself refuses ungranted
+/// paths may use this — the WASI runtime, where the caller named the
+/// directories with `--grant`.
+pub fn run_payload_with(
+    io: Arc<dyn IoHost>,
+    payload: &str,
+    host_files: bool,
+) -> Result<String, EvalError> {
     let bundle = Bundle::decode(payload)?;
     let host: Arc<dyn IoHost> = Arc::new(BundleIoHost {
         base: io,
         files: Mutex::new(bundle.modules.clone()),
+        host_files,
     });
     let ctx = language_context_with_io(ModuleRoots::empty(), host)?;
     for (name, text) in &bundle.modules {
@@ -166,20 +178,29 @@ pub fn run_payload(io: Arc<dyn IoHost>, payload: &str) -> Result<String, EvalErr
     Ok(value.to_string())
 }
 
-/// Files live inside the bundle; everything else is the base host.
+/// Files live inside the bundle; `host_files` lets an unclaimed path
+/// reach a host that enforces its own grants.
 pub struct BundleIoHost {
     base: Arc<dyn IoHost>,
     files: Mutex<BTreeMap<String, String>>,
+    host_files: bool,
 }
 
 impl BundleIoHost {
     fn read(&self, path: &str) -> Result<String, EvalError> {
-        self.files
+        if let Some(text) = self
+            .files
             .lock()
             .map_err(|_| EvalError::custom("bundle file map is poisoned"))?
             .get(path)
             .cloned()
-            .ok_or_else(|| EvalError::custom(format!("{path} is not in the bundle")))
+        {
+            return Ok(text);
+        }
+        if self.host_files {
+            return self.base.read_file(path);
+        }
+        Err(EvalError::custom(format!("{path} is not in the bundle")))
     }
 }
 
@@ -205,19 +226,35 @@ impl IoHost for BundleIoHost {
     }
 
     fn write_file(&self, path: &str, data: &str) -> Result<(), EvalError> {
-        self.files
-            .lock()
-            .map_err(|_| EvalError::custom("bundle file map is poisoned"))?
-            .insert(path.to_string(), data.to_string());
-        Ok(())
-    }
-
-    fn file_exists(&self, path: &str) -> Result<bool, EvalError> {
-        Ok(self
+        if self
             .files
             .lock()
             .map_err(|_| EvalError::custom("bundle file map is poisoned"))?
-            .contains_key(path))
+            .contains_key(path)
+            || !self.host_files
+        {
+            self.files
+                .lock()
+                .map_err(|_| EvalError::custom("bundle file map is poisoned"))?
+                .insert(path.to_string(), data.to_string());
+            return Ok(());
+        }
+        self.base.write_file(path, data)
+    }
+
+    fn file_exists(&self, path: &str) -> Result<bool, EvalError> {
+        if self
+            .files
+            .lock()
+            .map_err(|_| EvalError::custom("bundle file map is poisoned"))?
+            .contains_key(path)
+        {
+            return Ok(true);
+        }
+        if self.host_files {
+            return self.base.file_exists(path);
+        }
+        Ok(false)
     }
 
     fn canonicalize_path(&self, path: &str) -> Result<String, EvalError> {

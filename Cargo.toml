@@ -1,8 +1,8 @@
 [workspace]
 resolver = "2"
-members = ["langs/core", "langs/cli", "contribs/native/host", "contribs/native/loom", "contribs/language-server"]
+members = ["langs/core", "langs/cli", "langs/wasi", "contribs/native/host", "contribs/native/loom", "contribs/language-server"]
 
-# Grove lives in its own repository (https://github.com/lszio/grove),
+# Groiz lives in its own repository (https://github.com/lszio/groiz),
 # mounted as the apps/grove submodule with its own workspace. Build and
 # test it through its manifest:
 #   cargo test --manifest-path apps/grove/Cargo.toml --workspace
