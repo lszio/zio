@@ -10,6 +10,7 @@ export const ziosession_eval_json: (a: number, b: number, c: number, d: number, 
 export const ziosession_eval_source: (a: number, b: number, c: number, d: number, e: number, f: number) => void;
 export const ziosession_new: (a: number) => void;
 export const ziosession_parse: (a: number, b: number, c: number, d: number, e: number, f: number) => void;
+export const ziosession_run_bundle: (a: number, b: number, c: number, d: number) => void;
 export const __wbindgen_export: (a: number, b: number) => number;
 export const __wbindgen_export2: (a: number, b: number, c: number, d: number) => number;
 export const __wbindgen_export3: (a: number) => void;

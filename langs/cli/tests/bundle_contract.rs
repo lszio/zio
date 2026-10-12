@@ -149,6 +149,56 @@ fn damaged_payload_is_refused() {
 }
 
 #[test]
+fn browser_bundle_runs_through_the_wasm_engine() {
+    let work = scratch("browser");
+    let html = work.join("app.html");
+    let build = Command::new(env!("CARGO_BIN_EXE_zio-cli"))
+        .current_dir(workspace_root())
+        .args([
+            "build",
+            "examples/toolchain/app.zio",
+            "--target",
+            "browser",
+            "-o",
+        ])
+        .arg(&html)
+        .output()
+        .expect("build runs");
+    assert!(
+        build.status.success(),
+        "browser build failed: {}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+    let text = std::fs::read_to_string(&html).expect("html bytes");
+    assert!(text.contains("PAYLOAD_B64"), "payload is embedded");
+    assert!(text.contains("run_bundle"), "the wasm entry is the runner");
+
+    // The browser automation host is not always reachable from a test
+    // machine, so the contract runs the real engine the page loads:
+    // the web-target glue plus the module bytes, then the same session
+    // call the page makes.
+    let wasm_dir = workspace_root().join("apps/site/public/wasm");
+    let harness = Command::new("node")
+        .current_dir(workspace_root())
+        .arg("tools/a01-browser-harness.mjs")
+        .arg(wasm_dir.join("zio_core.js"))
+        .arg(wasm_dir.join("zio_core_bg.wasm"))
+        .arg(&html)
+        .output()
+        .expect("node harness runs");
+    let stdout = String::from_utf8_lossy(&harness.stdout);
+    assert!(
+        harness.status.success(),
+        "browser bundle failed in the wasm engine:\n{stdout}\n{}",
+        String::from_utf8_lossy(&harness.stderr)
+    );
+    assert!(
+        stdout.contains("PASS browser bundle"),
+        "unexpected harness output: {stdout}"
+    );
+}
+
+#[test]
 fn undeclared_module_refuses_the_build() {
     let work = scratch("closure");
     let source = work.join("needs.zio");

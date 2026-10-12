@@ -7,6 +7,7 @@ pub mod im {
 }
 pub mod bootstrap;
 pub mod builtins;
+pub mod bundle;
 pub mod context;
 pub mod env;
 pub mod error;

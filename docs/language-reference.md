@@ -62,11 +62,12 @@ zio build examples/toolchain/app.zio --target native -o /tmp/zio-app
 /tmp/zio-app
 ```
 
-`build` 产出单文件应用：runtime 二进制 + JSON payload + 带校验和的 footer，
-启动时校验后运行 payload。输入支持源码（`.zio`）、便携模块（`.zioc`）与
-镜像（`.zio-image`，需 `--entry EXPRESSION`）。模块依赖在构建期按真实
-reader 扫描声明闭包，缺失即拒绝构建；未声明的 `require` 在运行时也无法
-触碰 checkout。
+`build` 产出单文件应用：native 为 runtime 二进制 + JSON payload + 带校验和的
+footer；`--target browser` 产出单个 HTML（glue URL + 内联 base64 payload），
+两者共用同一 payload 合同，由 `ZioSession.run_bundle` 在 wasm 引擎中执行。
+输入支持源码（`.zio`）、便携模块（`.zioc`）与镜像（`.zio-image`，需
+`--entry EXPRESSION`）。模块依赖在构建期按真实 reader 扫描声明闭包，缺失
+即拒绝构建；未声明的 `require` 在运行时也无法触碰 checkout。
 
 
 ## 表达式与值

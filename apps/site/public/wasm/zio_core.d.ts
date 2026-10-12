@@ -19,6 +19,12 @@ export class ZioSession {
     eval_source(source: string, name: string): string;
     constructor();
     parse(source: string, name: string): string;
+    /**
+     * Run a bundle payload (the JSON record `zio build` emits) against
+     * this session's authority. Returns the entry value; program output
+     * goes to the console like any other browser run.
+     */
+    run_bundle(payload: string): string;
 }
 
 /**
@@ -41,6 +47,7 @@ export interface InitOutput {
     readonly ziosession_eval_source: (a: number, b: number, c: number, d: number, e: number, f: number) => void;
     readonly ziosession_new: (a: number) => void;
     readonly ziosession_parse: (a: number, b: number, c: number, d: number, e: number, f: number) => void;
+    readonly ziosession_run_bundle: (a: number, b: number, c: number, d: number) => void;
     readonly __wbindgen_export: (a: number, b: number) => number;
     readonly __wbindgen_export2: (a: number, b: number, c: number, d: number) => number;
     readonly __wbindgen_export3: (a: number) => void;

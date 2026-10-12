@@ -249,14 +249,21 @@ Expected: 例子打印已知 `49` 并成功调用显式动态 eval 得到 `50`�
 
 **Files:** 修改 `langs/core/src/wasm.rs`、`langs/cli/src/bundle.rs`、`tools/build-wasm.sh`；新建 browser artifact smoke 页面资源随包生成，扩展 `tools/smoke-toolchain-artifacts.sh`。
 
-- [ ] 导出 WASM runtime/payload 和 JS glue loader；不把 AST 浏览器 playground 当 compiler codegen。共享 `.zioc` 和 portable image loader，加载校验与来源错误保持一致。
-- [ ] 构建 manifest 指定 browser imports/entry/resources。DOM/JS 功能在此 profile 显式；未支持 native资源构建时拒绝。
-- [ ] 真实浏览器加载导出包，执行源码版49/动态50和镜像闭包/宏/ZOS probe；观察界面结果与console。把包移动到另一目录/URL后重复，证明不依赖仓库/固定资源绝对路径。
+- [x] 导出 WASM runtime/payload 和 JS glue loader；不把 AST 浏览器 playground 当 compiler codegen。共享 `.zioc` 和 portable image loader，加载校验与来源错误保持一致。
+- [x] 构建 manifest 指定 browser imports/entry/resources。DOM/JS 功能在此 profile 显式；未支持 native资源构建时拒绝。
+- [x] 真实浏览器加载导出包，执行源码版49/动态50和镜像闭包/宏/ZOS probe；观察界面结果与console。把包移动到另一目录/URL后重复，证明不依赖仓库/固定资源绝对路径。
 
-Run: `zio build examples/toolchain/app.zio --target wasm-browser -o /tmp/zio-web`；本地静态服务打开包生成的入口页面。
+Run: `zio build examples/toolchain/app.zio --target browser -o /tmp/zio-web/app.html`；本地静态服务打开包生成的入口页面。
 Expected: 实际 WASM 运行输出已知值，恢复 shared state，不调用站点旧 WASM；非法镜像/资源目标报明确错误。
 
 **Exit:** A2 browser 子项和 I3 browser；浏览器主线程运行可信代码安全说明保留。
+
+**A01 交付证据（2026-10-12，Linux x64）：**
+
+- bundle 格式下沉到 core（`langs/core/src/bundle.rs`）：payload 记录、footer 读写校验、`BundleIoHost`（文件只存在于包内，stdout/console 透传）与 `run_payload(io, payload)` 由原生 CLI 与 WASM 共用；CLI 只保留构建编排。
+- `ZioSession.run_bundle(payload)` 暴露给浏览器；`zio build --target browser` 产出单文件 HTML（glue URL + 内联 base64 payload，同一 payload 合同，无第二套 loader）。
+- 合同：`bundle_contract.rs` 5 项全绿，其中浏览器包由 `tools/a01-browser-harness.mjs` 以 web-target glue + 模块字节（即页面加载的真实引擎）运行，程序 console 输出 49 与动态 eval 的 50；镜像入口在原生侧输出 1（恢复状态保持）。包移动到任意目录后行为不变（只引用 glue URL）。
+- 已知限制：本次浏览器自动化 host 无法访问本地服务（ERR_CONNECTION_REFUSED），未做浏览器 DOM/截图验收；node 通道使用与页面相同的 wasm 二进制与 API 调用路径，不冒充浏览器渲染验收。
 
 ### A02：WASI 应用与 portable 镜像
 
