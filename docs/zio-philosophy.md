@@ -23,7 +23,7 @@ Experimental ZOS 子集，以及 `langs/core/src/bytecode.rs` 的字节码运行
 四层目录保持 `langs/`、`libs/`、`contribs/`、`apps/`：语言与工具链在
 `langs/`，Zio 库在 `libs/`，可信宿主与外部引擎适配在 `contribs/`，消费它们的
 应用在 `apps/`。Numa 持计算，Rill 持 CLI 组合，Loom 持 harness 组合；
-短名不等于已注册包 ID。Grove 是独立应用，不是语言完整发行的必需组成。
+短名不等于已注册包 ID。Groiz 是独立应用，不是语言完整发行的必需组成。
 目录与现状见[架构](zio-architecture.md)，历史切换证据见
 [目录计划](superpowers/plans/2026-10-07-language-first-layout.md)。
 
@@ -45,8 +45,8 @@ Zio 语言 = AST / bytecode 执行基础 + 核心 Experimental ZOS 子集
          + 显式 Zio 元循环 reader / evaluator / expand + 自举分析 / 编译器目标
          + 运行时镜像、bin / WASM 导出与完整开发发行目标
 官方 Zio 库 = Numa（计算） / Rill（CLI 组合） / Loom（Agent harness）
-独立应用 = Grove（消费语言与库，治理学习、评价、检查点与发布）
-依赖方向 = 库与 Grove → 语言；语言核心不反向依赖库或 Grove
+独立应用 = Groiz（消费语言与库，治理学习、评价、检查点与发布）
+依赖方向 = 库与 Groiz → 语言；语言核心不反向依赖库或 Groiz
 ```
 
 
@@ -68,7 +68,7 @@ Zio 语言 = AST / bytecode 执行基础 + 核心 Experimental ZOS 子集
 
 **推论**：不能把 Zio 固定为 Rust 业务的配置或编排层。领域算法、策略与应用业务首先用 Zio 表达；缺少能力时补齐可被其他程序复用的语言原语或库。
 
-**原理**：Rust 是当前引导运行时与必要宿主边界的实现语言，不是领域业务必须落入的层。原生实现仅承担语言执行、系统能力、可信隔离与有实测需求的计算原语；不添加 Grove 专用特殊形式来替代 Zio 应用实现。
+**原理**：Rust 是当前引导运行时与必要宿主边界的实现语言，不是领域业务必须落入的层。原生实现仅承担语言执行、系统能力、可信隔离与有实测需求的计算原语；不添加 Groiz 专用特殊形式来替代 Zio 应用实现。
 
 ### 定理 3: 宏是用户扩展 eval 的方式
 
@@ -82,9 +82,9 @@ DSL 无需修改核心；核心语义扩展仍须规格与两种执行路径的�
 
 **推论**：核心收敛职责，但不移除 ZOS。Numa 承担计算，Rill 承担命令行
 应用组织，Loom 承担模型与工具会话；学习目标、独立评价和发布治理属于
-Grove。三库独立演进，公共能力有真实复用需求才抽取，不先建设通用框架。
+Groiz。三库独立演进，公共能力有真实复用需求才抽取，不先建设通用框架。
 
-**原理**：稳定的语言语义与可独立演进的产品策略分开。Grove 可以在内部
+**原理**：稳定的语言语义与可独立演进的产品策略分开。Groiz 可以在内部
 采用库结构，但第一身份是独立应用，不是“通用学习库 + 可选产品壳”。
 
 ### 定理 5: 协议比实现重要
@@ -152,7 +152,7 @@ Zio 的核心特性构成一个自洽的整体，不是其他语言特性的组�
 |---|---|---|
 | Numa：数值数组/矩阵/向量与后端接口 | 复用 `libs/numa/vector.zio`、`apps/grove/workers/torch/` 的计算边界；连续 typed array 与公共计算接口按需求扩展，不持训练或发布治理 | 当前组件 Experimental；Numa Planned |
 | Rill：CLI 应用组织 | `libs/rill/cli.zio` 已有参数、子命令与帮助解析组件；终端 I/O、退出状态和独立发行按实际合同验收 | 现有组件；独立发行 Planned，本轮未实跑 |
-| Loom 与 Grove | Loom 持通用 harness 组合；Grove 持应用策略、学习与发布治理，不进入语言发行必需依赖 | 现有组件与目标分开，见特性矩阵 |
+| Loom 与 Groiz | Loom 持通用 harness 组合；Groiz 持应用策略、学习与发布治理，不进入语言发行必需依赖 | 现有组件与目标分开，见特性矩阵 |
 | Datalog / Entity / Protocol / 集合 | 保留已有数据表达与占位模块；领域执行不因能加载文件而成立 | 各项状态见特性矩阵 |
 
 ### 4.2 元循环求值器与编译器自举
@@ -162,7 +162,7 @@ Zio 的核心特性构成一个自洽的整体，不是其他语言特性的组�
 元循环求值器与自举编译器
 是相关但不同的交付：前者用 Zio 表达 eval/apply，后者由编译器产物编译自身。
 L02 已验收完整 Zio 前端在 fresh context 编译自身，Stage 1/2/3 规范制品字节相同，
-并执行已知答案；Rust 引导与执行机制保留。Zio 编写 LSP、编辑器或 Grove 是应用自托管，
+并执行已知答案；Rust 引导与执行机制保留。Zio 编写 LSP、编辑器或 Groiz 是应用自托管，
 不代替这两项验收，也不把便携字节码固定点泛化为镜像或完整发行。
 
 ### 4.3 运行时镜像与四类产物
@@ -191,7 +191,7 @@ WASM-browser 和 WASM-WASI，不把 bin/WASM 拆成两个顶层类别。
 
 完整开发发行目标一次配齐解释器、编译器、LSP、语法/编辑器资源、WASM 与文档，
 不是让用户逐个补装才能获得完整工具链。最小应用产物可裁剪开发工具与未使用
-引擎；Grove 不随语言发行强制装配。执行依赖与验收以
+引擎；Groiz 不随语言发行强制装配。执行依赖与验收以
 [主计划](superpowers/plans/2026-10-11-zio-language-toolchain.md)为准。
 ---
 
@@ -220,7 +220,7 @@ ZOS（Zio Object System）是 Zio 的统一运行时对象模型。它不是传�
 - Actor / 并发模型（→ 库: `zio-actor`）
 - Graph / 图分析（→ 库: `zio-graph`）
 
-这些是职责名称，不是全部已实现的库名。AI/harness 与独立 Grove 应用
+这些是职责名称，不是全部已实现的库名。AI/harness 与独立 Groiz 应用
 可复用 ZOS，但会话、训练、持久化和发布规则不属于对象语义。
 
 ---
@@ -230,11 +230,11 @@ ZOS（Zio Object System）是 Zio 的统一运行时对象模型。它不是传�
 ```text
 当前：zio-cli / loom native adapter / grove-app
                   ↓
-      Grove 内部宿主 + CPU 后端 / Zio 标准库与领域组件
+      Groiz 内部宿主 + CPU 后端 / Zio 标准库与领域组件
                   ↓
       zio-core：AST eval/apply、宏、核心值、Experimental ZOS 子集
 
-目标：独立 Grove 应用、其他 CLI / 嵌入 / 工具链入口
+目标：独立 Groiz 应用、其他 CLI / 嵌入 / 工具链入口
                   ↓
       计算 / CLI 组织 / harness（模型、工具、ACP）公共基础设施
                   ↓

@@ -11,7 +11,7 @@ services:
   grove:
     build:
       context: .
-      dockerfile: Dockerfile.grove
+      dockerfile: Dockerfile.groiz
     restart: unless-stopped
     environment:
       GROVE_ROOT: /srv/grove/data
@@ -26,7 +26,7 @@ services:
       - "8787"
     volumes:
       - grove-data:/srv/grove/data
-    # Health lives in Dockerfile.grove's HEALTHCHECK; a second definition
+    # Health lives in Dockerfile.groiz's HEALTHCHECK; a second definition
     # here would drift from the image's.
     # Training needs user namespaces; Docker's default seccomp makes
     # unshare(CLONE_NEWUSER) fail with EPERM. Lifting only the seccomp

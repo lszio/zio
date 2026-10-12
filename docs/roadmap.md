@@ -18,7 +18,7 @@ Zio 编译器、自举对照测试、LSP 与 Tree-sitter/编辑器资源。可�
 
 **目标**：Zio 语义不依附 Rust trait；Rust 提供引导与机制，Zio 表达 reader、
 eval/apply、展开、分析与编译。开发发行一次配齐解释器、编译器、LSP、语法/编辑器资源、
-WASM 与文档；最小应用产物不强制带开发工具、未用引擎或 Grove。
+WASM 与文档；最小应用产物不强制带开发工具、未用引擎或 Groiz。
 
 **排期依据**：按合同依赖与真实验收推进。旧版本号、估时、LOC 和测试数量
 不作为当前交付承诺；测试用于证明行为，不以凑数量定义完成。
@@ -29,17 +29,17 @@ WASM 与文档；最小应用产物不强制带开发工具、未用引擎或 Gr
 
 1. **语义独立，保持四层目录** — `langs/` 持语言与工具链，`libs/` 持 Zio 库，
    `contribs/` 持可信宿主/引擎/工具适配，`apps/` 持应用。ZOS 保留核心，
-   Numa/Rill/Loom 与独立 Grove 只消费语言，不反向定义语义。
+   Numa/Rill/Loom 与独立 Groiz 只消费语言，不反向定义语义。
 2. **先做对再做快** — 复用已有 AST、bytecode 和 Zio compiler；
    元循环/编译行为逐项对照，优化 ZIR/JIT 与机器码 AOT 不作为首轮完成前提。
 3. **语言双主线与应用分开** — 元循环求值器/自举和镜像/导出分别验收，
-   汇合到完整发行；Grove 的应用演化另循产品计划，不阻塞语言发行。
+   汇合到完整发行；Groiz 的应用演化另循产品计划，不阻塞语言发行。
 
 ## 当前目录切换与后续实现（2026-10-07）
 
 该日期标题保留原引用：2026-10-07 的[目录计划](superpowers/plans/2026-10-07-language-first-layout.md)
 记录首轮物理布局切换及当时实跑，不是当前工作包。四层目录保持，不另起迁移布局。
-Grove 的存储、调度、评价和治理等 Rust 业务尚未整体迁成 Zio；可信安全和后端
+Groiz 的存储、调度、评价和治理等 Rust 业务尚未整体迁成 Zio；可信安全和后端
 机制保留必要 Rust 实现。`libs/rill/cli.zio` 已有 CLI 解析组件，独立发行与完整合同另行验收。
 编译器、LSP、Tree-sitter 已有来源，不再把它们写成完全不存在。
 
@@ -344,7 +344,7 @@ cargo clippy → warning-free target
 **论文/汇报**：工作坊论文（L3 后）→ 完整论文（L4 后）；内部里程碑
 汇报 ×4 + 外部技术分享。规划见 synthesis-plan 第 5/6/7 节。
 
-### Grove 独立应用：新主线 Planned，历史 P1–P4 为组件基础
+### Groiz 独立应用：新主线 Planned，历史 P1–P4 为组件基础
 
 产品定位与当前优先级以[整体设计](self-learning-architecture.md)和 [ADR-019](adrs.md#adr-019-grove-独立应用与同像性逻辑演化)
 为准，不再采用学习库优先、可选产品壳的交付顺序：
@@ -432,10 +432,10 @@ P1 证明的是工程闭环（真实存储、真实信号生命周期、真实�
 | P5: 宏层 API | Phase 5 W1 | `q` defmacro + query composition |
 | **MVP** | **Phase 5** | 内存 Datalog, 可查询, 可时间旅行 |
 
-### Harness 与 Grove agent
+### Harness 与 Groiz agent
 
 旧 `zio-agent` 框架蓝图由 H00/G01/G02 收敛：公共 harness 持有模型与工具
-会话、预算/取消，Zio agent 逻辑实际驱动步骤，Grove 持有学习和版本治理。
+会话、预算/取消，Zio agent 逻辑实际驱动步骤，Groiz 持有学习和版本治理。
 `libs/loom/agent.zio` 的 canned echo 已由真实 `agent-run` 循环替换：它决定重试
 与停止，宿主通过 `harness-complete`/`harness-execute-zio` 提供模型调用与受限
 执行（见 `apps/grove/native/app/src/agent.rs`、`apps/grove/native/learning/src/execution.rs`）。G02 已用 `omp acp` +
@@ -459,7 +459,7 @@ ACP 客户端/教师适配按 G06 验收，服务端按 G07 验收；不另起�
 ## 依赖图
 
 下面仅保留旧 Phase 的历史依赖示意。当前语言双主线以本页前部与新主计划
-为准；Grove 不等待完整 VM/JIT、编辑器或镜像才能推进独立应用验收。
+为准；Groiz 不等待完整 VM/JIT、编辑器或镜像才能推进独立应用验收。
 
 ```
 Phase 1 ──── Span ───────────────────→ Phase 1.2 Reader 扩展 ───→ Phase 3 Reader Macro

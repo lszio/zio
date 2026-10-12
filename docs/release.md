@@ -40,8 +40,8 @@ Minimal application artifacts are a different product:
   require explicit reconstruction or saving must be rejected; restoring an
   image must obtain fresh host grants rather than restoring authority.
 
-Grove is an optional independent application, not a required component of the
-language distribution target. The current installer includes Grove; the
+Groiz is an optional independent application, not a required component of the
+language distribution target. The current installer includes Groiz; the
 archive layout and commands below describe that existing fact.
 
 ## Before tagging
@@ -59,7 +59,7 @@ rather than assume it:
 ```bash
 cd "$(mktemp -d)"
 /path/to/dist/zio/bin/zio script.zio          # language
-/path/to/dist/zio/bin/grove --help            # product launcher
+/path/to/dist/zio/bin/groiz --help            # product launcher
 ```
 
 ## Cutting a release
@@ -92,13 +92,13 @@ one.
 ```
 bin/zio          the language: REPL, script, bounded candidate runner, app launcher
 bin/zio-lsp      the language server
-bin/grove        the product launcher; grants come from its own flags
+bin/groiz        the product launcher; grants come from its own flags
 bin/zio-env.sh   PATH and ZIO_PATH for the installed tree
 share/zio/       stdlib, libraries, compiler, applications
 share/tensor/    the tensor backend resource
 ```
 
-`grove` decides capabilities from its own flags and hands them to the
+`groiz` decides capabilities from its own flags and hands them to the
 Zio entry as one keyword map. It never reads them out of the source it
 is about to run — a candidate that could name its own tensor backend
 would make the isolation profile advisory.
@@ -109,6 +109,20 @@ would make the isolation profile advisory.
 `crates` job is `continue-on-error`, because a package already published
 at this version is a skip rather than a failure, and a token without
 publish scope should not stop the GitHub release from happening.
+
+## Publish surfaces
+
+| Surface | Artifact | Job |
+|---|---|---|
+| Executables | Five-platform archives (`bin/zio`, `bin/groiz`) plus checksums | `native` |
+| Executable container | `ghcr.io/lszio/zio` with `zio` on PATH | `docker` |
+| Rust execution library | [`zio-core`](https://crates.io/crates/zio-core) on crates.io (with `zio-host`, `zio-cli`, `zio-lsp`); `wasm` feature builds the browser engine | `crates` |
+| npm package | `@lszio/zio-core` — the same engine as WebAssembly; `ZioSession` locates and loads the Zio runtime in browsers and Node | `npm` (needs `NPM_TOKEN`) |
+| Single-file apps | `zio build INPUT --target native -o APP` | produced by users |
+
+The npm job publishes only after `verify`; the version is synced from the
+tag at staging time. `NPM_TOKEN` must exist as a repository secret or
+that job fails while every other job stands.
 
 ## What CI checks that a local run often skips
 

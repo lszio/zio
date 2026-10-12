@@ -18,10 +18,10 @@ cleanup() {
 }
 trap cleanup EXIT
 
-export GROVE_TOKEN_READER=reader-test
-export GROVE_TOKEN_OPERATOR=operator-test
-export GROVE_TOKEN_PUBLISHER=publisher-test
-export GROVE_TOKEN_ANNOTATOR=annotator-test
+export GROIZ_TOKEN_READER=reader-test
+export GROIZ_TOKEN_OPERATOR=operator-test
+export GROIZ_TOKEN_PUBLISHER=publisher-test
+export GROIZ_TOKEN_ANNOTATOR=annotator-test
 compose up -d --build
 compose ps
 

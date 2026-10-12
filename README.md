@@ -43,7 +43,7 @@ Zio = Lisp 核心（同像性 + eval/apply + 宏）
 核心原则：**核心最小，其余是库**。Zio 扩展库位于 `libs/`，能力成熟度
 各异并以[特性矩阵](docs/feature-matrix.md)为准：persistent 集合与
 Datalog 合取查询子集为 Experimental，规则与聚合等扩展仍为 Planned。
-已有 Zio agent 生成/执行与学习合同见特性矩阵，不等于 Grove 业务整体迁移完成。
+已有 Zio agent 生成/执行与学习合同见特性矩阵，不等于 Groiz 业务整体迁移完成。
 core 内置的并发原语（`future-call` / `chan`）当前是同步占位语义，
 见 [ADR-012](docs/adrs.md)。
 
@@ -84,31 +84,41 @@ ZIO_PROFILE=release tools/install.sh /opt/zio
 
 source /tmp/zio/bin/zio-env.sh    # PATH 与 ZIO_PATH
 /tmp/zio/bin/zio program.zio      # 语言
-/tmp/zio/bin/grove --help         # 产品
+/tmp/zio/bin/groiz --help         # 产品
 ```
 
-当前原生发行树与浏览器 WASM 分开构建；installer 同时包含 Grove 启动器，
-但 Grove 是可选独立应用，不是语言完整发行目标的必要组成。规划中的应用
+当前原生发行树与浏览器 WASM 分开构建；installer 同时包含 Groiz 启动器，
+但 Groiz 是可选独立应用，不是语言完整发行目标的必要组成。规划中的应用
 bin 首轮是 bytecode + runtime 打包，不是机器码 AOT；应用 bin/WASM 不携带
 LSP 等开发工具，动态能力按真实依赖保留。WASM 浏览器与 WASI 目标分别验收。
 外部语言引擎尚不能宣称已全套捆绑。
 
-Grove 源码在独立仓库 [lszio/grove](https://github.com/lszio/grove)，本仓库以
+Groiz 源码在独立仓库 [lszio/groiz](https://github.com/lszio/groiz)，本仓库以
 submodule 挂载于 `apps/grove`（克隆用 `--recurse-submodules`）；构建与测试经
 `cargo test --manifest-path apps/grove/Cargo.toml --workspace`。
 
 [`docs/release.md`](docs/release.md) 记录现有发行方式、目标边界、
 打标签、GitHub Actions 发布流水线与 crates.io 发布流程。
 `push v*` 标签触发 `.github/workflows/release.yml`：先校验标签与 workspace
-版本一致，再跑完整测试（含 submodule 固定的 Grove 合同）与自举契约，通过后
+版本一致，再跑完整测试（含 submodule 固定的 Groiz 合同）与自举契约，通过后
 构建五个平台目标、发布四个 crate、发布 npm 包
 [`@lszio/zio-core`](https://www.npmjs.com/package/@lszio/zio-core)（WASM 引擎）、
 推送 Docker 镜像 `ghcr.io/lszio/zio`（含 `zio` 可执行文件），
 并附带校验和与 WASM 产物创建 GitHub Release。`NPM_TOKEN` 需配置为仓库 secret。
 
+发布面一览：
+
+- **可执行文件**：五平台归档（`tools/install.sh` 装配，`bin/zio`、`bin/groiz`）、
+  Docker 镜像 `ghcr.io/lszio/zio`，以及 `zio build --target native` 的单文件应用。
+- **Rust 执行库**：[`zio-core`](https://crates.io/crates/zio-core) crate——嵌入
+  宿主执行或编译 Zio 代码（`wasm` feature 构建浏览器引擎）；`zio-host`
+  通用传输/宿主机制随附发布。
+- **npm 包**：`@lszio/zio-core`——同一引擎的 WASM 构建，浏览器或 Node 中
+  定位并加载 Zio 运行时（`ZioSession`），与原生 CLI 行为一致。
+
 ## 落地页
 
-`apps/site/` 是语言介绍、文档和 WASM playground，采用 Astro 静态构建；站点中的 Grove 介绍路由不等于独立 `apps/grove/` 产品。
+`apps/site/` 是语言介绍、文档和 WASM playground，采用 Astro 静态构建；站点中的 Groiz 介绍路由不等于独立 `apps/grove/` 产品。
 
 ```bash
 cd apps/site
@@ -120,7 +130,7 @@ bun run build      # 产出 apps/site/dist
 - 主要入口：`/intro/`（语言介绍）、`/syntax/`（语法文档）、`/playground/`（可编辑多行源码、真实 WASM 执行）。
 - `/reference/` 库参考在构建时扫描 `libs/**/*.zio` 的文件头与
   [`;; doc:` 注释](docs/libdoc-convention.md)自动生成——源码注释是唯一文档来源。
-- 文档：`/docs/`、`/book/`、`/blog/` 从仓库 Markdown 构建；Grove 介绍在独立的 `/grove/` 路由，应用源码在 `apps/grove/`。
+- 文档：`/docs/`、`/book/`、`/blog/` 从仓库 Markdown 构建；Groiz 介绍在独立的 `/grove/` 路由，应用源码在 `apps/grove/`。
 - 引擎：`apps/site/public/wasm/` 是提交的 WASM 产物。改过 `langs/core/src/` 或
   `libs/std/core.zio` 后先跑 `./tools/build-wasm.sh`，再构建站点，避免运行旧引擎。
 - 路径前缀来自 `astro.config.mjs` 的 `base`；WASM 加载沿用 `src/lib/engine.ts` 的
@@ -132,7 +142,7 @@ bun run build      # 产出 apps/site/dist
 
 运行与预览环境见 [docs/deployment.md](docs/deployment.md)。
 
-Grove 是独立仓库 [lszio/grove](https://github.com/lszio/grove)，以 submodule
+Groiz 是独立仓库 [lszio/groiz](https://github.com/lszio/groiz)，以 submodule
 形式挂载在 `apps/grove/`。`apps/grove/main.zio` 是实际 Zio 入口，
 由宿主按 keyword 授权预算后显式调用；CLI 分发走 `libs/rill/cli.zio`，
 HTTP 路由在 `apps/grove/api.zio`。
@@ -145,13 +155,13 @@ HTTP 路由在 `apps/grove/api.zio`。
 
 # 用安装后的发行版（无 checkout 依赖）
 tools/install.sh /tmp/zio
-GROVE_ROOT=/tmp/grove /tmp/zio/bin/grove --help
+GROIZ_ROOT=/tmp/groiz /tmp/zio/bin/groiz --help
 ```
 
 产品命令：`demo`（dual/population/modular）、`inspect`、`checkpoint`、`fork`、
 `resume`、`compare`、`select`、`approve`、`decline`、`run`、`serve`。
 
-能力边界由 `tools/install.sh` 生成的 `bin/grove` 启动器显式授予，
+能力边界由 `tools/install.sh` 生成的 `bin/groiz` 启动器显式授予，
 并作为一张 keyword map 交给 Zio 入口；启动器不会从它即将运行的源码里
 读取任何授权信息——否则候选程序指定自己的张量后端会让隔离形同虚设。
 
@@ -176,8 +186,8 @@ python3 -m venv .venv
 cargo build -p grove-app --bin grove --features http
 
 # 3. 产品服务（令牌从环境变量读取，绝不从 argv 读取）
-export GROVE_TOKEN_READER=… GROVE_TOKEN_ANNOTATOR=…
-export GROVE_TOKEN_OPERATOR=… GROVE_TOKEN_PUBLISHER=…
+export GROIZ_TOKEN_READER=… GROIZ_TOKEN_ANNOTATOR=…
+export GROIZ_TOKEN_OPERATOR=… GROIZ_TOKEN_PUBLISHER=…
 ./target/debug/grove serve --root /tmp/grove-data --bind 127.0.0.1:8787
 #   → http://127.0.0.1:8787/ 打开产品界面
 ```
@@ -238,7 +248,7 @@ Experimental，状态见[特性矩阵](docs/feature-matrix.md)。
 | # | 定理 | 状态 |
 |---|------|------|
 | 1 | **所有 mutable 状态必须显式** — 无 thread-local 全局变量 | ✅ 已达成 |
-| 2 | **语言先行，库与应用用 Zio 实现** — Rust 承担引导运行时与必要通用原语 | 架构已确定；现有 Grove Rust 业务尚待迁移 |
+| 2 | **语言先行，库与应用用 Zio 实现** — Rust 承担引导运行时与必要通用原语 | 架构已确定；现有 Groiz Rust 业务尚待迁移 |
 | 3 | **宏是用户扩展 eval 的方式** — 没有特殊形式不可用宏替代 | ✅ 已达成 |
 | 4 | **核心最小，其余是库** — 领域能力不进入 Core | ✅ ZOS 规范中 |
 | 5 | **协议比实现重要** — EvalEngine/MOP 是扩展契约 | ✅ 规范中 |

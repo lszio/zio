@@ -73,7 +73,7 @@ Zio 属于 Lisp 家族，是一门语义独立的通用编程语言；Rust 提�
 
 外部解释型与编译型语言计划通过引擎库接入；`inline` 是外语代码入口，不等于必然 `eval`，也不是任意 Rust 源码直接求值。现有 JS bridge 仅在 WASM 提供，JS 点号名称解析仅支持解释执行，原生 CLI 无 JS；外部引擎并未全套捆绑。
 
-完整开发包目标是一次配齐解释器、编译器、LSP、语法资源、WASM 与文档；当前原生包与浏览器引擎仍分开构建。应用 bin/WASM 不带 LSP，动态能力按真实依赖保留；bin 首轮是 bytecode + runtime 而非机器码 AOT，浏览器与 WASI 分别验收。Grove 是可选独立应用，当前 installer 含它不意味着语言发行必须含它。
+完整开发包目标是一次配齐解释器、编译器、LSP、语法资源、WASM 与文档；当前原生包与浏览器引擎仍分开构建。应用 bin/WASM 不带 LSP，动态能力按真实依赖保留；bin 首轮是 bytecode + runtime 而非机器码 AOT，浏览器与 WASI 分别验收。Groiz 是可选独立应用，当前 installer 含它不意味着语言发行必须含它。
 
 以上为规划，不是新增可用命令。详见[语言与工具链设计](/docs/superpowers/specs/2026-10-11-zio-language-toolchain-design/)与[执行计划](/docs/superpowers/plans/2026-10-11-zio-language-toolchain/)；现有能力以[特性矩阵](/docs/feature-matrix/)为准。
 

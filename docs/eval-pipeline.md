@@ -78,16 +78,16 @@ ZIR、bytecode VM 与 JIT 尚未实现；其批准设计和状态见
 
 ### 1.4 生成代码与真实 agent 逻辑
 
-`eval` 只执行程序，不等于模型/工具会话循环。Grove 的计划主线复用本执行器，
+`eval` 只执行程序，不等于模型/工具会话循环。Groiz 的计划主线复用本执行器，
 由 Zio 程序实际控制任务步骤，再由 Loom 装配模型、工具、会话、预算、
 取消、provider 与 ACP；生成代码的解析、宏/依赖传递权限检查与隔离执行
-是另一明确边界。Loom 不持 Grove 的学习目标、独立评价或发布治理。
+是另一明确边界。Loom 不持 Groiz 的学习目标、独立评价或发布治理。
 当前 `macroexpand` 只展开外层形式，不是完整编译前端；Sexp 转 Value 再返回
 会丢失原来源，不能用打印后的 AST 声称已经保留可审计的执行位置。
 计划增加可关闭的执行观测：开启时关联程序版本、源码/表达式、分支与能力
 调用；关闭时不构造轨迹对象，不把学习策略或模型协议放入核心。
 
-Zio 库目标采用 Zio 实现并归入 `libs/`：Numa 持计算，Rill 持 CLI 组合，Loom 持 harness 组合。现有 Rust 通用传输/宿主合同位于 `contribs/native/loom/`，不是 Zio 库本体；普通语言 CLI 位于 `langs/cli/`，不装配 LLM replay。Grove 是 `apps/grove/` 独立应用，其 Rust 业务仍待后续迁为 Zio；语言介绍、文档与 playground 位于 `apps/site/`。历史目录切换不证明功能交付；L02 首轮便携工具链自举另有真实验收，完整库、Tree-sitter、LSP 和发行分别核对[特性矩阵](feature-matrix.md)。当前合同见[架构](zio-architecture.md)与[批准目录计划](superpowers/plans/2026-10-07-language-first-layout.md)。短名不等于已注册包 ID。
+Zio 库目标采用 Zio 实现并归入 `libs/`：Numa 持计算，Rill 持 CLI 组合，Loom 持 harness 组合。现有 Rust 通用传输/宿主合同位于 `contribs/native/loom/`，不是 Zio 库本体；普通语言 CLI 位于 `langs/cli/`，不装配 LLM replay。Groiz 是 `apps/grove/` 独立应用，其 Rust 业务仍待后续迁为 Zio；语言介绍、文档与 playground 位于 `apps/site/`。历史目录切换不证明功能交付；L02 首轮便携工具链自举另有真实验收，完整库、Tree-sitter、LSP 和发行分别核对[特性矩阵](feature-matrix.md)。当前合同见[架构](zio-architecture.md)与[批准目录计划](superpowers/plans/2026-10-07-language-first-layout.md)。短名不等于已注册包 ID。
 
 ---
 
@@ -262,7 +262,7 @@ ZIR 与 JIT 仍是规划；字节码 VM 和 Zio 前端已按下节的首轮合�
 | Zio 前端 | Experimental / L01–L02 verified | Zio reader → expand → 绑定/尾位置/capture 分析；源码与三执行面合同对照 |
 | 最小编译器与后端 | Experimental | Zio 编译器生成 v1 便携字节码；Rust VM 复用核心值、宿主和 ZOS 分派 |
 | 首轮工具链自举 | L02 verified | fresh context 安装完整编译前端；Stage 1/2/3 规范文件字节相同，执行 sum=10、closure=15 |
-| 后续性能路线 | Planned | 热点测量后再增加优化 ZIR/JIT，不作为 Grove G1 或第一轮自举的前置任务 |
+| 后续性能路线 | Planned | 热点测量后再增加优化 ZIR/JIT，不作为 Groiz G1 或第一轮自举的前置任务 |
 
 ### 4.2 引导执行与编译器的区别
 
@@ -287,4 +287,4 @@ AST evaluator 保留为引导环境和语义对照，普通解释执行不依赖
 | [zos-spec.md](zos-spec.md) | ZOS 完整规范 |
 | [zio-philosophy.md](zio-philosophy.md) | 语言哲学和设计定理 |
 | [adrs.md](adrs.md) | 架构决策记录（特别是 ADR-005, 006, 008） |
-| [superpowers/plans/2026-10-05-zio-grove-convergence.md](superpowers/plans/2026-10-05-zio-grove-convergence.md) | 当前实现依赖与真实验收；工具链独立于 Grove 主线 |
+| [superpowers/plans/2026-10-05-zio-grove-convergence.md](superpowers/plans/2026-10-05-zio-grove-convergence.md) | 当前实现依赖与真实验收；工具链独立于 Groiz 主线 |

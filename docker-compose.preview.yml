@@ -12,7 +12,7 @@ services:
   grove:
     build:
       context: .
-      dockerfile: Dockerfile.grove
+      dockerfile: Dockerfile.groiz
     restart: unless-stopped
     # Training needs user namespaces; Docker's default seccomp filter makes
     # unshare(CLONE_NEWUSER) fail with EPERM (see docker-compose.dokploy.yml).

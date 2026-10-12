@@ -450,10 +450,10 @@ fn app_context(launch: &AppLaunch) -> Result<EvalContext, EvalError> {
     // Only the environment names the application actually reads are
     // visible, and only the token names the launcher declares.
     for name in [
-        "GROVE_TOKEN_READER",
-        "GROVE_TOKEN_ANNOTATOR",
-        "GROVE_TOKEN_OPERATOR",
-        "GROVE_TOKEN_PUBLISHER",
+        "GROIZ_TOKEN_READER",
+        "GROIZ_TOKEN_ANNOTATOR",
+        "GROIZ_TOKEN_OPERATOR",
+        "GROIZ_TOKEN_PUBLISHER",
     ] {
         policy.environment.insert(name.to_string());
     }
