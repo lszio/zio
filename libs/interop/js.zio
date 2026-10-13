@@ -1,0 +1,36 @@
+;; Zio wrapper over the native JavaScript engine. The engine crosses by
+;; value for primitives and by opaque handle for objects; every rule the
+;; boundary enforces is re-exported here so Zio code reads as one surface.
+;;
+;; Values: integers inside JS's safe range are exact, a BigInt above it
+;; stays exact as an integer, non-finite numbers are refused by name, and
+;; an object crosses as a `#js<engine>:<slot>` handle the engine owns.
+
+(export new-engine eval call invoke get put on eval-property)
+
+(defn new-engine []
+  (js/new 0))
+
+(defn eval [engine source]
+  (js/eval engine source))
+
+(defn call [engine fn-handle & args]
+  (js/call engine fn-handle args))
+
+;; Call a method with its receiver, the way JS reached it.
+(defn invoke [engine obj-handle method-handle & args]
+  (js/call-this engine obj-handle method-handle args))
+
+(defn get [engine obj-handle property]
+  (js/get engine obj-handle property))
+
+(defn put [engine obj-handle property value]
+  (js/set engine obj-handle property value))
+
+(defn on [engine name callback]
+  (js/on engine name callback))
+
+;; Convenience: evaluate a source string and read one property in one
+;; step, the common "call into JS" shape.
+(defn eval-property [engine source property]
+  (get engine (eval engine source) property))

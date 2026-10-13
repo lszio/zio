@@ -73,6 +73,24 @@ footer；`--target browser` 产出单个 HTML（glue URL + 内联 base64 payload
 在 WASI 构建期拒绝。
 
 
+## 原生 JavaScript 互操作（J00）
+
+`libs/interop/js.zio` 包装一个嵌入式 QuickJS 引擎（`js/new`、`js/eval`、
+`js/call`、`js/invoke`、`js/get`、`js/set`、`js/on`）。跨语言边界是显式的：
+
+- 整数在 JS 安全范围内精确；`2^53` 以上的 BigInt 精确过界为整数，绝不折叠；
+  非有限数（NaN/±Infinity）按名拒绝。
+- 字符串按值过界；对象与 Promise 是**不透明句柄**，带所属引擎 id，跨引擎
+  使用按名拒绝；Promise 不隐式 await。
+- 方法用 `js/invoke`（或包装的 `invoke`）带接收者调用，保持 `this`。
+- 回调（`js/on`）同步；失败的宿主回调在 Zio 边界以名报错。
+- 引擎默认没有 FS/network/process 权限；无限循环经 interrupt handler 中断、
+  heap cap 经 memory limit 触发，均为具名错误且 context 事后可重用。
+
+```sh
+zio --lib-dir . examples/interop/js.zio
+```
+
 ## 表达式与值
 
 程序是零个或多个表达式；顶层依次求值，结果为最后一个值，空程序返回 `nil`。`;` 开始行注释。非空列表 `(head arg...)` 是调用、特殊形式或宏调用；空调用列表 `()` 求值为 `nil`，但引用的空列表 `'()` 是列表值，不等同于 `nil`。

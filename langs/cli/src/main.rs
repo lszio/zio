@@ -14,6 +14,7 @@
 
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::sync::Arc;
 
 use zio_core::bootstrap::{ModuleRoots, eval_source, language_context};
@@ -55,6 +56,12 @@ fn repl_ctx() -> Result<EvalContext, EvalError> {
     make_ctx(language_roots(&[])?)
 }
 
+fn repl_ctx_rc() -> Result<Rc<EvalContext>, EvalError> {
+    let ctx = Rc::new(repl_ctx()?);
+    zio_js::interop::register(Rc::clone(&ctx));
+    Ok(ctx)
+}
+
 // ── Script runner ───────────────────────────────────────────────
 
 /// Run a script in the language context, without application host bindings.
@@ -89,7 +96,9 @@ fn run_script(path: &str, extra_roots: &[PathBuf]) -> Result<Value, EvalError> {
 
 /// A script's own directory is granted first, so a script sitting next to
 /// its libraries can `require` them without any ambient configuration.
-fn script_ctx(path: &str, extra_roots: &[PathBuf]) -> Result<EvalContext, EvalError> {
+/// The context is shared so the native JS bindings (J00) can own it and
+/// call back into the interpreter from inside a QuickJS callback.
+fn script_ctx(path: &str, extra_roots: &[PathBuf]) -> Result<Rc<EvalContext>, EvalError> {
     let mut roots = extra_roots.to_vec();
     if let Some(parent) = Path::new(path)
         .parent()
@@ -97,7 +106,9 @@ fn script_ctx(path: &str, extra_roots: &[PathBuf]) -> Result<EvalContext, EvalEr
     {
         roots.push(parent.to_path_buf());
     }
-    make_ctx(language_roots(&roots)?)
+    let ctx = Rc::new(make_ctx(language_roots(&roots)?)?);
+    zio_js::interop::register(Rc::clone(&ctx));
+    Ok(ctx)
 }
 
 // ── Bounded candidate runner ────────────────────────────────────
@@ -509,7 +520,7 @@ fn run_app(launch: &AppLaunch, argv: &[String]) -> Result<Value, EvalError> {
 // ── REPL ────────────────────────────────────────────────────────
 
 fn run_repl() {
-    let ctx = match repl_ctx() {
+    let ctx = match repl_ctx_rc() {
         Ok(ctx) => ctx,
         Err(e) => {
             eprintln!("Error: {e}");

@@ -11,6 +11,8 @@ readme = "../../README.md"
 [dependencies]
 zio-core = { path = "../core" }
 zio-host = { path = "../../contribs/native/host" }
+# Native JS interop (J00): the engine binding plus its Zio surface.
+zio-js = { path = "../../contribs/native/js" }
 im = "15.1.0"
 
 # The crate target stays `zio-cli` on purpose. Declaring `[[bin]] name =

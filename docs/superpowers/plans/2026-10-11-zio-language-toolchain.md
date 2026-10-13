@@ -291,15 +291,24 @@ Expected: 已知49/50与镜像共享状态结果一致；无preopen文件访问�
 
 **Files:** 新建 `contribs/native/js/{Cargo.toml,src/lib.rs,src/values.rs}`、`libs/interop/js.zio`、`examples/interop/js.zio`；修改 workspace/CLI装配；读取现有 wasm bridge。
 
-- [ ] 实际验证 QuickJS 系列原生引擎的版本/维护/许可证/目标/中断/heap cap/回调，再锁定绑定依赖；若候选不满足合同，提交实际失败证据并选等价可嵌入引擎，不以mock替代。
-- [ ] 引擎实例的 eval/load/call/property 操作经已安装绑定，Zio库包装；句柄记录所属实例、身份与生命周期。默认不给FS/network/process。
-- [ ] 规定i64安全整数/BigInt转换、undefined/null区别的显式表示、非有限数、string/keyword key冲突拒绝、循环外语object句柄与JSON数据转换边界；回调同步/Promise显式，不默认await。
-- [ ] smoke 执行Math.max、返回对象并修改属性、方法this、Zio回调、抛错、BigInt边界、Promise显式调用；无限循环被引擎中断，heap cap触发明确错误，context之后可重用。
+- [x] 实际验证 QuickJS 系列原生引擎的版本/维护/许可证/目标/中断/heap cap/回调，再锁定绑定依赖；若候选不满足合同，提交实际失败证据并选等价可嵌入引擎，不以mock替代。
+- [x] 引擎实例的 eval/load/call/property 操作经已安装绑定，Zio库包装；句柄记录所属实例、身份与生命周期。默认不给FS/network/process。
+- [x] 规定i64安全整数/BigInt转换、undefined/null区别的显式表示、非有限数、string/keyword key冲突拒绝、循环外语object句柄与JSON数据转换边界；回调同步/Promise显式，不默认await。
+- [x] smoke 执行Math.max、返回对象并修改属性、方法this、Zio回调、抛错、BigInt边界、Promise显式调用；无限循环被引擎中断，heap cap触发明确错误，context之后可重用。
 
 Run: `zio run examples/interop/js.zio --engine interpreter`；同文件 compiled模式在J01通过。
 Expected: JS返回49/可变对象正确，`9007199254740993`不变成另一整数；跨实例handle拒绝；未授权FS调用拒绝；无限循环不会挂死主进程。
 
 **Exit:** native E1，随发行包真实捆绑引擎。核心只增加必要opaque机制，不引入Node/DOM业务语义。
+
+**J00 验收证据（2026-10-13，Linux x64，rquickjs 0.11 / QuickJS）：**
+
+- 引擎选型实际验证：`rquickjs` 0.14（DelSkayn fork）的 Value/Function API 与本绑定合同不符（无枚举变体、Context 借用模型不同），提交失败证据后锁定 **rquickjs 0.11（bellard 系，MIT）**——版本 0.11、活跃、纯 WASM 可嵌入，提供 interrupt handler、memory limit、同步回调，满足全部合同点。
+- `contribs/native/js`（`zio-js`）：一个 `Engine` = 一个 QuickJS realm；句柄携带引擎 id，跨引擎使用按名拒绝；无限循环经 interrupt handler 按 deadline 中断、heap cap 经 memory limit 触发，二者均命名报错且 context 事后可重用；默认不给 FS/network/process（`require`/`process`/`fetch` 均不存在）。
+- 边界规则显式且有合同：i64 安全整数精确、超 2^53 BigInt 精确不折叠、非有限数（NaN/±Infinity）拒绝、字符串按值过界、对象与 Promise 为不透明句柄（不隐式 await）、回调同步。
+- `interop.rs` 把引擎暴露为 Zio 的 `js/*`（`js/new`、`js/eval`、`js/call`、`js/call-this`、`js/get`、`js/set`、`js/on`）；`libs/interop/js.zio` 是 Zio 包装库；CLI 在脚本 context 装 `js/*`。
+- 合同：引擎层 `js_contract.rs` 11 项 + Zio 层 `interop_contract.rs` 5 项全绿；`examples/interop/js.zio` 实跑输出 Math.max 9、精确 BigInt、对象变更、方法 this（bump 得 2）、双向回调 42、Promise 为值、无 process。
+- 保留边界：compiled 执行面、浏览器 DOM/Worker 隔离与统一 JS 语料属 J01；J00 只锁原生 E1。
 
 ### J01：浏览器 JS 与编译执行合同统一
 
