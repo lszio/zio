@@ -1,23 +1,23 @@
 # Phase 0 Truth Baseline Implementation Plan
 
-> Historical document: paths, commands and delivery claims below describe their original date. The 2026-10-07 language-first cutover supersedes directory and library ownership targets; see [current architecture](../../zio-architecture.md) and [approved layout plan](../plans/2026-10-07-language-first-layout.md). Rust Grove business migration remains outstanding.
+> Historical document: paths, commands and delivery claims below describe their original date. The 2026-10-07 language-first cutover supersedes directory and library ownership targets; see [current architecture](../../zio-architecture.md) and [approved layout plan](../plans/2026-10-07-language-first-layout.md). The Groiz application is an independent project, not part of this repository.
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 > **Historical scope, synchronized 2026-10-05:** This Phase 0 plan is retained
 > as the original truth-baseline procedure, not the current implementation
 > backlog. Current boundaries and execution order are in
-> [ADR-019](../../adrs.md#adr-019-grove-独立应用与同像性逻辑演化) and the
-> [convergence plan](2026-10-05-zio-grove-convergence.md). Counts and capability
+> [ADR-019](../../adrs.md#adr-019-groiz-独立应用与同像性逻辑演化) and the
+> [language toolchain plan](../plans/2026-10-11-zio-language-toolchain.md). Counts and capability
 > status come from `docs/status.md` and `docs/feature-matrix.md`; old command
-> outputs and checkboxes below are not evidence of Grove G1–G3 completion.
+> outputs and checkboxes below are not evidence of the Groiz G1–G3 application milestones.
 >
 > **Naming update, 2026-10-05:** Numa (compute), Rill (CLI composition),
 > and Loom (Agent harness) are official independently versioned, on-demand
-> libraries, not built-in Zio language features. Grove is an independent app
-> consuming Zio and these libraries; the language core has no reverse dependency.
-> Learning goals, experiments, feedback, checkpoints, independent evaluation,
-> human approval, logic evolution and Web belong to Grove. New library capabilities
+> libraries, not built-in Zio language features. Groiz is an independent project
+> (its own repository, not this one) consuming Zio and these libraries; the language
+> core has no reverse dependency. Learning goals, experiments, feedback, checkpoints,
+> independent evaluation, human approval, logic evolution and Web belong to that application. New library capabilities
 > remain Planned. Current `zio-ai`/`ai/` is the starting point for Loom;
 > `zio-cli`/`cli/` remains an executable host that will consume Rill.
 > Historical paths, package names, commands and evidence below remain unchanged.

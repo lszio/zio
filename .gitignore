@@ -2,8 +2,8 @@ target
 .gemini
 # The agent tool's own scratch directory, at the repo root only. Both
 # patterns must be anchored: an unanchored `superpowers` also matched
-# docs/superpowers/, which silently kept the grove delivery plan and the
-# phase-0 baseline out of the repo even though six documents link to them.
+# docs/superpowers/, which silently kept tracked plans and specs out of the
+# repo even though other documents link to them.
 /superpowers/
 /.superpowers/
 

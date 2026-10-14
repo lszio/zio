@@ -1,7 +1,7 @@
 ;; ── zio.learning.runner — stable model/runner API ───────────────
 ;;
-;; The orchestration owner (apps/grove/orchestration) consumes this
-;; API. The runtime primitives (`learn--build`, `learn--train-step`,
+;; The host application's orchestration consumes this API. The runtime
+;; primitives (`learn--build`, `learn--train-step`,
 ;; `learn--evaluate`, `learn--export`, `learn--import`) are
 ;; implementation detail; this module is the published surface that
 ;; the parent verifies once. New recipe families add new entries here

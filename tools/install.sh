@@ -3,14 +3,13 @@
 #
 # The point of this script is that the result does not need the checkout.
 # A launcher that reads `../..` to find its own stdlib is a launcher that
-# works until someone moves the directory, and a Groiz that resolves its
-# worker or its web assets relative to `CARGO_MANIFEST_DIR` cannot be
-# installed at all. So everything that is loaded at runtime is copied
-# into one tree, and the tree is what gets run.
+# works until someone moves the directory, or installs it read-only. So
+# everything that is loaded at runtime is copied into one tree, and the
+# tree is what gets run.
 #
 # Usage:
 #   tools/install.sh [target-dir]        # default: dist/zio
-#   tools/install.sh /opt/zio            # what Dockerfile.groiz runs
+#   tools/install.sh /opt/zio
 #
 # Environment:
 #   ZIO_PROFILE   build profile: release (default) or debug
@@ -24,10 +23,9 @@
 # Layout produced:
 #   <target>/bin/zio            the language CLI
 #   <target>/bin/zio-lsp        the language server
-#   <target>/bin/groiz          the Groiz launcher (POSIX targets)
 #   <target>/bin/zio-env.sh     PATH and ZIO_PATH for the installed tree
 #   <target>/bin/zio-env.ps1    the same for PowerShell (Windows targets)
-#   <target>/share/zio/...      stdlib, libraries, toolchain sources, apps
+#   <target>/share/zio/...      stdlib, libraries, toolchain sources
 #   <target>/share/zio/grammar   Tree-sitter grammar and queries
 #   <target>/share/zio/docs      documentation
 #   <target>/share/tensor/      the tensor backend resource
@@ -57,70 +55,6 @@ checksum() {
   else
     printf 'unavailable'
   fi
-}
-
-# The Groiz launcher. Grants are decided HERE, from explicit flags, and
-# handed to the Zio entry as one keyword map. Nothing is inferred from
-# the environment, and nothing is read out of the source it is about to
-# run — a candidate that could name its own tensor backend would make
-# the isolation profile advisory.
-write_groiz_launcher() {
-  cat > "$TARGET/bin/groiz" <<LAUNCHER
-#!/usr/bin/env bash
-set -euo pipefail
-HERE="\$(cd "\$(dirname "\${BASH_SOURCE[0]}")" && pwd)"
-SHARE="\$(readlink -f "\$HERE/../share")"
-
-ROOT_DIR="\${GROIZ_ROOT:-\$PWD}"
-BIND="\${GROIZ_BIND:-127.0.0.1:8787}"
-PYTHON="\${GROIZ_TENSOR_PYTHON:-python3}"
-WORKERS="\${GROIZ_WORKERS:-2}"
-
-# The jail pivots everything away except what it mounts, so the worker's
-# script directory and the real interpreter's tree must be granted
-# read-only. The venv python is exec'd by its un-resolved path so CPython
-# finds pyvenv.cfg; the mounts cover both the real install tree and the
-# alias directory the symlink points through.
-WORKER="\${GROIZ_WORKER_SCRIPT:-\$SHARE/groiz/workers/torch/worker.py}"
-PYTHON_BIN="\$(command -v "\$PYTHON")"
-PYTHON_REAL="\$(readlink -f "\$PYTHON_BIN")"
-PYTHON_VENV="\$(readlink -f "\$(dirname "\$PYTHON_BIN")/..")"
-PYTHON_BASE="\$(readlink -f "\$(dirname "\$PYTHON_REAL")/..")"
-PYTHON_ALIAS="\$(readlink -f "\$(dirname "\$PYTHON_REAL")/../..")"
-# A mount target nested inside another is refused by the jail, and /usr
-# is granted whole by the service, so overlapping entries are collapsed.
-WORKER_MOUNTS=(--app-worker-mount "\$(cd "\$(dirname "\$WORKER")" && pwd)")
-WORKER_MOUNTS+=(--app-worker-mount "\$PYTHON_VENV")
-case "\$PYTHON_ALIAS" in
-  /|/usr|/usr/*) WORKER_MOUNTS+=(--app-worker-mount "\$PYTHON_BASE") ;;
-  *) WORKER_MOUNTS+=(--app-worker-mount "\$PYTHON_ALIAS") ;;
-esac
-
-# Everything the caller passed belongs to the application, not to the
-# launcher. Each becomes one --args token, so \`groiz --help\` reaches
-# the Groiz CLI instead of being refused as an unknown launcher option.
-app_args=()
-for arg in "\$@"; do
-  app_args+=(--args "\$arg")
-done
-
-exec "\$HERE/zio$EXE" \\
-  --app-root "\$SHARE/zio/apps/grove" \\
-  --app-share "\$SHARE/zio" \\
-  --app-resource-root "\$SHARE" \\
-  --app-web-root "\$SHARE/groiz/web" \\
-  --app-tensor-backend "\$SHARE/tensor/backend.py" \\
-  --app-tensor-python "\$PYTHON" \\
-  --app-root-dir "\$ROOT_DIR" \\
-  --app-bind "\$BIND" \\
-  --app-workers "\$WORKERS" \\
-  --app-worker-script "\$WORKER" \\
-  --app-worker-python "\$PYTHON_BIN" \\
-  \${WORKER_MOUNTS[@]+"\${WORKER_MOUNTS[@]}"} \\
-  --app "\$SHARE/zio/apps/grove/main.zio" \\
-  \${app_args[@]+"\${app_args[@]}"}
-LAUNCHER
-  chmod 0755 "$TARGET/bin/groiz"
 }
 
 # The release manifest: one file that says what this tree contains, and
@@ -201,12 +135,10 @@ done
 # dotted names resolved against a root — `require :libs.loom.agent`
 # becomes `libs/loom/agent.zio` under a granted root. Preserving the
 # layout is what keeps those names meaningful outside the checkout.
-for dir in libs apps/grove; do
-  if [ -d "$ROOT/$dir" ]; then
-    mkdir -p "$TARGET/share/zio/$(dirname "$dir")"
-    cp -R "$ROOT/$dir" "$TARGET/share/zio/$(dirname "$dir")/"
-  fi
-done
+if [ -d "$ROOT/libs" ]; then
+  mkdir -p "$TARGET/share/zio"
+  cp -R "$ROOT/libs" "$TARGET/share/zio/"
+fi
 
 # Zio sources: stdlib, metacircular interpreter, compiler. Their
 # canonical home is inside the zio-core crate, which embeds them at
@@ -265,23 +197,6 @@ find "$TARGET/share" -type f -name '*.pyc' -delete 2>/dev/null || true
 find "$TARGET/share" -type f \( -name 'test_*.py' -o -name '*_test.py' \) -delete 2>/dev/null || true
 find "$TARGET/share" -type d -name 'tests' -empty -delete 2>/dev/null || true
 
-# The CPU worker and the web assets are staged under share/groiz; the
-# launcher grants their directories to the jail read-only.
-if [ -d "$ROOT/apps/grove/workers/torch" ]; then
-  mkdir -p "$TARGET/share/groiz/workers" "$TARGET/share/groiz/web"
-  cp -R "$ROOT/apps/grove/workers/torch" "$TARGET/share/groiz/workers/torch"
-  cp -R "$ROOT/apps/grove/web/." "$TARGET/share/groiz/web/"
-  find "$TARGET/share/groiz" -name '__pycache__' -prune -exec rm -rf {} + 2>/dev/null || true
-fi
-
-# The Groiz launcher is a POSIX shell product: its jail pivots a worker
-# tree and resolves a Python interpreter, neither of which exists on a
-# Windows archive. Shipping a bash script that cannot run there is
-# worse than not shipping it.
-if [ "$IS_WINDOWS" = "0" ] && [ -f "$TARGET/share/zio/apps/grove/main.zio" ]; then
-  write_groiz_launcher
-fi
-
 cat > "$TARGET/bin/zio-env.sh" <<'ENVSH'
 # Source this to get a Zio that can load the installed libraries.
 export ZIO_PATH="$(cd "$(dirname "${BASH_SOURCE[0]}")/../share/zio" && pwd)"
@@ -303,6 +218,3 @@ write_manifest
 echo
 echo "installed to $TARGET"
 echo "  ZIO_PATH=$TARGET/share/zio"
-if [ -x "$TARGET/bin/groiz" ]; then
-  echo "  groiz    : \$TARGET/bin/groiz --help"
-fi

@@ -1,6 +1,6 @@
 # 11: ZOS — 统一运行时对象模型
 
-> 2026-10-07 目录更新：本文教学代码与旧阶段/验收描述保留历史语境；源码链接和运行路径已映射到当前位置。现行目标是 `libs/` 的 Zio 库与 `apps/grove/` 的 Zio 业务迁移，Rust Grove 业务尚未整体重写；通用 Rust transport/host adapter 在 `contribs/native/loom/`。当前归属见[架构](../docs/zio-architecture.md)与[批准目录计划](../docs/superpowers/plans/2026-10-07-language-first-layout.md)。
+> 2026-10-07 目录更新：本文教学代码与旧阶段/验收描述保留历史语境；源码链接和运行路径已映射到当前位置。现行目标是 `libs/` 的官方 Zio 库；通用 Rust transport/host adapter 在 `contribs/native/loom/`。当前归属见[架构](../docs/zio-architecture.md)与[批准目录计划](../docs/superpowers/plans/2026-10-07-language-first-layout.md)。
 
 > 从 `defclass` 到 MOP——历史 ZOS 设计稿，不是完整 AMOP 已交付声明。
 
@@ -8,16 +8,17 @@
 
 ## 阅读范围
 
-本文保留早期 Phase 1/2/3 的设计推演；下文布局、缓存、条件系统代码及阶段“交付”描述均是当时的方案/目标，不是当前实现验收。当前对象/Class/GF/Method 路径与 MOP 目标请以[语言架构](../docs/zio-architecture.md)、[批准基线](../docs/self-learning-architecture.md)和[实施计划](../docs/superpowers/plans/2026-10-05-zio-grove-convergence.md)为准；未实现能力为 Planned。ZOS 留在语言核心，不因 Grove 产品化或编译器自举而被移成可选业务库。
+本文保留早期 Phase 1/2/3 的设计推演；下文布局、缓存、条件系统代码及阶段“交付”描述均是当时的方案/目标，不是当前实现验收。当前对象/Class/GF/Method 路径与 MOP 目标请以[语言架构](../docs/zio-architecture.md)为准；未实现能力为 Planned。ZOS 留在语言核心，不因应用产品化或编译器自举而被移成可选业务库。
 
 > **2026-10-05 命名同步**：Numa（计算）、Rill（CLI 组合）、Loom（Agent
 > harness）是按需安装、独立版本发布的官方库，不是 Zio/ZOS 内置特性。
-> Grove 是消费语言与三库的独立应用，持学习目标、实验、反馈、检查点、
-> 独立评价、人工批准、逻辑演化与 Web；核心无反向依赖。三库新增能力仍 Planned。
+> Grove 是独立项目（lszio/groiz），不在本仓库；它消费语言与三库，持学习
+> 目标、实验、反馈、检查点、独立评价、人工批准、逻辑演化与 Web；核心无
+> 反向依赖。三库新增能力仍 Planned。
 > 当前 Rust `loom` adapter 位于 `contribs/native/loom/`，`zio-cli` 是未来消费 Rill 的可执行宿主；
 > 下文历史包名、代码与阶段记录不改名。正式短名不指定注册包 ID，
 > 未来目录/逻辑命名空间见[术语表](../docs/glossary.md)，边界见
-> [ADR-019](../docs/adrs.md#adr-019-grove-独立应用与同像性逻辑演化)。
+> [ADR-019](../docs/adrs.md#adr-019-groiz-独立应用与同像性逻辑演化)。
 
 
 ## 问题

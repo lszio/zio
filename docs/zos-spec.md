@@ -5,7 +5,7 @@
 > ZOS 保留在语言核心，不作为可选领域插件。本规范包含尚未实现的
 > 目标；当前 class/generic dispatch 子集为 Experimental，完整 MOP
 > 与更广语义逐项验收。状态见[特性矩阵](feature-matrix.md)，职责和升级
-> 权限以 [ADR-019](adrs.md#adr-019-grove-独立应用与同像性逻辑演化) 为准。
+> 权限以 [ADR-019](adrs.md#adr-019-groiz-独立应用与同像性逻辑演化) 为准。
 
 ---
 
@@ -48,7 +48,7 @@ ZOS（Zio Object System）是 Zio 的统一运行时对象模型（Unified Runti
 | Entity 模型 | `zio-entity` |
 | Protocol 系统 | `zio-protocol` |
 | Datalog 查询 | `zio-datalog` |
-| Agent / AI Runtime | Loom 官方 Zio harness 库；Grove 独立应用持学习治理；`libs/loom/agent.zio` 当前只提供 demo 数据模型 |
+| Agent / AI Runtime | Loom 官方 Zio harness 库；学习治理属于消费它的应用（Groiz 为独立项目，不在本仓库）；`libs/loom/agent.zio` 当前只提供 demo 数据模型 |
 | Actor 并发模型 | `zio-actor` |
 | 图分析 | `zio-graph` |
 | Clojure 风格集合 | `zio-persistent` |
@@ -60,14 +60,14 @@ Datalog query evaluator 为 Planned，详见[特性矩阵](feature-matrix.md)。
 Numa 的连续数值数组/矩阵/向量与后端接口、Rill 的参数/子命令/帮助、
 命令组合/终端 I/O/退出状态、Loom 的模型/工具/会话/预算/取消/provider/ACP
 均为官方 Zio 库能力，按需安装、独立版本发布，不是 ZOS 或语言内置特性。
-Grove 消费语言与三库，拥有学习目标、实验、反馈、检查点、独立评价、
-人工批准、逻辑演化与 Web；语言核心没有反向依赖，三库新增能力均 Planned。
+应用（如独立项目 Groiz）消费语言与三库，持有学习目标、实验、反馈、检查点、
+独立评价与批准等产品职责；语言核心没有反向依赖，三库新增能力均 Planned。
 应用可以使用对象/泛型函数实现自己的可编码逻辑，不必把所有热路径对象化；
 普通学习任务不得改写 ZOS 或可信编译器基线。
 
 首轮工具链固定所需类、实例、槽与泛型函数/方法语义；未实现的完整 MOP
 不作为起步前提，但不能用“无 ZOS 子语言自编译”代表保留 ZOS 的整体目标。
-实施依赖与验收见[统一实现计划](superpowers/plans/2026-10-05-zio-grove-convergence.md)。
+实施依赖与验收见[语言与工具链计划](superpowers/plans/2026-10-11-zio-language-toolchain.md)。
 ---
 
 ## 2 运行时对象模型
@@ -645,10 +645,10 @@ zio-agent/               — Agent 框架
     memory.zio
 ```
 
-Zio 库目标采用 Zio 实现并归入 `libs/`：Numa 持计算，Rill 持 CLI 组合，Loom 持 harness 组合。现有 Rust 通用传输/宿主合同位于 `contribs/native/loom/`，不是 Zio 库本体；普通语言 CLI 位于 `langs/cli/`，不装配 LLM replay。Grove 是 `apps/grove/` 独立应用，其 Rust 业务仍待后续迁为 Zio；语言介绍、文档与 playground 位于 `apps/site/`。本轮只完成结构切换，不证明完整库交付、Tree-sitter、LSP 或编译器自举。当前合同见[架构](zio-architecture.md)与[批准目录计划](superpowers/plans/2026-10-07-language-first-layout.md)。短名不等于已注册包 ID。
+Zio 库目标采用 Zio 实现并归入 `libs/`：Numa 持计算，Rill 持 CLI 组合，Loom 持 harness 组合。现有 Rust 通用传输/宿主合同位于 `contribs/native/loom/`，不是 Zio 库本体；普通语言 CLI 位于 `langs/cli/`，不装配 LLM replay。Groiz 是独立项目（[lszio/groiz](https://github.com/lszio/groiz)），不在本仓库，语言仓库不承载其业务；语言介绍、文档与 playground 位于 `apps/site/`。本轮只完成结构切换，不证明完整库交付、Tree-sitter、LSP 或编译器自举。当前合同见[架构](zio-architecture.md)与[批准目录计划](superpowers/plans/2026-10-07-language-first-layout.md)。短名不等于已注册包 ID。
 
 不再另建重叠的 agent 框架。公共抽取以实际复用需求为依据，执行顺序见
-[统一实现计划](superpowers/plans/2026-10-05-zio-grove-convergence.md)。
+[语言与工具链计划](superpowers/plans/2026-10-11-zio-language-toolchain.md)。
 
 ---
 
@@ -744,7 +744,7 @@ pub fn apply(func: Value, args: Vector<Value>, engine: &dyn ZosRuntime) -> Resul
 以下 Phase 是历史设计目标，不是当前实现顺序。class/generic dispatch、
 persistent、protocol、entity 与 Datalog storage 已有 Experimental 子集；
 完整 ZOS/MOP 与 Datalog query evaluator 不能从本节推断为已交付。
-权威状态见[特性矩阵](feature-matrix.md)，当前执行顺序见[实现计划](superpowers/plans/2026-10-05-zio-grove-convergence.md)。
+权威状态见[特性矩阵](feature-matrix.md)，当前执行顺序见[语言与工具链计划](superpowers/plans/2026-10-11-zio-language-toolchain.md)。
 
 ### Phase 1: 最小对象系统
 
@@ -854,6 +854,6 @@ ZOS 规范通过 ADR（架构决策记录）演进：
 | 决策主题 | 当前权威依据 |
 |----------|--------------|
 | Span、EvalEngine、Value/Object、错误、分派 | [ADR 记录](adrs.md)；本规范中的未来合同不覆盖其当前状态 |
-| 核心保留 ZOS、工具链自举、Grove 独立应用与保护边界 | [ADR-019](adrs.md#adr-019-grove-独立应用与同像性逻辑演化) |
+| 核心保留 ZOS、工具链自举、独立应用（Groiz）与保护边界 | [ADR-019](adrs.md#adr-019-groiz-独立应用与同像性逻辑演化) |
 
 每个 ADR 记录：背景、决策、理由、代价、备选方案。

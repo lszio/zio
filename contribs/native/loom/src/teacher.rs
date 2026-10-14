@@ -1,4 +1,4 @@
-//! Teacher capability protocol (grove delivery plan W03).
+//! Teacher capability protocol.
 //!
 //! A teacher is a *different role* from a text-completion host: it declares
 //! what it can accept and produce, it may or may not offer soft outputs,

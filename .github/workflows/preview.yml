@@ -96,30 +96,6 @@ jobs:
             sleep 30
           done
 
-      - name: Derive per-PR Grove tokens
-        # One master secret, deterministic per-PR tokens:
-        #   token(PR, role) = hex(HMAC-SHA256(master, "zio-preview|<PR>|<role>"))
-        # Bound: anyone holding the master secret can derive ANY PR's
-        # tokens; a leaked single-PR token reveals nothing about other
-        # PRs. No persistence service needed.
-        id: tokens
-        if: >-
-          github.event_name == 'pull_request_target' &&
-          github.event.action != 'closed'
-        env:
-          MASTER: ${{ secrets.GROVE_PREVIEW_TOKEN_MASTER }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-        run: |
-          [ -n "$MASTER" ] || { echo 'secrets.GROVE_PREVIEW_TOKEN_MASTER must be set' >&2; exit 1; }
-          for role in reader operator publisher annotator; do
-            key="$(printf 'zio-preview|%s|%s' "$PR_NUMBER" "$role" \
-              | openssl dgst -sha256 -hmac "$MASTER" -hex | sed 's/^.*= //')"
-            # mask before export: the "Create preview" step header prints
-            # its environment, which would otherwise leak the token
-            echo "::add-mask::$key"
-            echo "${role}=$key" >> "$GITHUB_OUTPUT"
-          done
-
       - name: Create preview
         if: >-
           github.event_name != 'workflow_dispatch' &&
@@ -133,8 +109,4 @@ jobs:
           PREVIEW_PROJECT: ${{ steps.preview.outputs.project }}
           PREVIEW_DOMAIN: ${{ steps.preview.outputs.domain }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
-          GROVE_PREVIEW_TOKEN_READER: ${{ steps.tokens.outputs.reader }}
-          GROVE_PREVIEW_TOKEN_OPERATOR: ${{ steps.tokens.outputs.operator }}
-          GROVE_PREVIEW_TOKEN_PUBLISHER: ${{ steps.tokens.outputs.publisher }}
-          GROVE_PREVIEW_TOKEN_ANNOTATOR: ${{ steps.tokens.outputs.annotator }}
         run: bash tools/preview-stack.sh up

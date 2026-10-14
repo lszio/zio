@@ -40,9 +40,9 @@ Minimal application artifacts are a different product:
   require explicit reconstruction or saving must be rejected; restoring an
   image must obtain fresh host grants rather than restoring authority.
 
-Groiz is an optional independent application, not a required component of the
-language distribution target. The current installer includes Groiz; the
-archive layout and commands below describe that existing fact.
+Groiz is an independent project ([lszio/groiz](https://github.com/lszio/groiz)),
+not carried in this repository and not a required component of the language
+distribution target.
 
 ## Before tagging
 
@@ -62,7 +62,6 @@ formatter is delivered as a user tool, not a build step.
 ```bash
 cd "$(mktemp -d)"
 /path/to/dist/zio/bin/zio script.zio          # language
-/path/to/dist/zio/bin/groiz --help            # product launcher
 ```
 
 ## Cutting a release
@@ -106,17 +105,11 @@ installer that rebuilt for the runner's own host would ship the host's
 binary in a cross-compiled archive: an x86_64 macOS archive carrying an
 arm64 binary is a wrong answer that looks like success.
 
-The `verify` job treats the Grove submodule as optional: that repository
-is separate, and a checkout that could not fetch it warns and skips its
-contracts instead of failing a language release that does not need an
-optional application.
-
 ## The native archive
 
 ```
 bin/zio            the language: REPL, script, bounded candidate runner, app launcher
 bin/zio-lsp        the language server (zio lsp starts this too)
-bin/groiz          the product launcher; grants come from its own flags (POSIX targets)
 bin/zio-env.sh     PATH and ZIO_PATH for the installed tree
 bin/zio-env.ps1    the same, for PowerShell (Windows targets)
 share/zio/         stdlib, libraries, toolchain sources, grammar, docs, examples
@@ -128,11 +121,6 @@ share/zio/examples runnable and documentary examples
 share/tensor/      the tensor backend resource
 manifest.json      version, commit, target, and a checksum per component
 ```
-
-`groiz` decides capabilities from its own flags and hands them to the
-Zio entry as one keyword map. It never reads them out of the source it
-is about to run — a candidate that could name its own tensor backend
-would make the isolation profile advisory.
 
 ## Crates
 
@@ -148,7 +136,7 @@ says which crate is missing.
 
 | Surface | Artifact | Job |
 |---|---|---|
-| Executables | Five-platform archives (`bin/zio`, `bin/zio-lsp`, `bin/groiz` on POSIX) with checksums and `manifest.json` | `native` |
+| Executables | Five-platform archives (`bin/zio`, `bin/zio-lsp` on POSIX) with checksums and `manifest.json` | `native` |
 | Executable container | `ghcr.io/lszio/zio` with `zio` on PATH | `docker` |
 | Rust execution library | [`zio-core`](https://crates.io/crates/zio-core), `zio-js`, `zio-host`, `zio-lsp`, `zio-wasi`, `zio-cli` on crates.io; the `wasm` feature builds the browser engine | `crates` (needs `CRATES_TOKEN`) |
 | npm CLI | `@lszio/zio` — downloads the release archive matching the installed version, checksums it, runs `zio` | `npm-cli` (needs `NPM_TOKEN`) |

@@ -1,11 +1,11 @@
 ;; ── zio.learn.feedback — signal policy and frozen data views ───────
 ;; Pure policy: given the signals a producer submitted, decide what a
-;; training view may contain. The host (`grove`) owns persistence,
+;; training view may contain. The host application owns persistence,
 ;; permission and transactions; nothing here reads the current model
 ;; head, because feedback always binds to the exact prediction it
 ;; corrects — never to "whatever is deployed now".
 ;;
-;; Policy rules (self-learning-architecture §4.4):
+;; Policy rules:
 ;;   1. a correction applies to its target field only;
 ;;   2. an authorized human correction outranks a teacher pseudo-label
 ;;      on the same target;

@@ -1,6 +1,5 @@
 //! The one assembly path shared by the language CLI, the compiler front
-//! end (T01), and every embedding that runs Zio code — including Grove's
-//! generated-candidate execution.
+//! end (T01), and every embedding that runs Zio code.
 //!
 //! Everything here is fail-closed: the standard library either loads
 //! completely or the bootstrap fails, module resolution is limited to

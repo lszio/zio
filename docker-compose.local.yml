@@ -3,12 +3,8 @@
 # are not — several stacks share this host. Pair the two files for local
 # end-to-end verification:
 #   docker compose -f docker-compose.dokploy.yml -f docker-compose.local.yml up
-# Uncommon high ports: dev machines commonly hold 8080/8787, and the test
-# script resolves the site port via `docker compose port` anyway.
+# An uncommon high port: dev machines commonly hold 8080.
 services:
   site:
     ports:
       - "127.0.0.1:18080:80"
-  grove:
-    ports:
-      - "127.0.0.1:18787:8787"

@@ -18,10 +18,10 @@ pub fn do_let(
     engine: &dyn EvalEngine,
 ) -> Result<TailResult, EvalError> {
     // Sequential, like every Clojure `let`: a binding's initializer sees
-    // the bindings before it. The Grove sources (and any Clojure-style
-    // program) write `(let [opts ... :x (get opts :k)])` and depend on
-    // it; a parallel `let` is Scheme's, and `let*` exists here as the
-    // explicit spelling of the same thing.
+    // the bindings before it. Zio's own sources, embedders, and any
+    // Clojure-style program write `(let [opts ... :x (get opts :k)])` and
+    // depend on it; a parallel `let` is Scheme's, and `let*` exists here
+    // as the explicit spelling of the same thing.
     do_let_inner(args, env, tail, true, engine)
 }
 

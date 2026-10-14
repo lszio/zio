@@ -9,12 +9,11 @@ description = "Native model/session transport adapter for Zio applications; not 
 keywords = ["language", "runtime", "model", "session"]
 
 # Not published. The package name `loom` is taken on crates.io by an
-# unrelated concurrency-testing crate, and the in-repo consumers — the
-# pinned Grove submodule included — depend on it by that path name, so
-# renaming it here would break their manifests. The language library
-# surface published for a release is zio-core / zio-host / zio-js /
-# zio-lsp / zio-wasi / zio-cli; this adapter belongs to the applications
-# that drive models, not to the language.
+# unrelated concurrency-testing crate, and in-repo consumers depend on it
+# by that path name, so renaming it here would break their manifests. The
+# language library surface published for a release is zio-core / zio-host
+# / zio-js / zio-lsp / zio-wasi / zio-cli; this adapter belongs to the
+# applications that drive models, not to the language.
 publish = false
 
 [dependencies]

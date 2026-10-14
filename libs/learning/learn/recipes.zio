@@ -57,9 +57,10 @@
 
 ;; ── W15: the extended recipe family ──────────────────────────────
 ;; Each of the five new methods is a *value* in the same registry, not a
-;; new loop: the host dispatches on the recipe id and `apps/grove/workers/torch/recipes.py`
-;; executes exactly what is declared here. The declarations exist to be
-;; refused, so each one carries the contract field that makes it honest
+;; new loop: the host application dispatches on the recipe id and its
+;; training worker executes exactly what is declared here. The
+;; declarations exist to be refused, so each one carries the contract
+;; field that makes it honest
 ;; — a distillation's teacher vocabulary, a policy's action set, a
 ;; demonstrator's legal actions — rather than a name and a hope.
 
