@@ -1,6 +1,12 @@
 # The language runtime image: zio-cli built from a clean checkout, no
 # submodules needed — the zio workspace covers only in-repo crates.
 FROM rust:1-slim AS build
+# zio-js binds QuickJS through rquickjs with the `bindgen` feature, so
+# libclang is a build dependency of zio-cli, not an optional tool: without
+# it the image fails in a dependency's build script.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends clang libclang-dev \
+ && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
 COPY langs langs

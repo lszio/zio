@@ -2,6 +2,11 @@
 # and a locked CPU worker venv. No bun and no nginx — the site owns the
 # wasm bundle and the public origin (see Dockerfile and nginx.conf).
 FROM rust:1-bookworm AS zio-build
+# Same build dependency as Dockerfile.zio: zio-js binds QuickJS with
+# rquickjs' `bindgen` feature, and its build script needs libclang.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends clang libclang-dev \
+ && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
 COPY langs ./langs
