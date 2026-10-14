@@ -61,12 +61,22 @@ fn fmt_on_stdin_formats_and_is_idempotent() {
 fn fmt_check_reports_unformatted_and_exits_nonzero() {
     let source = "(defn   add [a b]\n   (+ a b))\n";
     let unformatted = run(&["fmt", "--check"], Some(source));
-    assert!(!unformatted.status.success(), "check must fail on unformatted");
-    assert!(stdout(&unformatted).contains("not formatted"), "{:?}", stdout(&unformatted));
+    assert!(
+        !unformatted.status.success(),
+        "check must fail on unformatted"
+    );
+    assert!(
+        stdout(&unformatted).contains("not formatted"),
+        "{:?}",
+        stdout(&unformatted)
+    );
 
     let formatted = "(defn add [a b] (+ a b))\n";
     let clean = run(&["fmt", "--check"], Some(formatted));
-    assert!(clean.status.success(), "check must pass on formatted source");
+    assert!(
+        clean.status.success(),
+        "check must pass on formatted source"
+    );
     assert!(stdout(&clean).is_empty());
 }
 

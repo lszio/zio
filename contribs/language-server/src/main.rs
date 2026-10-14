@@ -336,8 +336,8 @@ impl Server {
         // the formatted text gets an empty edit back rather than a
         // second rewrite.
         if method == "textDocument/formatting" {
-            let formatted = zio_core::fmt::format_source(source)
-                .map_err(|e| (-32603, e.to_string()))?;
+            let formatted =
+                zio_core::fmt::format_source(source).map_err(|e| (-32603, e.to_string()))?;
             if formatted == *source {
                 return Ok(json!([]));
             }
