@@ -3,9 +3,9 @@
 ;; Structural (AST shape), behavioural (fingerprint under a NAMED
 ;; probe set) and semantic (vector + encoder id + space version) views
 ;; over the same experience records. This library owns the *policy* of
-;; what may be compared with what; the fact base itself is the grove
-;; store, not a second copy of it (plan W14: 扩展已有经验存储字段而不是
-;; 再建独立事实库).
+;; what may be compared with what; the fact base itself is the host
+;; application's store, not a second copy of it (extending the existing
+;; experience-store fields rather than building a second fact base).
 ;;
 ;; Records are maps. A structural record:
 ;;   {:memory/id "s-1" :memory/ast "(+ (* 2 x) 1)"

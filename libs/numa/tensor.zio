@@ -2,7 +2,7 @@
 ;; Generic CPU tensor client. Explicit caller-owned reference names identify
 ;; tensors only inside an opaque backend handle; they confer no host authority.
 ;; Operations use the zio.tensor.state/1 and RPC v1 backend contract.
-;; No datasets, objectives, teachers or Grove operation is hidden here.
+;; No datasets, objectives, teachers or application orchestration is hidden here.
 ;; Results from the JSON backend have STRING keys; tensor-ref normalizes them.
 
 ;; doc: (tensor-start config) — starts a tensor backend with config via the

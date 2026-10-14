@@ -1,6 +1,6 @@
 # 03: 显式状态：EvalEngine Trait
 
-> 2026-10-07 目录更新：本文教学代码与旧阶段/验收描述保留历史语境；源码链接和运行路径已映射到当前位置。现行目标是 `libs/` 的 Zio 库与 `apps/grove/` 的 Zio 业务迁移，Rust Grove 业务尚未整体重写；通用 Rust transport/host adapter 在 `contribs/native/loom/`。当前归属见[架构](../docs/zio-architecture.md)与[批准目录计划](../docs/superpowers/plans/2026-10-07-language-first-layout.md)。
+> 2026-10-07 目录更新：本文教学代码与旧阶段/验收描述保留历史语境；源码链接和运行路径已映射到当前位置。现行目标是 `libs/` 的官方 Zio 库；通用 Rust transport/host adapter 在 `contribs/native/loom/`。当前归属见[架构](../docs/zio-architecture.md)与[批准目录计划](../docs/superpowers/plans/2026-10-07-language-first-layout.md)。
 
 > 从 4 个 `thread_local!` 全局变量到 trait object 注入——一次有洁癖的架构重构。
 
@@ -9,12 +9,12 @@
 > 历史重构记录：本文 trait 与结构体是当时的教学摘录，“重构后”结论只指
 > 该次解释器状态改造，不是全部宿主/训练/产品状态集中于 EvalContext 的承诺。
 > Numa（计算）、Rill（CLI 组合）、Loom（Agent harness）是按需安装、独立
-> 版本发布的官方库，不是语言内置特性；Grove 消费语言与三库，负责学习、
-> 评价、检查点与发布治理，核心无反向依赖。三库新增能力仍 Planned。
+> 版本发布的官方库，不是语言内置特性；Grove（独立项目 lszio/groiz，不在
+> 本仓库）消费语言与三库，负责学习、评价、检查点与发布治理，核心无反向
+> 依赖。三库新增能力仍 Planned。
 > 当前 Rust `loom` adapter 位于 `contribs/native/loom/`，`zio-cli` 是未来消费 Rill 的可执行宿主；
 > 历史代码、函数和命令不改名，正式短名不是已注册包 ID。现行职责见
-> [ADR-019](../docs/adrs.md#adr-019-grove-独立应用与同像性逻辑演化)及
-> [统一实现计划](../docs/superpowers/plans/2026-10-05-zio-grove-convergence.md)。
+> [ADR-019](../docs/adrs.md#adr-019-groiz-独立应用与同像性逻辑演化)。
 
 ## 问题
 

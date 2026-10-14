@@ -7,7 +7,7 @@
 //! with a regular expression.
 //!
 //! The bounded runner builds a context with no application bindings at
-//! all. That is the whole point of it: Grove queues a generated
+//! all. That is the whole point of it: a host queues a generated
 //! candidate, and the candidate must not inherit the queue's ability to
 //! publish, write files, or open a socket. Grants are decided by whoever
 //! launched the process, never by the source being run.
@@ -264,7 +264,7 @@ struct AppLaunch {
     app_root: Option<PathBuf>,
     app_share: Option<PathBuf>,
     resource_root: Option<PathBuf>,
-    /// The directory Grove serves its UI assets from.
+    /// The directory an application serves its UI assets from.
     web_root: Option<PathBuf>,
     tensor_backend: Option<PathBuf>,
     tensor_python: Option<PathBuf>,
@@ -279,6 +279,10 @@ struct AppLaunch {
     data_root: Option<PathBuf>,
     bind: Option<String>,
     workers: Option<i64>,
+    /// Environment names the application may read. Declared by the
+    /// launcher, like every other grant: an app that could name its own
+    /// secrets would be reading whatever the process happens to hold.
+    env_names: Vec<String>,
     /// Extra key/value pairs the launcher wants in the config map.
     extra: Vec<(String, String)>,
 }
@@ -436,8 +440,8 @@ fn app_context(launch: &AppLaunch) -> Result<EvalContext, EvalError> {
     if let Some(share) = &launch.app_share {
         policy.read_roots.push(share.clone());
     }
-    // The UI tree may sit beside the share rather than inside it (the
-    // installed layout is share/grove/web), so it is granted on its own.
+    // The UI tree may sit beside the share rather than inside it, so it
+    // is granted on its own.
     if let Some(web_root) = &launch.web_root {
         policy.read_roots.push(web_root.clone());
     }
@@ -458,15 +462,11 @@ fn app_context(launch: &AppLaunch) -> Result<EvalContext, EvalError> {
     if let Some(python) = &launch.tensor_python {
         policy.trusted_tensor_python = Some(python.clone());
     }
-    // Only the environment names the application actually reads are
-    // visible, and only the token names the launcher declares.
-    for name in [
-        "GROIZ_TOKEN_READER",
-        "GROIZ_TOKEN_ANNOTATOR",
-        "GROIZ_TOKEN_OPERATOR",
-        "GROIZ_TOKEN_PUBLISHER",
-    ] {
-        policy.environment.insert(name.to_string());
+    // Only the environment names the launcher declares are visible; every
+    // other read is refused by the host, so the application cannot widen
+    // its own view of the process environment.
+    for name in &launch.env_names {
+        policy.environment.insert(name.clone());
     }
     zio_host::install(&ctx, policy)?;
     Ok(ctx)
@@ -508,7 +508,11 @@ fn run_app(launch: &AppLaunch, argv: &[String]) -> Result<Value, EvalError> {
     }
     zio_core::bytecode::run_source(&ctx, path, &source)?;
 
-    let entry = std::env::var("ZIO_APP_ENTRY").unwrap_or_else(|_| "grove--main".to_string());
+    let entry = std::env::var("ZIO_APP_ENTRY").map_err(|_| {
+        EvalError::custom(
+            "invalid-input: ZIO_APP_ENTRY must name the entry function an --app invocation calls",
+        )
+    })?;
     let function = ctx
         .env
         .get(&entry)
@@ -585,7 +589,8 @@ const USAGE: &str = "Usage: zio [--lib-dir DIR]... [--entry NAME] [--step-limit 
 [--timeout-ms N] [--emit-framed] [script.zio|-]\n\
        zio --app PATH --app-root DIR [--app-share DIR] [--app-resource-root DIR]\n\
        \x20        [--app-web-root DIR] [--app-tensor-backend FILE] [--app-tensor-python FILE]\n\
-       \x20        [--app-root-dir DIR] [--app-bind ADDR] [--app-workers N] [--args ARG]...\n\
+       \x20        [--app-root-dir DIR] [--app-bind ADDR] [--app-workers N] [--app-env NAME]...\n\
+       \x20        [--args ARG]...\n\
        zio self-build [--verify] [--out-dir DIR]\n\
        zio image save PROGRAM.zio -o IMAGE [--root NAME]...\n\
        zio image inspect IMAGE\n\
@@ -598,6 +603,7 @@ const USAGE: &str = "Usage: zio [--lib-dir DIR]... [--entry NAME] [--step-limit 
        --timeout-ms N   wall-clock ceiling for the run (default 30000)\n\
        --emit-framed    print one NDJSON result envelope instead of the value\n\
        --args ARG       pass ARG to the application entry (repeatable)\n\
+       ZIO_APP_ENTRY    the entry function an --app invocation calls (required)\n\
        '-'              read the source from stdin\n";
 
 /// Build canonical compiler stages and exercise the latest portable compiler.
@@ -801,6 +807,7 @@ fn main() {
             "--app-root-dir" => launch.data_root = Some(path()),
             "--app-bind" => launch.bind = Some(value()),
             "--app-workers" => launch.workers = Some(number("--app-workers")),
+            "--app-env" => launch.env_names.push(value()),
             "--args" => app_argv.push(value()),
             "--lib-dir" => extra_roots.push(PathBuf::from(value())),
             "--entry" => bounded.entry = Some(value()),

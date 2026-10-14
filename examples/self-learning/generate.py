@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""W00 — frozen acceptance task for the grove self-learning work packages.
+"""Frozen acceptance task for the self-learning example.
 
 Generates the "geometry image + numeric sensor" classification task:
 
@@ -280,7 +280,7 @@ def self_check(out_dir: Path, seed: int) -> int:
         if not ok:
             failures.append(name)
 
-    print("grove W00 acceptance contract self-check")
+    print("self-learning acceptance contract self-check")
 
     # 1. same seed → same bytes (rebuild in memory, compare digests)
     first = generate(out_dir, seed)

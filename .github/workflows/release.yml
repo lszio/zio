@@ -61,23 +61,10 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ needs.plan.outputs.tag }}
-          submodules: recursive
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo build --workspace --all-targets
       - run: cargo test --workspace
-      # The Grove contracts run against the pinned submodule's own
-      # workspace. That repo is separate, so a checkout that could not
-      # fetch it skips this gate instead of failing the whole release:
-      # the language release does not depend on an optional application.
-      - name: Grove contracts (pinned submodule)
-        run: |
-          if [ -f apps/grove/Cargo.toml ]; then
-            cargo build --manifest-path apps/grove/Cargo.toml --workspace
-            cargo test --manifest-path apps/grove/Cargo.toml --workspace
-          else
-            echo "::warning::apps/grove submodule not checked out; skipping Grove contracts"
-          fi
       - name: Self-hosting contracts
         run: cargo test -p zio-core --test self_hosting
       - name: Language server session
@@ -113,7 +100,6 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ needs.plan.outputs.tag }}
-          submodules: recursive
 
       - uses: dtolnay/rust-toolchain@stable
         with:

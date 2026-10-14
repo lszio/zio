@@ -1,5 +1,5 @@
-//! T00 runtime contract: the shared assembly and numeric semantics the
-//! CLI, the compiler front end, and Grove all depend on.
+//! T00 runtime contract: the shared assembly and numeric semantics that
+//! Zio itself and every embedder depend on.
 //!
 //! Every check here is a consumer-visible failure: a value the program
 //! must print, or an error it must refuse. Nothing compares source text.

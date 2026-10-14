@@ -10,12 +10,12 @@
 > v0.1 → v0.2 修订见[第 9 节](#9-修订记录)。
 >
 > L1–L4 保留自己的研究编号与已有算术候选合同，不扩写为通用 agent 安全合同。
-> Groiz 的独立应用定位与权限依据[整体设计](self-learning-architecture.md)及
-> [ADR-019](adrs.md#adr-019-grove-独立应用与同像性逻辑演化)；当前开工顺序见[统一实现计划](superpowers/plans/2026-10-05-zio-grove-convergence.md)。
-> [历史 W00–W17 交付](superpowers/plans/2026-10-02-self-learning.md)提供 CPU
-> 组件与 demo 证据，不证明新的生成执行、真实 agent 或可审查升级已经完成。
+> Groiz 是独立项目（[lszio/groiz](https://github.com/lszio/groiz)），不在本仓库；其独立应用定位与权限依据
+> [ADR-019](adrs.md#adr-019-groiz-独立应用与同像性逻辑演化)；当前开工顺序见[语言与工具链计划](superpowers/plans/2026-10-11-zio-language-toolchain.md)。
+> 历史 W00–W17 交付记录（CPU 组件与 demo 证据）随宿主 crate 迁往独立项目 Groiz，
+> 不证明新的生成执行、真实 agent 或可审查升级已经完成。
 >
-> **2026-10-07 结构更新**：Zio 库在 `libs/`，通用 Rust transport/host adapter 在 `contribs/native/loom/`，Groiz 在 `apps/grove/`。Rust Groiz 业务尚待迁为 Zio。下文 L1–L4 研究设计与旧交付证据保留历史语境；不代表本轮重新实跑。当前归属见[架构](zio-architecture.md)与[批准目录计划](superpowers/plans/2026-10-07-language-first-layout.md)。
+> **2026-10-07 结构更新**：Zio 库在 `libs/`，通用 Rust transport/host adapter 在 `contribs/native/loom/`，Groiz 是独立项目，不在本仓库。下文 L1–L4 研究设计与旧交付证据保留历史语境；不代表本轮重新实跑。当前归属见[架构](zio-architecture.md)与[批准目录计划](superpowers/plans/2026-10-07-language-first-layout.md)。
 
 ---
 
@@ -40,7 +40,7 @@
 实现,学习循环只有一份**。混合提议器 = 多路候选在每代做 merge
 (SICP 3.5 流的有限代快照;不引入 delay/force,每代是有限批)。
 
-eval 裁判用于本模块封闭算术候选的实际行为评分。对于 Groiz 的通用逻辑，
+eval 裁判用于本模块封闭算术候选的实际行为评分。对于应用的通用逻辑，
 eval 只提供执行结果；独立任务评价、能力检查与隔离由可信边界分别承担。
 
 ### 1.2 角色分工与扩展位
@@ -54,7 +54,7 @@ eval 只提供执行结果；独立任务评价、能力检查与隔离由可信
 两条教义,先于任何技术选型:
 
 - **实际行为证据**：本模块以独立样本上的实际 eval 结果评分，不以学习机器
-  的预测损失或自评分替代；Groiz 通用任务由固定的独立评价协议判定成功，
+  的预测损失或自评分替代；应用侧通用任务由固定的独立评价协议判定成功，
   eval 只执行程序，不能读取评价答案或修改裁判。
 - **RL 环境视角**:学习循环本身就是一个 RL 环境——state =
   (task, history),action = 候选批,reward = −损失。经验库
@@ -111,7 +111,7 @@ eval 只提供执行结果；独立任务评价、能力检查与隔离由可信
    提示词约束 + 解析后 AST 闭世界白名单,双层护栏;
 4. 提议器不可信；本模块的封闭算术语法只允许配置的符号/常数/运算，
    对所有提议器一致检查解析、AST 大小与白名单，再执行评分。
-   这不证明宏、模块、动态 eval 或通用宿主调用安全；Groiz 生成执行另需
+   这不证明宏、模块、动态 eval 或通用宿主调用安全；应用的生成执行另需
    展开前后传递能力校验、受限文件系统和时间/内存/调用预算。
 
 ### 1.5 与项目论点的关系

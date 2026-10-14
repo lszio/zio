@@ -6,7 +6,7 @@
 ;;
 ;; This module is pure: it builds and evolves descriptions and enforces
 ;; the candidate lifecycle. It never touches the host, the store or a
-;; worker; `grove` does that, consuming exactly this data.
+;; worker; the host application does that, consuming exactly this data.
 
 ;; ── model descriptions ─────────────────────────────────────────────
 

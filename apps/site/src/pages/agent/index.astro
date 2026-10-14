@@ -22,12 +22,11 @@ const cards = [
         本页真实执行 Zio WASM，LLM 响应与学习环境是本地模拟，无服务器或模型调用。
         同像性支持表示和编辑代码，不提供神经模型透明性或正确性证明；WASM 不替代能力检查与宿主隔离。
         现有 Zio 代码在 libs/std、libs/numa、libs/loom、libs/learning；Rust LLM 宿主基础设施在 contribs/native/loom。
-        完整 Numa 数值后端与 Loom harness 仍未完成，Rill 没有实现，语言 CLI 不是 Rill。Groiz 的 Rust legacy 在 apps/groiz/native；以 Zio 实现的独立应用目标尚未完成。
+        完整 Numa 数值后端与 Loom harness 仍未完成，Rill 没有实现，语言 CLI 不是 Rill。Groiz 是独立项目（lszio/groiz），代码与站点都不在本仓库。
       </p>
       <div class="hero-cta">
         <a href="#training" class="btn btn-primary">观看训练过程</a>
         <a href="#playground" class="btn btn-secondary">试用 Agent 编排</a>
-        <a href="https://github.com/lszio/groiz" class="btn btn-secondary">Groiz 自学习产品（独立仓库）→</a>
       </div>
     </div>
   </section>
@@ -36,7 +35,7 @@ const cards = [
     <div class="container">
       <div class="section-header">
         <h2>通用语言的 Agent 组合原语</h2>
-        <p>语言原语是基础；Planned：Loom 提供模型、工具、会话、预算、取消与 ACP harness，Groiz 负责学习、评估与批准</p>
+        <p>语言原语是基础；Planned：Loom 提供模型、工具、会话、预算、取消与 ACP harness</p>
       </div>
       <div class="grid-2x2">
         <div class="card">
@@ -115,7 +114,7 @@ const cards = [
       </div>
     </div>
     <div class="container">
-      <p class="sim-note">Planned：Groiz 独立 APP 将执行 Zio Agent 逻辑，经真实 LLM 生成代码、解析、能力检查与隔离执行，以错误和证据修订；Web 展示源码、实际路径与 diff。反馈产生逻辑候选，独立评估后由人批准正式版本。自动实验只限批准预算和编辑范围；可信基线、鉴权、评估与发布守卫不可自改。ACP（Agent Client Protocol）先 client／teacher adapter、后 server，当前尚未实现。</p>
+      <p class="sim-note">Planned：ACP（Agent Client Protocol）先 client／teacher adapter、后 server，当前尚未实现。真实 LLM 驱动的 Agent 执行闭环不在本仓库实现。</p>
     </div>
   </section>
 

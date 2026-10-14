@@ -16,7 +16,7 @@ const scenes = [
   { title: '浏览器交互', body: '通过 JavaScript 互操作访问页面对象，在 Playground 修改代码并观察结果。', href: '/playground/', label: '打开 Playground' },
   { title: '数值计算', body: '表达向量与张量计算。纯数值函数与依赖原生张量宿主的操作在库文档中分别说明。', href: '/libraries/numa/', label: 'Numa 数值库' },
   { title: 'Agent 编排', body: '组织模型调用、工具和会话；需要相应模型、网络或进程宿主，不由浏览器自动提供。', href: '/libraries/loom/', label: 'Loom 会话库' },
-  { title: '学习与应用', body: '使用学习策略库组织评估与迭代，或了解建立在 Zio 之上的 Groiz 应用。', href: '/libraries/learning/', label: 'Learning 库' },
+  { title: '学习与应用', body: '使用学习策略库组织评估与迭代，为模型构建、训练与快照管理提供接口。', href: '/libraries/learning/', label: 'Learning 库' },
 ];
 ---
 <Base title="Zio — 通用 Lisp 编程语言" description="Zio 是 Lisp 家族的通用编程语言。从表达式、函数与数据开始，探索库与使用场景，在 Playground 运行代码。">
@@ -59,7 +59,6 @@ const scenes = [
         <a href={`${base}/docs/`} class="btn btn-primary">语言文档</a>
         <a href={`${base}/libraries/`} class="btn btn-secondary">浏览库</a>
         <a href={`${base}/playground/`} class="btn btn-secondary">运行示例</a>
-        <a href="https://github.com/lszio/groiz" class="btn btn-secondary">应用案例：Groiz（由 lszio/groiz 维护）</a>
       </div>
     </div>
   </section>

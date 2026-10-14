@@ -1,17 +1,21 @@
 # Infrastructure, full Zio implementation and toolchain self-hosting
 
+> Historical design (2026-10-07). The Groiz application described below lives in
+> the independent project [lszio/groiz](https://github.com/lszio/groiz), not in this
+> repository; its intended paths and commands below are historical records.
+
 ## Approved scope
 
-The user requested infrastructure completion and full Zio implementation, and explicitly selected both toolchain self-hosting and Zio implementation of Grove browser business. The previously approved flat layout and ZOS-in-core decision remain binding.
+The user requested infrastructure completion and full Zio implementation, and explicitly selected both toolchain self-hosting and Zio implementation of the application browser business. The previously approved flat layout and ZOS-in-core decision remain binding.
 
-- `langs/core`: minimal native bootstrap/runtime, reader, ZOS and execution mechanisms; no Grove policy.
+- `langs/core`: minimal native bootstrap/runtime, reader, ZOS and execution mechanisms; no application policy.
 - `langs/compiler`: Zio expansion, analysis and compiler. A real portable instruction backend executes compiler-produced code. Compiler compiling itself is required.
 - `libs`: Zio standard, computation (Numa), CLI composition (Rill), session/teacher/harness (Loom) and learning policy.
 - `contribs`: editor/LSP/Tree-sitter integration and narrow native platform or tensor mechanisms. Infrastructure implementation languages remain unrestricted.
-- `apps/grove`: Zio persistence schema and business, coordination, evaluation, approvals, training orchestration, HTTP/CLI, reports and browser controller.
-- `apps/site`: existing Astro language introduction, accurate syntax documentation and actual WASM playground. It is not Grove.
+- the application (Groiz, its own repository): Zio persistence schema and business, coordination, evaluation, approvals, training orchestration, HTTP/CLI, reports and browser controller.
+- `apps/site`: existing Astro language introduction, accurate syntax documentation and actual WASM playground. It is not the Groiz application.
 
-A native function that runs an entire legacy Grove operation is not a migration. Moving unchanged Python recipes into `contribs` is not a migration. Source loading, macro expansion demos and a compiler emitting source for the old AST evaluator do not establish self-hosting.
+A native function that runs an entire legacy application operation is not a migration. Moving unchanged Python recipes into `contribs` is not a migration. Source loading, macro expansion demos and a compiler emitting source for the old AST evaluator do not establish self-hosting.
 
 ## Current evidence and prerequisites
 
@@ -50,7 +54,7 @@ Runtime interfaces under `zio_core::bytecode` must provide `register(&EvalContex
 
 Strict JSON is a real JSON codec: JSON null is Zio nil; trailing input, non-JSON syntax, nonfinite numbers and unsupported values are refused. Escaping is JSON-valid. Object key normalization cannot silently collapse distinct keys. Provide deterministic serialization for newly written identities; retain exact existing artifact bytes and stored JSON bodies when validating historical digests.
 
-The language CLI forwards script arguments and exposes explicit native capability assembly without linking Grove. A local package manifest declares entry, source roots, resources and required native capabilities. Packaged application dependencies and resources must resolve relative to the installed distribution, not CWD or compile-machine checkout. Use local/offline resolution and locked versions/content identities; a network registry is not needed for this deliverable.
+The language CLI forwards script arguments and exposes explicit native capability assembly without linking the application. A local package manifest declares entry, source roots, resources and required native capabilities. Packaged application dependencies and resources must resolve relative to the installed distribution, not CWD or compile-machine checkout. Use local/offline resolution and locked versions/content identities; a network registry is not needed for this deliverable.
 
 Native and browser sessions share fail-closed stdlib and source-aware bootstrap. Browser filesystem/process/database capabilities are explicitly unavailable unless provided by a browser host; no attempted native filesystem fallback. Export parse/inspection separately from evaluation.
 
@@ -70,14 +74,14 @@ Use `host/` names. Host-returned envelope/row maps use keyword keys; JSON input 
 - Parameter binding is mandatory. Transactions use the same connection through callback operations, without holding a nonreentrant mutex across language callbacks; reject unsafe competing transaction ownership.
 - `host/read-bytes(path)`, `host/write-atomic(path, bytes)`, `host/mkdir(path)`, `host/list-dir(path)`, `host/remove(path)`, `host/rename(from,to)`, `host/canonical-path(path)`; binary buffer inputs and outputs, actual flush/fsync/rename durability and canonical-root enforcement where granted.
 - `host/sha256(bytes)` -> lowercase hex; `host/random-bytes(count)` -> buffer; `host/clock-ms()`, `host/sleep-ms(ms)`; `host/argv()` and explicitly allowed `host/getenv(name)`.
-- Generic ordered/deterministic JSON and binary numeric decoding needed by exact historical record/state formats, not Grove record constructors.
+- Generic ordered/deterministic JSON and binary numeric decoding needed by exact historical record/state formats, not application record constructors.
 
 ### Transport/process module
 
 `transport::install(&EvalContext, &HostPolicy)` installs:
 
 - `host/http-request(request)` -> bounded response; `host/http-listen(config)` -> server handle; `host/http-next(server, timeout-ms)` -> request or nil; `host/http-reply(server, request-id, response)`; `host/http-close(server)`.
-- Request map: `:id`, `:method`, `:path`, `:query`, `:headers`, `:body`; response map: `:status`, `:headers`, `:body`. Headers have string keys. No role mapping or Grove route in Rust.
+- Request map: `:id`, `:method`, `:path`, `:query`, `:headers`, `:body`; response map: `:status`, `:headers`, `:body`. Headers have string keys. No role mapping or application route in Rust.
 - `host/process-start(config)` -> process handle; bounded `host/process-read(process, timeout-ms)`, `host/process-write(process, frame)`, `host/process-wait(process, timeout-ms)`, `host/process-kill(process)`. Framed NDJSON, bounded output/stderr, exact process identity, kill and reap.
 - Config has executable/argv/cwd/environment, timeout/frame/resource limits and explicit read-only mounts plus writable scratch. Native user/network/PID/mount namespaces and pivot-root implement isolation; no unsafe fallback or enclosing-checkout mount.
 - Generic polling/timers permit a single Zio owner to serve HTTP while multiple native processes execute. Do not pretend synchronous `future-call` is a concurrent scheduler.
@@ -85,9 +89,9 @@ Use `host/` names. Host-returned envelope/row maps use keyword keys; JSON input 
 
 ### Tensor module
 
-Numa/learning policies drive a generic CPU tensor backend in `contribs`. Backend operations include construction, shape/dtype validation, arithmetic/matmul/reduction/activation, differentiation, optimizer parameter updates, seeded sampling, finite-number checking and non-executing optimizer/RNG/parameter state import/export. Python may host PyTorch kernels, but may not choose Grove datasets, objectives, teachers, rewards, actions, metrics, recipes or approval outcomes.
+Numa/learning policies drive a generic CPU tensor backend in `contribs`. Backend operations include construction, shape/dtype validation, arithmetic/matmul/reduction/activation, differentiation, optimizer parameter updates, seeded sampling, finite-number checking and non-executing optimizer/RNG/parameter state import/export. Python may host PyTorch kernels, but may not choose application datasets, objectives, teachers, rewards, actions, metrics, recipes or approval outcomes.
 
-`tensor::install(&EvalContext, &HostPolicy)` exposes `host/tensor-start(config)`, `host/tensor-call(backend, operation)` and `host/tensor-close(backend)`, over the bounded process mechanism. Operation payloads describe generic tensor operations and handles, not `grove train` or a Python recipe-family dispatch.
+`tensor::install(&EvalContext, &HostPolicy)` exposes `host/tensor-start(config)`, `host/tensor-call(backend, operation)` and `host/tensor-close(backend)`, over the bounded process mechanism. Operation payloads describe generic tensor operations and handles, not an application train command or a Python recipe-family dispatch.
 
 ## 4. Zio libraries
 
@@ -97,11 +101,11 @@ Numa/learning policies drive a generic CPU tensor backend in `contribs`. Backend
 - Learning owns symbolic search, feedback precedence/conflicts, graph/model rewrite, populations, memory/abstraction and all current real training objective families. Supervised/hard distillation, soft/KL, preference, demonstration, masked representation, delayed environment feedback and policy-gradient behavior remain real operations, not declarations.
 - Standard library capabilities are executable; remove load-time prints from reusable modules and remove exposed placeholders rather than advertise them as implementations.
 
-## 5. Grove persistence and business
+## 5. Application persistence and business
 
 Zio owns all existing `native/learning` domain responsibilities: records and version checks; schema/SQL; observation/prediction/signals and frozen datasets; recipes/runs/branches/populations; durable artifacts and provenance; checkpoints/continuation/fork; composition/frozen parameters/shared groups/semantic spaces; ensemble routing/combination/costs; memory/licences/abstraction/reuse; retraction and reachability-based retention; append-only trace events; frozen evaluation and gates; governance/candidates/decline/authentic approvals/publication; owner epoch/leases/billing/queue/recovery.
 
-Preserve existing store history. Artifact identity remains SHA256 of `grove-artifact-v1\0` followed by exact bytes; objects retain existing `artifacts/objects/<aa>/<hex>` layout. `ArtifactRef` historical digest arrays and wire hex forms remain readable. Read historical bodies as their stored bytes when proving digest-bound approvals. Unknown schemas and incompatible state refuse explicitly. Schema migration must be transactional and never silently rewrite immutable history.
+Preserve existing store history. Artifact identity remains SHA256 of the historical artifact domain string (the ASCII prefix `grove-artifact-v1` followed by a NUL byte, from the store format that moved to the Groiz repository) followed by exact bytes; objects retain existing `artifacts/objects/<aa>/<hex>` layout. `ArtifactRef` historical digest arrays and wire hex forms remain readable. Read historical bodies as their stored bytes when proving digest-bound approvals. Unknown schemas and incompatible state refuse explicitly. Schema migration must be transactional and never silently rewrite immutable history.
 
 The user did not request a new role hierarchy or identity service: preserve existing hierarchical reader/annotator/operator/publisher behavior and explicit human/local publisher action, while never accepting `approved=true` as authority. No model or worker receives database, secret, evaluator-policy or publication handles. Protected paths move with the policies into Zio and include compiler/grant/approval boundaries.
 
@@ -111,9 +115,9 @@ Approval commits bind an authenticated publisher to exact subject/source/evaluat
 
 ## 6. CLI, HTTP, product UI and independent application
 
-Grove Zio entry dispatches existing demo/inspect/checkpoint/fork/resume/compare/select/approve/decline/run/serve commands with existing error classes and explicit capability failures. All current API routes remain implemented or explicitly versioned; every mutating operation has principal/route/request-bound durable receipts, not check-effect-record races. HTTP transport does not perform business operations.
+The application's Zio entry dispatches existing demo/inspect/checkpoint/fork/resume/compare/select/approve/decline/run/serve commands with existing error classes and explicit capability failures. All current API routes remain implemented or explicitly versioned; every mutating operation has principal/route/request-bound durable receipts, not check-effect-record races. HTTP transport does not perform business operations.
 
-Keep actual prediction, feedback, signal status/frozen membership, runs/progress/recovery, modules/lineage/experts, comparison and explicit publisher approval. Zio also renders reports and owns task synthesis, view state, action validation and product flow. A thin generic JavaScript browser bridge performs DOM, fetch, events and drawing, feeding serialized events/results to a Zio/WASM controller; it contains no Grove task generator or approval/training decisions. HTML/CSS and generic browser bridging are presentation mechanisms, not claimed as Zio source.
+Keep actual prediction, feedback, signal status/frozen membership, runs/progress/recovery, modules/lineage/experts, comparison and explicit publisher approval. Zio also renders reports and owns task synthesis, view state, action validation and product flow. A thin generic JavaScript browser bridge performs DOM, fetch, events and drawing, feeding serialized events/results to a Zio/WASM controller; it contains no application task generator or approval/training decisions. HTML/CSS and generic browser bridging are presentation mechanisms, not claimed as Zio source.
 
 Product projections distinguish filed, frozen, actually consumed, trained, independently evaluated, qualified, approved and active. Do not label dataset membership as proven learning.
 
@@ -131,4 +135,4 @@ Each owner first identifies affected symbols with GitNexus impact and reports HI
 
 Required evidence: strict codec boundary and module failure/cycle/visibility/sandbox behavior; interpreter/compiler differential semantics and three-stage self-compilation; real Tree-sitter parsing and LSP frame/document/Unicode/no-execution scenarios; native/WASM parity and actual language-site/browser surface; existing populated-store compatibility and transactional race/recovery/approval refusal; actual CPU gradients, all objective families, frozen-parameter checks and optimizer/RNG continuation; concurrent workers/shared budgets/cancel/restart; real HTTP/CLI/UI and detached-install lifecycle.
 
-After the new path is exercised, migrate all callers/contracts/docs, delete obsolete Rust Grove business crates and Python recipe/task policy, and remove temporary scaffolds. No compatibility aliases, source-text tests or old-business escape-hatch functions. No push or deployment is authorized by this request.
+After the new path is exercised, migrate all callers/contracts/docs, delete the obsolete native business crates (Groiz repository) and Python recipe/task policy, and remove temporary scaffolds. No compatibility aliases, source-text tests or old-business escape-hatch functions. No push or deployment is authorized by this request.
