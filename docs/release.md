@@ -80,8 +80,8 @@ Pushing the tag triggers `.github/workflows/release.yml`:
 |---|---|
 | `plan` | Checks the tag equals `v<workspace version>`; stops otherwise |
 | `verify` | Full test suite, self-hosting contracts, LSP session |
-| `native` | Five targets: linux x86_64/aarch64, macos x86_64/aarch64, windows x86_64 |
-| `crates` | Publishes `zio-core`, `zio-js`, `zio-host`, `zio-lsp`, `zio-wasi`, `zio-cli`, in that order |
+| `native` | Two Linux targets: x86_64 and aarch64 |
+| `crates` | Publishes `zio-core`, `zio-js`, `zio-host`, `zio-lsp`, `zio-wasi`, `zio-cli`, in that order; a version already on the registry is a skip, a rate limit is retried |
 | `npm` | Publishes `@lszio/zio-core`, the WASM engine |
 | `npm-cli` | Publishes `@lszio/zio`, the CLI wrapper that downloads the matching platform archive |
 | `docker` | Pushes `ghcr.io/lszio/zio` |
@@ -92,9 +92,14 @@ Every job is gated on `verify`, so a broken test run publishes nothing.
 publishing steps, which is the way to check a release without cutting
 one.
 
-The `crates` job is strict: an unpublished package stops the release
-rather than warning about it, because a silently missing Rust library
-is a release that claims a surface it did not deliver. The crate named
+The `crates` job is strict: an unpublished package stops that job rather
+than warning, because a silently missing Rust library is a release that
+claims a surface it did not deliver. It is also re-runnable — a version
+already on the registry is a skip, and a crates.io rate limit is waited
+out (the first attempt at 0.2.0 published five crates and was refused
+the sixth) — and both npm jobs skip a version that is already published,
+for the same reason: an immutable version must not turn a re-run red.
+The crate named
 `loom` (`contribs/native/loom`) is deliberately not published — the name
 is taken on crates.io by an unrelated crate, and the in-repo consumers
 depend on it by that path — so it carries `publish = false`.
@@ -104,6 +109,16 @@ for that triple and installs from `target/<triple>/release`. An
 installer that rebuilt for the runner's own host would ship the host's
 binary in a cross-compiled archive: an x86_64 macOS archive carrying an
 arm64 binary is a wrong answer that looks like success.
+
+Only the two Linux targets are built, and that is a statement about the
+code, not a scheduling choice: `zio-host`'s restricted-process and
+filesystem mechanisms are Linux implementations (`libc`'s `O_PATH`,
+`close_range`, `getrandom`, `std::os::unix` descriptors), so the crate
+does not compile for macOS or Windows. `restrict`ed execution on those
+platforms would need its own implementation of the same boundary, not a
+stub that reports success without one. The archives are therefore honest
+today: two Linux targets, and an npm CLI that names the archive it did
+not find on any other platform.
 
 ## The native archive
 

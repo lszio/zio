@@ -95,7 +95,7 @@ LSP 等开发工具，动态能力按真实依赖保留。WASM 浏览器与 WASI
 打标签、GitHub Actions 发布流水线与 crates.io 发布流程。
 `push v*` 标签触发 `.github/workflows/release.yml`：先校验标签与 workspace
 版本一致，再跑完整测试与自举契约，通过后
-构建五个平台目标、发布六个 crate、发布两个 npm 包
+构建两个 Linux 平台目标（x86_64 与 aarch64）、发布六个 crate、发布两个 npm 包
 [`@lszio/zio`](https://www.npmjs.com/package/@lszio/zio)（CLI：按版本下载
 对应平台归档并运行）与
 [`@lszio/zio-core`](https://www.npmjs.com/package/@lszio/zio-core)（WASM 引擎）、
@@ -109,9 +109,11 @@ LSP 等开发工具，动态能力按真实依赖保留。WASM 浏览器与 WASI
 
 发布面一览：
 
-- **可执行文件**：五平台归档（`tools/install.sh` 装配，`bin/zio`、`bin/zio-lsp`、
-  `bin/zio-env.sh`／`bin/zio-env.ps1`）、Docker 镜像
+- **可执行文件**：Linux 双平台归档（x86_64／aarch64，`tools/install.sh` 装配，
+  `bin/zio`、`bin/zio-lsp`、`bin/zio-env.sh`）、Docker 镜像
   `ghcr.io/lszio/zio`，以及 `zio build --target native` 的单文件应用。
+  macOS 与 Windows 归档尚未交付：`zio-host` 的受限进程与文件系统机制目前是
+  Linux-only 实现，缺少这两个平台的等价实现，归档不能假装已经支持。
   `ZIO_TARGET` 决定归档构建与安装的目标三元组；每个归档带
   `manifest.json`（版本、commit、组件校验和）。
 - **Rust 执行库**：[`zio-core`](https://crates.io/crates/zio-core) crate——嵌入
