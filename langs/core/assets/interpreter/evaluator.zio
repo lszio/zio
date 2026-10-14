@@ -1,0 +1,696 @@
+;; doc: The third execution surface owns target control flow. Native calls supply
+;; values and typed errors; no target expression is sent to the Rust evaluator.
+;; Continuations are a persistent linked list, including ordinary call returns.
+(defn zi-e-get [x k] (if (nil? x) nil (get x k nil)))
+(defn zi-e-pop [xs] (let [tail (cdr xs)] (if (nil? tail) '() tail)))
+(defn zi-e-tail [xs n] (slice xs n (count xs)))
+(defn zi-e-list [xs] (apply list xs))
+(defn zi-e-key-name [x]
+  (let [chars (interpreter/chars (str x))]
+    (zi-r-text chars 1 (count chars))))
+(defn zi-e-kind [node]
+  (let [kind (zi-e-get node :kind)]
+    (cond ((or (= kind :integer) (= kind :float)) "number")
+          ((= kind :char) "character")
+          ((nil? kind) "nil") (else (zi-e-key-name kind)))))
+(defn zi-e-value-type [value]
+  (let [kind (type value)]
+    (cond ((or (= kind :integer) (= kind :float)) "number")
+          ((= kind :fn) "function") ((= kind :native-fn) "native-function")
+          (else (zi-e-key-name kind)))))
+(defn zi-e-head [node]
+  (if (= (zi-e-get node :kind) :list)
+    (let [xs (get node :children)]
+      (if (= (count xs) 0) nil
+        (if (= (get (get xs 0) :kind) :symbol) (get (get xs 0) :value) nil))) nil))
+(defn zi-e-span [s] (get s :span nil))
+(defn zi-e-fail [s kind payload] (interpreter/error kind payload (zi-e-span s)))
+(defn zi-e-check [s yes message]
+  (if yes true (zi-e-fail s :invalid-form message)))
+(defn zi-e-arity [s expected got]
+  (if (= expected got) true (zi-e-fail s :arity [expected got])))
+(defn zi-e-min [s expected got]
+  (if (>= got expected) true (zi-e-fail s :min-arity [expected got])))
+(defn zi-e-type [s expected got] (zi-e-fail s :type [expected got]))
+(defn zi-e-symbol [s node form]
+  (zi-e-check s (= (zi-e-get node :kind) :symbol)
+    (str form " requires a symbol, got " (zi-e-kind node)))
+  (get node :value))
+(defn zi-e-sequential [node]
+  (or (= (zi-e-get node :kind) :list) (= (zi-e-get node :kind) :vector)))
+(defn zi-e-names [s nodes message]
+  (loop [i 0 out []]
+    (if (= i (count nodes)) out
+      (let [n (get nodes i)]
+        (zi-e-check s (or (= (get n :kind) :symbol) (= (get n :kind) :keyword))
+          (str message (zi-e-kind n)))
+        (recur (+ i 1) (vector-conj out (get n :value)))))))
+;; doc: Parameter parsing mirrors the current reader/evaluator contract, including
+;; its permissive rest marker parsing rather than inventing destructuring.
+(defn zi-e-params [s node]
+  (zi-e-check s (zi-e-sequential node)
+    (str "params must be a vector or list, got " (zi-e-kind node)))
+  (loop [i 0 names [] rest-name nil seen false]
+    (let [xs (get node :children)]
+      (if (= i (count xs)) [names rest-name]
+        (let [p (get xs i)]
+          (zi-e-check s (= (get p :kind) :symbol)
+            (str "param name must be a symbol, got " (zi-e-kind p)))
+          (let [name (get p :value)]
+            (cond
+              ((= name "&") (recur (+ i 1) names rest-name true))
+              (seen (recur (+ i 1) names name true))
+              (else (recur (+ i 1) (vector-conj names name) rest-name false)))))))))
+(defn zi-e-bindings [s node]
+  (zi-e-check s (zi-e-sequential node)
+    (str "bindings must be a vector or list, got " (zi-e-kind node)))
+  (let [xs (get node :children)]
+    (zi-e-check s (= (mod (count xs) 2) 0) "bindings must have an even number of elements")
+    (loop [i 0 names [] inits []]
+      (if (= i (count xs)) [names inits]
+        (let [p (get xs i)]
+          (zi-e-check s (= (get p :kind) :symbol)
+            (str "binding name must be a symbol, got " (zi-e-kind p)))
+          (recur (+ i 2) (vector-conj names (get p :value))
+            (vector-conj inits (get xs (+ i 1)))))))))
+(defn zi-e-bind-values [env names values]
+  (loop [i 0]
+    (if (= i (count names)) env
+      (do (interpreter/env :set env (get names i) (get values i)) (recur (+ i 1))))))
+(defn zi-e-bind-call [s descriptor args]
+  (let [params (get descriptor :params) rest-name (get descriptor :rest nil)]
+    (if rest-name (zi-e-min s (count params) (count args))
+      (zi-e-arity s (count params) (count args)))
+    (let [env (interpreter/env :new (get descriptor :env))]
+      (zi-e-bind-values env params args)
+      (if rest-name
+        (interpreter/env :set env rest-name (zi-e-list (zi-e-tail args (count params)))) nil)
+      env)))
+(defn zi-e-value [s value] (put (put (put s :mode :value) :value value) :callback false))
+(defn zi-e-node [s node env tail]
+  (put (put (put (put (put s :mode :eval) :node node) :env env) :tail tail)
+    :span (or (get node :span nil)
+              (zi-e-get (get node :origin nil) :call-site) (get s :span nil))))
+(defn zi-e-push [s frame] (put s :stack (cons frame (get s :stack))))
+(defn zi-e-frame [s op]
+  {:op op :env (get s :env) :tail (get s :tail) :loop (get s :loop nil)
+   :span (get s :span nil)})
+(defn zi-e-restore [s f]
+  (put (put (put (put s :env (get f :env)) :tail (get f :tail))
+    :loop (get f :loop nil)) :span (get f :span nil)))
+(defn zi-e-sequence [s nodes env tail]
+  (if (= (count nodes) 0) (zi-e-value s nil)
+    (let [f (put (put (zi-e-frame s :sequence) :env env) :nodes (zi-e-tail nodes 1))]
+      (zi-e-node (if (= (count nodes) 1) s (zi-e-push s (put f :body-tail tail)))
+        (get nodes 0) env (if (= (count nodes) 1) tail false)))))
+(defn zi-e-many [s nodes action]
+  (if (= (count nodes) 0) (zi-e-finish-many s action [])
+    (let [f (put (put (put (zi-e-frame s :many) :nodes (zi-e-tail nodes 1))
+                   :values []) :action action)]
+      (zi-e-node (zi-e-push s f) (get nodes 0) (get s :env) false))))
+(defn zi-e-map [values]
+  (loop [i 0 out {}]
+    (if (= i (count values)) out
+      (recur (+ i 2) (put out (get values i) (get values (+ i 1)))))))
+;; doc: Loop iterations allocate a fresh lexical environment so closures retain
+;; their own iteration, while recur itself never consumes the Rust call stack.
+(defn zi-e-loop [s loop-info values]
+  (zi-e-arity s (count (get loop-info :names)) (count values))
+  (let [env (interpreter/env :new (get loop-info :outer))]
+    (zi-e-bind-values env (get loop-info :names) values)
+    (zi-e-node (put s :loop loop-info) (get loop-info :body) env true)))
+(defn zi-e-finish-many [s action values]
+  (cond
+    ((= (get action :op) :vector) (zi-e-value s values))
+    ((= (get action :op) :map) (zi-e-value s (zi-e-map values)))
+    ((= (get action :op) :call)
+      (put (put (put s :mode :apply) :callable (get action :callable)) :args values))
+    ((= (get action :op) :loop) (zi-e-loop s (get action :info) values))
+    ((= (get action :op) :recur) (zi-e-loop s (get action :info) values))
+    (else (zi-e-fail s :invalid-form "invalid evaluator collection continuation"))))
+(defn zi-e-let-next [s f]
+  (let [inits (get f :inits) i (get f :index)]
+    (if (= i (count inits))
+      (zi-e-sequence s (get f :body) (get f :inner) (get f :tail))
+      (zi-e-node (zi-e-push s f) (get inits i) (get f :inner) false))))
+(defn zi-e-cond [s clauses]
+  (if (= (count clauses) 0) (zi-e-value s nil)
+    (let [clause (get clauses 0)]
+      (zi-e-check s (= (get clause :kind) :list)
+        (str "cond clause must be a list, got " (zi-e-kind clause)))
+      (let [xs (get clause :children)]
+        (zi-e-check s (> (count xs) 0) "cond clause cannot be empty")
+        (if (and (= (get (get xs 0) :kind) :symbol) (= (get (get xs 0) :value) "else"))
+          (zi-e-sequence s (zi-e-tail xs 1) (get s :env) (get s :tail))
+          (zi-e-node (zi-e-push s (put (put (zi-e-frame s :cond)
+            :clauses (zi-e-tail clauses 1)) :body (zi-e-tail xs 1)))
+            (get xs 0) (get s :env) false))))))
+(defn zi-e-short [s nodes op]
+  (if (= (count nodes) 0) (zi-e-value s (if (= op :and) true nil))
+    (if (= (count nodes) 1) (zi-e-node s (get nodes 0) (get s :env) (get s :tail))
+      (zi-e-node (zi-e-push s (put (zi-e-frame s op) :nodes (zi-e-tail nodes 1)))
+        (get nodes 0) (get s :env) false))))
+(defn zi-e-try [s args]
+  (zi-e-check s (> (count args) 0) "try requires a body")
+  (let [parsed
+    (loop [end (count args) handlers []]
+      (if (= end 0) [end handlers]
+        (let [node (get args (- end 1))]
+          (if (= (zi-e-head node) "catch")
+            (let [xs (get node :children) ty (get xs 1 nil)]
+              (recur (- end 1) (vector-conj handlers
+                {:type (if (or (= (zi-e-get ty :kind) :symbol) (= (zi-e-get ty :kind) :keyword))
+                         (get ty :value) "any") :body (zi-e-tail xs 2)})))
+            [end handlers]))))]
+    (zi-e-sequence (zi-e-push s (put (zi-e-frame s :try) :handlers (get parsed 1)))
+      (slice args 0 (get parsed 0)) (get s :env) false)))
+;; doc: Catch clauses are searched in reverse source order, and errors remain
+;; typed native handles until caught or rethrown. Handler errors unwind outward.
+(defn zi-e-unwind [s error]
+  (loop [state s]
+    (if (= (count (get state :stack)) 0) (interpreter/raise (get error :error))
+      (let [f (first (get state :stack))
+            next (zi-e-restore (put state :stack (zi-e-pop (get state :stack))) f)]
+        (cond
+          ((= (get f :op) :module)
+            (do (interpreter/module :take-exports (get f :inner)) (recur next)))
+          ((= (get f :op) :try)
+            (let [handlers (get f :handlers)
+                  chosen (loop [i 0]
+                    (if (= i (count handlers)) nil
+                      (let [h (get handlers i)]
+                        (if (or (= (get h :type) "any")
+                                (= (get h :type) (get error :type-name (zi-e-key-name (get error :type))))) h
+                          (recur (+ i 1))))))]
+              (if chosen
+                (let [env (interpreter/env :new (get f :env))]
+                  (interpreter/env :set env "*error*" (get error :message))
+                  (zi-e-sequence next (get chosen :body) env (get f :tail)))
+                (recur next))))
+          (else (recur next)))))))
+;; doc: Quasiquotation has its own explicit traversal frames; active unquotes
+;; share the target lexical environment, and only list/vector children splice.
+(defn zi-e-quasi [s node depth]
+  (put (put (put s :mode :quasi) :node node) :depth depth))
+(defn zi-e-wrapper [node]
+  (let [op (zi-e-head node)]
+    (if (and op (= (count (get node :children)) 2)
+          (or (= op "quasiquote") (= op "unquote") (= op "unquote-splicing"))) op nil)))
+(defn zi-e-quasi-next [s f]
+  (let [nodes (get f :nodes)]
+    (if (= (count nodes) 0)
+      (zi-e-value s
+        (cond ((= (get f :kind) :list) (zi-e-list (get f :values)))
+              ((= (get f :kind) :map) (zi-e-map (get f :values)))
+              (else (get f :values))))
+      (let [node (get nodes 0)
+            splice (and (= (get f :depth) 1) (not (= (get f :kind) :map))
+                        (= (zi-e-wrapper node) "unquote-splicing"))
+            next (put (put f :nodes (zi-e-tail nodes 1)) :splice splice)]
+        (if splice
+          (zi-e-node (zi-e-push s next) (get (get node :children) 1) (get f :env) false)
+          (zi-e-quasi (zi-e-push s next) node (get f :depth)))))))
+(defn zi-e-quasi-step [s]
+  (let [node (get s :node) depth (get s :depth) op (zi-e-wrapper node)]
+    (if op
+      (cond
+        ((and (= depth 1) (= op "unquote"))
+          (zi-e-node s (get (get node :children) 1) (get s :env) false))
+        ((and (= depth 1) (= op "unquote-splicing"))
+          (zi-e-fail s :invalid-form "unquote-splicing (~@) outside of a list or vector template"))
+        (else
+          (zi-e-quasi (zi-e-push s (put (zi-e-frame s :quasi-wrap) :name op))
+            (get (get node :children) 1) (if (= op "quasiquote") (+ depth 1) (- depth 1)))))
+      (if (or (zi-e-sequential node) (= (get node :kind) :map))
+        (zi-e-quasi-next s (put (put (put (put (zi-e-frame s :quasi-many)
+          :kind (get node :kind)) :nodes (get node :children)) :values []) :depth depth))
+        (zi-e-value s (syntax->data node))))))
+;; doc: Known synchronous callbacks are ordinary continuation frames. A target
+;; callback never starts a nested evaluator, and macro values remain non-callable.
+(defn zi-e-callback [s callable args]
+  (put (put (put (put (dissoc s :descriptor) :mode :apply) :callable callable)
+    :args args) :callback true))
+(defn zi-e-hof-next [s frame]
+  (let [items (get frame :items) index (get frame :index) kind (get frame :kind)]
+    (if (= index (count items))
+      (zi-e-value s (if (= kind :reduce) (get frame :acc) (zi-e-list (get frame :out))))
+      (zi-e-callback (zi-e-push s frame) (get frame :callable)
+        (if (= kind :reduce) [(get frame :acc) (get items index)] [(get items index)])))))
+(defn zi-e-hof [s name args]
+  (zi-e-arity s (if (= name "reduce") 3 2) (count args))
+  (let [items (get args (if (= name "reduce") 2 1))]
+    (if (or (list? items) (vector? items)) true
+      (zi-e-type s "sequential" (zi-e-value-type items)))
+    (zi-e-hof-next s
+      (put (put (put (put (put (put (zi-e-frame s :hof)
+        :kind (interpreter/scalar :keyword name)) :callable (get args 0))
+        :items items) :index 0) :out []) :acc (if (= name "reduce") (get args 1) nil)))))
+(defn zi-e-sort-next [s frame]
+  (let [items (get frame :items) index (get frame :index) at (get frame :at)]
+    (if (>= index (count items)) (zi-e-value s items)
+      (if (= at 0) (zi-e-sort-next s (put (put frame :index (+ index 1)) :at (+ index 1)))
+        (zi-e-callback (zi-e-push s frame) (get frame :callable)
+          [(get items at) (get items (- at 1))])))))
+(defn zi-e-sort [s args]
+  (zi-e-arity s 2 (count args))
+  (let [items (get args 1)]
+    (if (or (list? items) (vector? items)) true
+      (zi-e-type s "sequential" (zi-e-value-type items)))
+    (zi-e-sort-next s
+      (put (put (put (put (zi-e-frame s :sort) :items (reduce vector-conj [] items))
+        :callable (get args 0)) :index 1) :at 1))))
+(defn zi-e-future [s args]
+  (zi-e-arity s 1 (count args))
+  (let [callable (get args 0)]
+    (if (= (type callable) :fn) true (zi-e-type s "function" (zi-e-value-type callable)))
+    (let [descriptor (interpreter/future-info callable)
+          params (get descriptor :params)]
+      (zi-e-arity s (count params) 0)
+      (zi-e-sequence (put (zi-e-push s (zi-e-frame s :future)) :loop nil)
+        (get descriptor :body) (interpreter/env :new (get descriptor :env)) false))))
+(defn zi-e-resume [s]
+  (let [f (first (get s :stack)) value (get s :value)
+        state (zi-e-restore (put s :stack (zi-e-pop (get s :stack))) f)
+        op (get f :op)]
+    (cond
+      ((= op :hof)
+        (let [kind (get f :kind) index (get f :index)
+              next (put f :index (+ index 1))]
+          (zi-e-hof-next state
+            (cond
+              ((= kind :reduce) (put next :acc value))
+              ((= kind :map) (put next :out (vector-conj (get f :out) value)))
+              (value (put next :out (vector-conj (get f :out) (get (get f :items) index))))
+              (else next)))))
+      ((= op :sort)
+        (let [at (get f :at) index (get f :index)]
+          (zi-e-sort-next state
+            (if value
+              (put (put f :items (interpreter/vector-swap (get f :items) at (- at 1))) :at (- at 1))
+              (put (put f :index (+ index 1)) :at (+ index 1))))))
+      ((= op :future) (zi-e-value state (deliver (promise) value)))
+      ((= op :sequence) (zi-e-sequence state (get f :nodes) (get f :env) (get f :body-tail)))
+      ((= op :many)
+        (let [values (vector-conj (get f :values) value) nodes (get f :nodes)]
+          (if (= (count nodes) 0) (zi-e-finish-many state (get f :action) values)
+            (zi-e-node (zi-e-push state (put (put f :values values) :nodes (zi-e-tail nodes 1)))
+              (get nodes 0) (get f :env) false))))
+      ((= op :if) (zi-e-node state (if value (get f :then) (get f :else)) (get f :env) (get f :tail)))
+      ((= op :set)
+        (do (interpreter/env (get f :operation) (get f :env) (get f :name) value)
+          (zi-e-value state value)))
+      ((= op :let)
+        (do (interpreter/env :set (get f :inner) (get (get f :names) (get f :index)) value)
+          (zi-e-let-next state (put f :index (+ (get f :index) 1)))))
+      ((= op :and) (if value (zi-e-short state (get f :nodes) :and) (zi-e-value state value)))
+      ((= op :or) (if value (zi-e-value state value) (zi-e-short state (get f :nodes) :or)))
+      ((= op :cond)
+        (if value (zi-e-sequence state (get f :body) (get f :env) (get f :tail))
+          (zi-e-cond state (get f :clauses))))
+      ((= op :try) (zi-e-value state value))
+      ((= op :call-head)
+        (let [descriptor (interpreter/callable-info value)]
+          (if (= (zi-e-get descriptor :kind) :macro)
+            (zi-e-node state (zi-expand descriptor (get f :args) (get f :call)) (get f :env) (get f :tail))
+            (zi-e-many state (get f :args) {:op :call :callable value}))))
+      ((= op :quasi-wrap)
+        (zi-e-value state (list (interpreter/scalar :symbol (get f :name)) value)))
+      ((= op :quasi-many)
+        (let [values (if (get f :splice false)
+                      (do (if (or (list? value) (vector? value)) true
+                            (zi-e-type state "sequential" (zi-e-value-type value)))
+                        (reduce vector-conj (get f :values) value))
+                      (vector-conj (get f :values) value))]
+          (zi-e-quasi-next state (put f :values values))))
+      ((= op :module)
+        (let [declared (interpreter/module :take-exports (get f :inner))
+              exports (reduce vector-conj (get f :exports) declared)]
+          (interpreter/module :register (get f :inner) (get f :name) exports nil)
+          (zi-e-value state value)))
+      (else (zi-e-fail state :invalid-form "invalid evaluator continuation")))))
+
+;; doc: Module syntax and import policy are interpreted here. The host only
+;; authorizes/loads/registers modules and exposes their owned public bindings.
+(defn zi-e-module [s args]
+  (zi-e-check s (> (count args) 0) "module requires a name")
+  (let [name-node (get args 0)]
+    (zi-e-check s (or (= (get name-node :kind) :symbol) (= (get name-node :kind) :keyword))
+      (str "module name must be a keyword or symbol, got " (zi-e-kind name-node)))
+    (let [has-exports (and (> (count args) 1) (= (get (get args 1) :kind) :keyword)
+                          (= (get (get args 1) :value) "export"))
+          exports (if has-exports
+                    (do (zi-e-check s (>= (count args) 3) "module :export requires a list of symbols")
+                      (zi-e-check s (zi-e-sequential (get args 2))
+                        (str "module :export must be a list or vector, got " (zi-e-kind (get args 2))))
+                      (zi-e-names s (get (get args 2) :children)
+                        "module export symbols must be keywords or symbols, got ")) [])
+          inner (interpreter/env :new (get s :env))
+          f (put (put (put (zi-e-frame s :module) :inner inner) :exports exports)
+               :name (get name-node :value))]
+      (interpreter/module :push-exports inner)
+      (zi-e-sequence (zi-e-push s f) (zi-e-tail args (if has-exports 3 1)) inner false))))
+(defn zi-e-export [s args]
+  (let [nodes (if (and (= (count args) 1) (zi-e-sequential (get args 0)))
+                (get (get args 0) :children) args)
+        names (zi-e-names s nodes "export symbols must be symbols or keywords, got ")]
+    (loop [i 0]
+      (if (= i (count names)) nil
+        (do (interpreter/module :add-export (get s :env) (get names i)) (recur (+ i 1)))))
+    (zi-e-value s nil)))
+(defn zi-e-require [s args]
+  (zi-e-check s (> (count args) 0) "require requires a module name")
+  (let [name-node (get args 0)]
+    (zi-e-check s (or (= (get name-node :kind) :symbol) (= (get name-node :kind) :keyword))
+      (str "require requires a module name (keyword or symbol), got " (zi-e-kind name-node)))
+    (let [options
+      (loop [i 1 alias nil refer nil]
+        (if (= i (count args)) [alias refer]
+          (let [option (get args i) label (get option :value nil)]
+            (zi-e-check s (or (= (get option :kind) :symbol) (= (get option :kind) :keyword))
+              (str "require: unexpected argument " (zi-e-kind option) ", expected :as or :refer"))
+            (cond
+              ((= label "as")
+                (zi-e-check s (< (+ i 1) (count args)) "require :as expects an alias name")
+                (let [n (get args (+ i 1))]
+                  (zi-e-check s (= (get n :kind) :symbol)
+                    (str "require :as expects a symbol, got " (zi-e-kind n)))
+                  (recur (+ i 2) (get n :value) refer)))
+              ((= label "refer")
+                (zi-e-check s (< (+ i 1) (count args)) "require :refer expects a list of symbols")
+                (let [n (get args (+ i 1))]
+                  (zi-e-check s (zi-e-sequential n)
+                    (str "require :refer expects a list or vector, got " (zi-e-kind n)))
+                  (recur (+ i 2) alias
+                    (zi-e-names s (get n :children) "require :refer list items must be symbols or keywords"))))
+              (else (zi-e-fail s :invalid-form
+                (str "require: unexpected argument " (zi-e-kind option) ", expected :as or :refer")))))))
+          module (interpreter/module :require (get s :env) (get name-node :value))
+          exports (get module :exports)
+          names (if (nil? (get options 1)) (get module :names) (get options 1))]
+      (loop [i 0]
+        (if (= i (count names)) nil
+          (let [name (get names i)]
+            (zi-e-check-export s exports name (get name-node :value))
+            (interpreter/env :set (get s :env) name (get exports name))
+            (recur (+ i 1)))))
+      (if (get options 0)
+        (interpreter/env :set (get s :env) (get options 0)
+          (reduce (fn [out name] (put out (interpreter/scalar :keyword name) (get exports name)))
+            {} (get module :names))) nil)
+      (zi-e-value s nil))))
+(defn zi-e-check-export [s exports name module-name]
+  (if (loop [i 0 ks (keys exports)]
+        (if (= i (count ks)) false (if (= name (get ks i)) true (recur (+ i 1) ks)))) true
+    (zi-e-fail s :custom (str "module " module-name " does not export owned binding " name))))
+;; doc: ZOS syntax is reduced to names, slot data and method descriptors before
+;; native allocation/dispatch. Every stored method body reenters this machine.
+(defn zi-e-slot [s slot]
+  (zi-e-check s (= (get slot :kind) :list)
+    (str "each slot definition must be a list, got " (zi-e-kind slot)))
+  (let [xs (get slot :children)]
+    (zi-e-check s (> (count xs) 0) "slot definition cannot be empty")
+    (let [name (get xs 0)]
+      (if (= (get name :kind) :symbol) true
+        (zi-e-type s "symbol" (str "slot name: " (zi-e-kind name))))
+      (loop [i 1 initargs [] accessor nil]
+        (if (>= i (count xs)) {:name (get name :value) :initargs initargs :accessor accessor}
+          (let [option (get xs i) next (get xs (+ i 1) nil)]
+            (cond
+              ((and (= (get option :kind) :keyword) (= (get option :value) "initarg"))
+                (recur (+ i 2)
+                  (if (or (= (zi-e-get next :kind) :keyword) (= (zi-e-get next :kind) :symbol))
+                    (vector-conj initargs (get next :value)) initargs) accessor))
+              ((and (or (= (get option :kind) :keyword) (= (get option :kind) :symbol))
+                    (= (get option :value) "accessor"))
+                (recur (+ i 2) initargs
+                  (if (= (zi-e-get next :kind) :symbol) (get next :value) accessor)))
+              (else (recur (+ i 1) initargs accessor)))))))))
+(defn zi-e-zos [s op args]
+  (let [env (get s :env)]
+    (cond
+      ((= op "defclass")
+        (zi-e-min s 3 (count args))
+        (if (= (get (get args 0) :kind) :symbol) true
+          (zi-e-type s "symbol" (str "class name: " (zi-e-kind (get args 0)))))
+        (let [super (get args 1)
+              parents (cond
+                ((= (get super :kind) :symbol) [(get super :value)])
+                ((= (get super :kind) :list)
+                  (reduce (fn [xs n] (if (= (get n :kind) :symbol)
+                    (vector-conj xs (get n :value)) xs)) [] (get super :children)))
+                (else []))
+              slots (get args (if (or (= (get super :kind) :symbol)
+                                     (= (get super :kind) :list) (= (get super :kind) :nil)) 2 1))]
+          (if (zi-e-sequential slots) true
+            (zi-e-type s "list or vector" (str "slots: " (zi-e-kind slots))))
+          (zi-e-value s (interpreter/zos :class env (get (get args 0) :value) parents
+            (reduce (fn [out n] (vector-conj out (zi-e-slot s n))) [] (get slots :children))))))
+      ((= op "defgeneric")
+        (zi-e-min s 2 (count args))
+        (if (= (get (get args 0) :kind) :symbol) true
+          (zi-e-type s "symbol" (str "gf name: " (zi-e-kind (get args 0)))))
+        (if (zi-e-sequential (get args 1)) true
+          (zi-e-type s "list" (str "lambda list: " (zi-e-kind (get args 1)))))
+        (interpreter/zos :generic env (get (get args 0) :value)
+          (reduce (fn [out n] (vector-conj out
+            (if (= (get n :kind) :symbol) (get n :value) "<param>")))
+            [] (get (get args 1) :children)))
+        (zi-e-value s nil))
+      ((= op "defmethod")
+        (zi-e-min s 3 (count args))
+        (if (= (get (get args 0) :kind) :symbol) true
+          (zi-e-type s "symbol" (str "gf name: " (zi-e-kind (get args 0)))))
+        (let [q (get args 1)
+              qualified (and (= (get q :kind) :keyword)
+                (or (= (get q :value) "before") (= (get q :value) "after") (= (get q :value) "around")))
+              index (if qualified 2 1)
+              specs (get args index nil)]
+          (if (zi-e-sequential specs) true
+            (zi-e-type s "list" (str "specializers: " (zi-e-kind specs))))
+          (let [parsed
+            (loop [i 0 names [] types []]
+              (if (= i (count (get specs :children))) [names types]
+                (let [n (get (get specs :children) i) xs (get n :children)]
+                  (cond
+                    ((= (get n :kind) :symbol)
+                      (recur (+ i 1) (vector-conj names (get n :value)) (vector-conj types :t)))
+                    ((and (= (get n :kind) :list) (= (count xs) 2))
+                      (if (and (= (get (get xs 0) :kind) :symbol) (= (get (get xs 1) :kind) :symbol))
+                        (recur (+ i 1) (vector-conj names (get (get xs 0) :value))
+                          (vector-conj types (get (get xs 1) :value)))
+                        (recur (+ i 1) names types)))
+                    (else (zi-e-fail s :invalid-form (str "invalid specializer: " (syntax->data n))))))))
+                body (zi-e-tail args (+ index 1))
+                stored (if (= (count body) 1) body
+                         [(zi-e-synthetic-list body)])]
+            (interpreter/zos :method env (get (get args 0) :value)
+              (if qualified (interpreter/scalar :keyword (get q :value)) :primary)
+              (get parsed 1) (get parsed 0) stored)
+            (zi-e-value s nil))))
+      ((= op "call-next-method") (zi-e-value s (interpreter/zos :next env)))
+      ((= op "defpackage")
+        (zi-e-check s (> (count args) 0) "defpackage requires a name")
+        (let [name (get args 0)]
+          (if (or (= (get name :kind) :keyword) (= (get name :kind) :symbol)) true
+            (zi-e-type s "keyword or symbol" (zi-e-kind name)))
+          (let [parsed
+            (loop [i 1 uses [] exports []]
+              (if (= i (count args)) [uses exports]
+                (let [clause (get args i)]
+                  (zi-e-check s (zi-e-sequential clause)
+                    (str "defpackage clause must be a list, got " (zi-e-kind clause)))
+                  (let [xs (get clause :children) head (get xs 0 nil)
+                        label (if (or (= (zi-e-get head :kind) :keyword) (= (zi-e-get head :kind) :symbol))
+                                (get head :value) nil)
+                        names (reduce (fn [out n]
+                          (if (or (= (get n :kind) :keyword) (= (get n :kind) :symbol))
+                            (vector-conj out (get n :value)) out)) [] (zi-e-tail xs 1))]
+                    (recur (+ i 1) (if (or (= label "use") (= label ":use")) (reduce vector-conj uses names) uses)
+                      (if (or (= label "export") (= label ":export")) (reduce vector-conj exports names) exports))))))]
+            (zi-e-value s (interpreter/zos :package env (get name :value) (get parsed 0) (get parsed 1))))))
+      (else (zi-e-fail s :invalid-form "invalid ZOS dispatch")))))
+(defn zi-e-synthetic-list [children]
+  {:kind :list :value nil :children children :span nil
+   :origin {:kind :generated :by "evaluator" :call-site nil}})
+(defn zi-e-nil-node []
+  {:kind :nil :value nil :children [] :span nil
+   :origin {:kind :generated :by "evaluator" :call-site nil}})
+;; doc: Special forms are selected by literal head exactly as in the language;
+;; ordinary function aliases remain ordinary calls, including and/or values.
+(defn zi-e-special [s op args]
+  (cond
+    ((= op "quote")
+      (zi-e-arity s 1 (count args)) (zi-e-value s (syntax->data (get args 0))))
+    ((= op "quasiquote")
+      (zi-e-arity s 1 (count args)) (zi-e-quasi s (get args 0) 1))
+    ((or (= op "unquote") (= op "unquote-splicing"))
+      (zi-e-fail s :invalid-form (str op " (~ / ~@) used outside quasiquote (`)")))
+    ((or (= op "def") (= op "set!"))
+      (zi-e-arity s 2 (count args))
+      (let [name (zi-e-symbol s (get args 0) op)
+            f (put (put (zi-e-frame s :set) :name name) :operation (if (= op "def") :set :update))]
+        (zi-e-node (zi-e-push s f) (get args 1) (get s :env) false)))
+    ((or (= op "defn") (= op "fn") (= op "defmacro"))
+      (if (= op "fn") (zi-e-check s (> (count args) 0) "fn requires at least params")
+        (zi-e-min s (if (= op "defmacro") 2 3) (count args)))
+      (let [named (not (= op "fn"))
+            name (if named (zi-e-symbol s (get args 0) op) nil)
+            index (if named 1 0)
+            rules (and (= op "defmacro") (= (zi-e-head (get args index)) "syntax-rules"))
+            parsed (if rules [[] "_args"]
+                     (do (if (= op "defmacro") (zi-e-min s 3 (count args)) nil)
+                         (zi-e-params s (get args index))))
+            body (if rules [(get args index)] (zi-e-tail args (+ index 1)))]
+        (let [value (if (= op "defmacro")
+                      (interpreter/macro name (get parsed 0) (get parsed 1) body (get s :env))
+                      (interpreter/function (get parsed 0) (get parsed 1) body (get s :env)))]
+          (if named (interpreter/env :set (get s :env) name value) nil)
+          (zi-e-value s value))))
+    ((= op "if")
+      (if (and (>= (count args) 2) (<= (count args) 3)) true (zi-e-fail s :arity [2 (count args)]))
+      (zi-e-node (zi-e-push s (put (put (zi-e-frame s :if) :then (get args 1))
+        :else (if (= (count args) 3) (get args 2) (zi-e-nil-node))))
+        (get args 0) (get s :env) false))
+    ((= op "do") (zi-e-sequence s args (get s :env) (get s :tail)))
+    ((or (= op "and") (= op "or")) (zi-e-short s args (if (= op "and") :and :or)))
+    ((= op "cond") (zi-e-cond s args))
+    ((or (= op "let") (= op "let*"))
+      (zi-e-check s (> (count args) 0) "let requires bindings")
+      (let [bindings (zi-e-bindings s (get args 0)) inner (interpreter/env :new (get s :env))]
+        (zi-e-check s (> (count args) 1) "let requires a body")
+        (zi-e-let-next s (put (put (put (put (put (zi-e-frame s :let)
+          :names (get bindings 0)) :inits (get bindings 1)) :inner inner)
+          :index 0) :body (zi-e-tail args 1)))))
+    ((= op "loop")
+      (zi-e-check s (> (count args) 0) "loop requires bindings")
+      (let [bindings (zi-e-bindings s (get args 0))]
+        (zi-e-check s (> (count args) 1) "loop requires a body")
+        (zi-e-check s (= (count args) 2) "loop body must be a single expression (use do for multiple)")
+        (zi-e-many s (get bindings 1)
+          {:op :loop :info {:names (get bindings 0) :body (get args 1)
+                           :outer (get s :env) :span (get s :span)}})))
+    ((= op "recur")
+      (if (get s :tail) true (zi-e-fail s :recur-not-tail nil))
+      (if (get s :loop nil) true (zi-e-fail s :recur-without-loop nil))
+      (zi-e-many s args {:op :recur :info (get s :loop)}))
+    ((= op "try") (zi-e-try s args))
+    ((= op "module") (zi-e-module s args))
+    ((= op "export") (zi-e-export s args))
+    ((= op "require") (zi-e-require s args))
+    ((or (= op "defclass") (= op "defgeneric") (= op "defmethod")
+         (= op "call-next-method") (= op "defpackage")) (zi-e-zos s op args))
+    (else nil)))
+(defn zi-e-evaluate [s]
+  (let [node (get s :node) kind (get node :kind)]
+    (cond
+      ((= kind :nil) (zi-e-value s nil))
+      ((= kind :symbol) (zi-e-value s (interpreter/env :get (get s :env) (get node :value))))
+      ((= kind :vector) (zi-e-many s (get node :children) {:op :vector}))
+      ((= kind :map) (zi-e-many s (get node :children) {:op :map}))
+      ((= kind :list)
+        (let [xs (get node :children)]
+          (if (= (count xs) 0) (zi-e-value s nil)
+            (let [special (zi-e-special s (zi-e-head node) (zi-e-tail xs 1))]
+              (if special special
+                (zi-e-node (zi-e-push s (put (put (zi-e-frame s :call-head)
+                  :args (zi-e-tail xs 1)) :call node)) (get xs 0) (get s :env) false))))))
+      (else (zi-e-value s (interpreter/scalar kind (get node :value nil)))))))
+;; doc: Evaluation/reading natives are intercepted by callable descriptor, not
+;; spelling at the call site. Aliases and higher-order apply therefore cannot
+;; accidentally switch the target back to the Rust parser or evaluator.
+(defn zi-e-expand-outer [s node once]
+  (loop [current node]
+    (let [name (zi-e-head current)]
+      (if name
+        (let [binding (interpreter/env :lookup 0 name)
+              descriptor (if (get binding 0) (interpreter/callable-info (get binding 1)) nil)]
+          (if (= (zi-e-get descriptor :kind) :macro)
+            (let [expanded (zi-expand descriptor (zi-e-tail (get current :children) 1) current)]
+              (if once expanded (recur expanded))) current))
+        current))))
+(defn zi-e-native [s descriptor args]
+  (let [name (get descriptor :name)]
+    (cond
+      ((or (= name "eval") (= name "macroexpand") (= name "macroexpand-1"))
+        (zi-e-arity s 1 (count args))
+        (let [node (zi-expand-data (get args 0) name nil)]
+          (if (= name "eval") (zi-e-node (put s :loop nil) node 0 false)
+            (zi-e-value s (syntax->data (zi-e-expand-outer s node (= name "macroexpand-1")))))))
+      ((= name "load")
+        (zi-e-arity s 1 (count args))
+        (if (string? (get args 0)) true
+          (zi-e-type s "string" (zi-e-value-type (get args 0))))
+        (let [source (interpreter/source (get args 0))]
+          (zi-e-sequence (put s :loop nil)
+            (zi-read (get source :source) (get source :source-id)) 0 false)))
+      ((or (= name "read-syntax") (= name "read-string"))
+        (zi-e-arity s (if (= name "read-string") 1 2) (count args))
+        (if (string? (get args 0)) true (zi-e-type s "string" (zi-e-value-type (get args 0))))
+        (if (= name "read-string")
+          (let [id (interpreter/register-source (get args 0) "<read-string>")
+                result (interpreter/reader-protect zi-read-one [(get args 0) id] (zi-e-span s))]
+            (if (get result :ok) (zi-e-value s (syntax->data (get result :value)))
+              (zi-e-unwind s result)))
+          (let [source-name (get args 1)]
+            (if (string? source-name) true (zi-e-type s "string" (zi-e-value-type source-name)))
+            (zi-e-value s (zi-read (get args 0)
+              (interpreter/register-source (get args 0) source-name))))))
+      ((or (= name "map") (= name "filter") (= name "reduce")) (zi-e-hof s name args))
+      ((= name "sort") (zi-e-sort s args))
+      ((= name "future-call") (zi-e-future s args))
+      ((= name "apply")
+        (if (and (>= (count args) 1) (<= (count args) 2)) true
+          (zi-e-fail s :range-arity [1 2 (count args)]))
+        (let [values (if (= (count args) 1) [] (get args 1))]
+          (if (or (list? values) (vector? values)) true
+            (zi-e-type s "list or vector" (zi-e-value-type values)))
+          (zi-e-callback s (get args 0) (reduce vector-conj [] values))))
+      (else nil))))
+(defn zi-e-apply-step [s]
+  (let [provided (get s :descriptor nil)
+        callable (if provided (get provided :callable (get s :callable)) (get s :callable))
+        args (get s :args)
+        descriptor (if provided provided (interpreter/callable-info callable))]
+    (cond
+      ((and (get s :callback false) (= (zi-e-get descriptor :kind) :macro))
+        (zi-e-fail s :not-function (str "#<macro " (get descriptor :name) ">")))
+      ((zi-e-get descriptor :compiled-callable)
+        (zi-e-host-call (dissoc s :descriptor) (get descriptor :compiled-callable) args))
+      ((or (= (zi-e-get descriptor :kind) :function) (= (zi-e-get descriptor :kind) :macro))
+        (let [env (zi-e-bind-call s descriptor args)]
+          (zi-e-sequence (put (put (dissoc s :descriptor) :callback false) :loop nil)
+            (get descriptor :body) env true)))
+      ((= (zi-e-get descriptor :kind) :native)
+        (let [state (put (dissoc s :descriptor) :callback false)
+              native (if (get descriptor :intrinsic false) (zi-e-native state descriptor args) nil)]
+          (if native native (zi-e-host-call state callable args))))
+      (else (zi-e-host-call s callable args)))))
+(defn zi-e-host-call [s callable args]
+  (let [result (interpreter/call callable args (get s :env) (zi-e-span s))]
+    (if (get result :ok) (zi-e-value s (get result :value))
+      (zi-e-unwind s result))))
+(defn zi-e-step [s]
+  (cond
+    ((= (get s :mode) :eval) (zi-e-evaluate s))
+    ((= (get s :mode) :apply) (zi-e-apply-step s))
+    ((= (get s :mode) :quasi) (zi-e-quasi-step s))
+    ((= (get s :mode) :sequence) (zi-e-sequence s (get s :nodes) (get s :env) (get s :tail)))
+    ((= (get s :mode) :value) (zi-e-resume s))
+    (else (zi-e-fail s :invalid-form "invalid evaluator state"))))
+;; doc: One protected step preserves typed failures and target source locations.
+;; Both tail and ordinary target calls are transitions, not recursive host calls.
+(defn zi-e-run [initial]
+  (loop [state initial]
+    (if (and (= (get state :mode) :value) (= (count (get state :stack)) 0))
+      (get state :value)
+      (let [result (interpreter/protect zi-e-step [state] (zi-e-span state))]
+        (if (get result :ok) (recur (get result :value))
+          (recur (zi-e-unwind state result)))))))
+;; doc: Evaluate a reader-produced syntax vector in the declared environment.
+(defn zi-eval [nodes env-handle]
+  (zi-e-run {:mode :sequence :nodes nodes :env env-handle :tail true
+             :loop nil :stack '() :span nil}))
+;; doc: Native higher-order callbacks enter with the same descriptor/body path.
+(defn zi-apply [descriptor args]
+  (zi-e-run {:mode :apply :descriptor descriptor :args args :callable nil
+             :env (get descriptor :env 0) :tail true :loop nil :stack '() :span nil}))

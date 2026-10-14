@@ -1,0 +1,36 @@
+;; M01 still-image session. The image contract drives this program:
+;; evaluate it in one context, save_image the returned roots, restore in a
+;; fresh context, then exercise sharing, cycles, macros, modules, class
+;; dispatch and buffer mutation across the round trip.
+
+;; A closure whose environment closes over the function itself.
+(def spin ((fn [] (let [f nil] (do (set! f (fn [] f)) f)))))
+
+;; A procedural macro survives with its definition environment.
+(defmacro twice [e] `(+ ~e ~e))
+
+;; A module whose exports and environment travel in the image.
+(module session :export [answer] (def answer 42))
+
+;; Class dispatch over a restored instance.
+(defclass Widget () ((label :initarg :label)))
+(defgeneric describe-widget [w])
+(defmethod describe-widget ((w Widget)) (slot-value w :label))
+(def box (make-instance Widget :label "kept"))
+
+;; One buffer reachable twice: restored identity is the shared cell.
+(def scratch (bytes "abc"))
+
+;; Two functions capture one mutable binding: after restore, calling the
+;; setter must be visible through the getter.
+(let [count 0
+      get-count (fn [] count)
+      bump-count (fn [] (do (set! count (+ count 1)) count))]
+  {:get get-count
+   :bump bump-count
+   :spin spin
+   :twice 'twice
+   :box box
+   :describe describe-widget
+   :one scratch
+   :two scratch})

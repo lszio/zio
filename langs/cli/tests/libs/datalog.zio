@@ -1,0 +1,33 @@
+;; Consumer scenario: active datoms, constrained joins, scalar inputs,
+;; repeated-variable unification and a retraction changing a real query.
+(load "libs/std/datalog.zio")
+(defn check [label actual expected]
+  (if (= actual expected) (println "PASS" label)
+    (error (str "FAIL " label " got: " actual " want: " expected))))
+
+(def db (transact (create-db)
+                  [[1 :name "alice"] [2 :name "bob"] [3 :name "cara"]
+                   [1 :age 30] [2 :age 40] [3 :age 30]
+                   [1 :friend 2] [2 :friend 2] [3 :friend 1]
+                   [1 :nickname nil] [2 :nickname "b"]]))
+(check "constrained-query" (q [:find ?name :where [1 :name ?name]] db) [["alice"]])
+(check "join-input" (q [:find ?name :in $ ?age :where [?e :age ?age] [?e :name ?name]] db 30)
+       [["alice"] ["cara"]])
+(check "repeated-variable" (q [:find ?name :where [?e :friend ?e] [?e :name ?name]] db) [["bob"]])
+(check "nil-unifies" (q [:find ?name :in $ ?nick :where [?e :nickname ?nick] [?e :name ?name]] db nil)
+       [["alice"]])
+(check "distinct-projection" (q [:find ?age :where [_ :age ?age]] db) [[30] [40]])
+(def changed (transact db [[1 :age 30 :db/retract] [2 :age 40 :db/add] [1 :age 31]]))
+(check "retraction-affects-join" (q [:find ?name :in $ ?age :where [?e :age ?age] [?e :name ?name]] changed 30)
+       [["cara"]])
+(check "original-immutable" (q [:find ?age :where [1 :age ?age]] db) [[30]])
+(check "transact-count" (count (get changed :datalog/datoms)) 11)
+(check "transact-datom" (q [:find ?v :where [1 :age ?v]] changed) [[31]])
+(check "q-stub-values" (q [:find ?name :where [3 :name ?name]] db) [["cara"]])
+(check "idempotent-add" (count (get (transact db [[2 :age 40]]) :datalog/datoms)) 11)
+(check "empty-real-result" (q [:find ?name :where [99 :name ?name]] db) [])
+(check "unsupported-rule-refused" (try (q [:find ?x :where (ancestor ?x 2)] db) false (catch any true)) true)
+(check "unbound-projection-refused" (try (q [:find ?x :where [1 :name ?name]] db) false (catch any true)) true)
+(check "wrong-input-arity-refused" (try (q [:find ?name :in $ ?age :where [?e :age ?age] [?e :name ?name]] db) false (catch any true)) true)
+(check "malformed-transaction-refused" (try (transact db [[1 :name]]) false (catch any true)) true)
+(check "unsupported-op-refused" (try (transact db [[1 :name "x" :db/unknown]]) false (catch any true)) true)

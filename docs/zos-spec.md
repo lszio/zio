@@ -1,11 +1,11 @@
 # ZOS（Zio Object System）规范
 
-> Version 0.1 — 统一运行时对象模型规范
+> Version 0.2 — 核心 ZOS 规范与自举/应用边界（2026-10-05）
 >
-> 本文是规范与演化设计，不是逐项实现清单。当前只有 ZOS classes 和
-> generic dispatch 子集为 Experimental；完整 MOP、persistent collection
-> library、Datalog 及 VM/application 能力均为 Planned。权威状态与证据见
-> [特性矩阵](feature-matrix.md)。
+> ZOS 保留在语言核心，不作为可选领域插件。本规范包含尚未实现的
+> 目标；当前 class/generic dispatch 子集为 Experimental，完整 MOP
+> 与更广语义逐项验收。状态见[特性矩阵](feature-matrix.md)，职责和升级
+> 权限以 [ADR-019](adrs.md#adr-019-grove-独立应用与同像性逻辑演化) 为准。
 
 ---
 
@@ -40,22 +40,34 @@ ZOS（Zio Object System）是 Zio 的统一运行时对象模型（Unified Runti
 | 符号管理（Package） | `zos/package.rs` |
 | 错误恢复（Condition System） | `zos/condition.rs` |
 
-**ZOS 不负责**（全部由扩展库实现）：
+**ZOS 不负责**（扩展基础设施、库或独立应用承担）：
 
-| 能力 | 推荐库名 |
+| 能力 | 归属或历史推荐库名 |
 |------|----------|
 | 数据持久化 | `zio-persistent` |
 | Entity 模型 | `zio-entity` |
 | Protocol 系统 | `zio-protocol` |
 | Datalog 查询 | `zio-datalog` |
-| Agent / AI Runtime | `zio-agent` |
+| Agent / AI Runtime | Loom 官方 Zio harness 库；Grove 独立应用持学习治理；`libs/loom/agent.zio` 当前只提供 demo 数据模型 |
 | Actor 并发模型 | `zio-actor` |
 | 图分析 | `zio-graph` |
 | Clojure 风格集合 | `zio-persistent` |
 
-这些推荐库名定义职责边界，不表示库已经实现；Persistent collection 与
-Datalog evaluator 的当前状态都是 [Planned](feature-matrix.md)。
+这些推荐库名定义职责边界，不表示独立包都已经实现。Persistent collection、
+Protocol、Entity 与 Datalog storage 的当前子集为 Experimental；
+Datalog query evaluator 为 Planned，详见[特性矩阵](feature-matrix.md)。
 
+Numa 的连续数值数组/矩阵/向量与后端接口、Rill 的参数/子命令/帮助、
+命令组合/终端 I/O/退出状态、Loom 的模型/工具/会话/预算/取消/provider/ACP
+均为官方 Zio 库能力，按需安装、独立版本发布，不是 ZOS 或语言内置特性。
+Grove 消费语言与三库，拥有学习目标、实验、反馈、检查点、独立评价、
+人工批准、逻辑演化与 Web；语言核心没有反向依赖，三库新增能力均 Planned。
+应用可以使用对象/泛型函数实现自己的可编码逻辑，不必把所有热路径对象化；
+普通学习任务不得改写 ZOS 或可信编译器基线。
+
+首轮工具链固定所需类、实例、槽与泛型函数/方法语义；未实现的完整 MOP
+不作为起步前提，但不能用“无 ZOS 子语言自编译”代表保留 ZOS 的整体目标。
+实施依赖与验收见[统一实现计划](superpowers/plans/2026-10-05-zio-grove-convergence.md)。
 ---
 
 ## 2 运行时对象模型
@@ -136,6 +148,7 @@ Type (抽象)
 │   └── MetaClass  (Phase 2)
 ├── Protocol       (Phase 3, 库)
 ├── Trait          (Phase 3, 库)
+
 └── Interface      (Phase 3, 库)
 ```
 
@@ -286,6 +299,7 @@ GF 分派基于**全部必需参数的类型**。
 ```lisp
 ;; 单分派
 (draw rect)            ;; 基于 rect 类型
+
 (draw circle)
 
 ;; 多分派
@@ -436,6 +450,7 @@ ZOS 保持 Common Lisp Condition System 的设计精神，但采用**分阶段�
 
 | Phase | 特性 | 控制流模型 |
 |-------|------|-----------|
+
 | Phase 1 | `(try body (catch Type handler))` | Result 传播 + 局部 restart |
 | Phase 2+ | `handler-bind` + `signal` + 跨栈 `invoke-restart` | 扩展控制流 |
 
@@ -586,6 +601,7 @@ pub fn class_of(val: &Value) -> ClassRef {
 
 ### 13.1 四个官方扩展点
 
+
 ```
 优先度 ↓  →  1. Reader Macro (语法)
               2. Macro (语义)
@@ -602,8 +618,9 @@ pub fn class_of(val: &Value) -> ClassRef {
 
 ### 13.2 规划中的扩展库布局
 
-以下是规划布局，不是已安装或可用库的注册表。ZOS 不内置包管理器，但
-规范提出了库注册标准；这些库的状态见[特性矩阵](feature-matrix.md)：
+以下保留历史布局示意，不是新的 workspace 拆分决定或已安装包注册表；
+旧 `zio-agent/` 方案不再作为独立 agent 框架实施。ZOS 不内置包管理器，
+规范提出的库注册标准与实际注册包 ID 分开；状态见[特性矩阵](feature-matrix.md)：
 
 ```
 zio-persistent/          — 持久化数据结构
@@ -627,6 +644,11 @@ zio-agent/               — Agent 框架
     tool-use.zio
     memory.zio
 ```
+
+Zio 库目标采用 Zio 实现并归入 `libs/`：Numa 持计算，Rill 持 CLI 组合，Loom 持 harness 组合。现有 Rust 通用传输/宿主合同位于 `contribs/native/loom/`，不是 Zio 库本体；普通语言 CLI 位于 `langs/cli/`，不装配 LLM replay。Grove 是 `apps/grove/` 独立应用，其 Rust 业务仍待后续迁为 Zio；语言介绍、文档与 playground 位于 `apps/site/`。本轮只完成结构切换，不证明完整库交付、Tree-sitter、LSP 或编译器自举。当前合同见[架构](zio-architecture.md)与[批准目录计划](superpowers/plans/2026-10-07-language-first-layout.md)。短名不等于已注册包 ID。
+
+不再另建重叠的 agent 框架。公共抽取以实际复用需求为依据，执行顺序见
+[统一实现计划](superpowers/plans/2026-10-05-zio-grove-convergence.md)。
 
 ---
 
@@ -719,11 +741,13 @@ pub fn apply(func: Value, args: Vector<Value>, engine: &dyn ZosRuntime) -> Resul
 
 ## 15 实现路线（规划）
 
-以下 Phase 是设计目标。当前只有 class/generic dispatch 子集为
-Experimental；完整 ZOS、persistent library 与 Datalog evaluator 不应从
-本节推断为已交付，权威状态见[特性矩阵](feature-matrix.md)。
+以下 Phase 是历史设计目标，不是当前实现顺序。class/generic dispatch、
+persistent、protocol、entity 与 Datalog storage 已有 Experimental 子集；
+完整 ZOS/MOP 与 Datalog query evaluator 不能从本节推断为已交付。
+权威状态见[特性矩阵](feature-matrix.md)，当前执行顺序见[实现计划](superpowers/plans/2026-10-05-zio-grove-convergence.md)。
 
 ### Phase 1: 最小对象系统
+
 
 **目标**：`defclass` + `defgeneric` + `defmethod` 可用，单继承、单分派优先。
 
@@ -783,7 +807,7 @@ Experimental；完整 ZOS、persistent library 与 Datalog evaluator 不应从
 
 ### 16.1 EvalEngine 扩展
 
-ZOS 要求 `EvalEngine` trait 扩展为支持 ZOS 操作：
+下面的 `ZosRuntime` 是能力划分设计，不是当前 API，也不是要求把 ZOS 移出核心：
 
 ```rust
 pub trait ZosRuntime: EvalRuntime {
@@ -797,12 +821,12 @@ pub trait ZosRuntime: EvalRuntime {
 }
 ```
 
-非 ZOS 的嵌入场景只需实现 `EvalRuntime`，不承担 ZOS 复杂度。
+只需最小求值接口的嵌入者可依赖 `EvalRuntime`；完整执行器仍需装配核心 ZOS 语义，接口分层不等于可选对象插件。
 
 ### 16.2 规划中的编译器交互
 
-以下流程是设计草案。ZIR、bytecode VM 与 JIT 尚未实现，状态为
-[Planned](feature-matrix.md)。
+以下为历史编译交互草案，不是当前运行路径。新的 Zio 自举前端与最小后端
+以统一实现计划 T01–T03 为准；ZIR/JIT 后续按性能证据扩展，均为 Planned。
 
 ```
 (defclass point () (x y))
@@ -827,13 +851,9 @@ ZOS Runtime → Class 对象可被 class-of 反射
 
 ZOS 规范通过 ADR（架构决策记录）演进：
 
-| ADR | 标题 | 状态 |
-|-----|------|------|
-| ADR-004 | Span 嵌入 Sexp | 待定 (Phase 1) |
-| ADR-005 | EvalEngine 拆分为子 trait | 待定 (Phase 1) |
-| ADR-006 | Value::Object 作为 ZOS 入口 | 待定 (ZOS Phase 1) |
-| ADR-007 | Condition System 分阶段实现 | 待定 (ZOS Phase 1) |
-| ADR-008 | 4-参数 Dispatch Cache | 待定 (ZOS Phase 1) |
-| ADR-009 | Generic Function 优先于单分派函数 | 待定 (ZOS Phase 1) |
+| 决策主题 | 当前权威依据 |
+|----------|--------------|
+| Span、EvalEngine、Value/Object、错误、分派 | [ADR 记录](adrs.md)；本规范中的未来合同不覆盖其当前状态 |
+| 核心保留 ZOS、工具链自举、Grove 独立应用与保护边界 | [ADR-019](adrs.md#adr-019-grove-独立应用与同像性逻辑演化) |
 
 每个 ADR 记录：背景、决策、理由、代价、备选方案。

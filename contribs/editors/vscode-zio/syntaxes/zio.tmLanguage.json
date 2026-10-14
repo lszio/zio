@@ -1,0 +1,73 @@
+{
+  "name": "zio",
+  "scopeName": "source.zio",
+  "fileTypes": ["zio"],
+  "patterns": [
+    { "include": "#comment" },
+    { "include": "#string" },
+    { "include": "#character" },
+    { "include": "#number" },
+    { "include": "#boolean" },
+    { "include": "#nil" },
+    { "include": "#keyword" },
+    { "include": "#dispatch-vector" },
+    { "include": "#set-literal" },
+    { "include": "#quote" },
+    { "include": "#brackets" },
+    { "include": "#form" }
+  ],
+  "repository": {
+    "comment": {
+      "match": ";.*$",
+      "name": "comment.line.semicolon.zio"
+    },
+    "string": {
+      "begin": "\"",
+      "end": "\"",
+      "name": "string.quoted.double.zio",
+      "patterns": [
+        { "match": "\\\\.", "name": "constant.character.escape.zio" }
+      ]
+    },
+    "character": {
+      "match": "#\\\\(?:space|newline|tab|[^\\s])",
+      "name": "constant.character.zio"
+    },
+    "number": {
+      "match": "(?:[+-]?(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?|[+-]?(?:inf|infinity|Inf|Infinity|nan|NaN))",
+      "name": "constant.numeric.zio"
+    },
+    "boolean": {
+      "match": "\\b(?:true|false)\\b",
+      "name": "constant.language.boolean.zio"
+    },
+    "nil": {
+      "match": "\\bnil\\b",
+      "name": "constant.language.nil.zio"
+    },
+    "keyword": {
+      "match": ":[A-Za-z_\\-+*/=<>!?][A-Za-z0-9_\\-+*/=<>!?]*",
+      "name": "constant.other.keyword.zio"
+    },
+    "dispatch-vector": {
+      "match": "#\\(",
+      "name": "punctuation.definition.dispatch-vector.zio"
+    },
+    "set-literal": {
+      "match": "#\\{",
+      "name": "punctuation.definition.set-literal.zio"
+    },
+    "quote": {
+      "match": "'",
+      "name": "punctuation.definition.quote.zio"
+    },
+    "brackets": {
+      "match": "[(){}\\[\\]]",
+      "name": "punctuation.section.brackets.zio"
+    },
+    "form": {
+      "match": "[A-Za-z_\\-+*/=<>!?][A-Za-z0-9_\\-+*/=<>!?]*",
+      "name": "variable.other.readwrite.zio"
+    }
+  }
+}

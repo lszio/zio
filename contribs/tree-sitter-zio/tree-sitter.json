@@ -1,0 +1,8 @@
+{
+  "grammars": [{
+    "name": "zio", "camelcase": "Zio", "scope": "source.zio", "path": ".",
+    "file-types": ["zio"], "highlights": "queries/highlights.scm", "locals": "queries/locals.scm"
+  }],
+  "metadata": {"version": "0.1.0", "license": "MIT", "description": "Zio language grammar", "authors": [{"name": "Zio contributors"}], "links": {"repository": "https://github.com/lszio/zio"}},
+  "bindings": {"c": true, "go": false, "node": false, "python": false, "rust": false, "swift": false}
+}

@@ -2,10 +2,7 @@
   "version": 2,
   "name": "zio-landing-site",
   "cleanUrls": true,
-  "rewrites": [
-    { "source": "/", "destination": "/index.html" },
-    { "source": "/grove", "destination": "/grove/index.html" },
-    { "source": "/agent", "destination": "/agent/index.html" },
-    { "source": "/(.*)", "destination": "/$1" }
-  ]
+  "installCommand": "cd apps/site && bun install --frozen-lockfile",
+  "buildCommand": "cd apps/site && bun run build",
+  "outputDirectory": "apps/site/dist"
 }

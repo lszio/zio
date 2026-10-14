@@ -1,0 +1,323 @@
+;; doc: One-step macro expansion. The evaluator invokes this only at reached calls.
+;; Source syntax retains its spans; code manufactured from plain data has none.
+(def zi--hygiene-counter 0)
+
+(defn zi--expand-error [message span]
+  (interpreter/error :macro message span))
+
+(defn zi--expand-node [kind value children origin]
+  {:kind kind :value value :children children :span nil :origin origin})
+
+(defn zi--expand-data-node [data by call-span]
+  (let* [kind (type data)
+         origin {:kind :generated :by by :call-site nil}]
+    (cond
+      ((nil? data) (zi--expand-node :nil nil [] origin))
+      ((list? data)
+        (zi--expand-node :list nil (zi--expand-data-items data by call-span) origin))
+      ((vector? data)
+        (zi--expand-node :vector nil (zi--expand-data-items data by call-span) origin))
+      ((map? data)
+        (let [children
+               (loop [ks (keys data) i 0 out []]
+                 (if (= i (count ks)) out
+                   (let* [key (get ks i)
+                          k (zi--expand-data-node key by call-span)
+                          v (zi--expand-data-node (get data key) by call-span)]
+                     (recur ks (+ i 1) (vector-conj (vector-conj out k) v)))))]
+          (zi--expand-node :map nil children origin)))
+      ((keyword? data) (zi--expand-node :keyword (name data) [] origin))
+      ((symbol? data) (zi--expand-node :symbol (name data) [] origin))
+      ((string? data) (zi--expand-node :string data [] origin))
+      ((= kind :character)
+        (zi--expand-node :char (get (get (interpreter/chars (str data)) 2) :text) [] origin))
+      ((or (= kind :integer) (= kind :float) (= kind :boolean))
+        (zi--expand-node kind (str data) [] origin))
+      (else
+        (zi--expand-error
+          (str "macro returned a "
+            (cond ((= kind :fn) "function")
+                  ((= kind :native-fn) "native function")
+                  (else (name kind)))
+            " value") call-span)))))
+
+(defn zi--expand-data-items [items by call-span]
+  (loop [i 0 out []]
+    (if (= i (count items)) out
+      (recur (+ i 1)
+        (vector-conj out (zi--expand-data-node (get items i) by call-span))))))
+
+;; doc: Convert data-only values to validated syntax, without fabricating spans.
+;; call-span locates conversion errors, never the generated node itself.
+(defn zi-expand-data [data by call-span]
+  (let [node (zi--expand-data-node data by call-span)]
+    (syntax->data node)
+    node))
+
+(defn zi--expand-origin [node origin]
+  (let [children (get node :children)]
+    (put (put node :origin origin) :children
+      (loop [i 0 out []]
+        (if (= i (count children)) out
+          (recur (+ i 1)
+            (vector-conj out (zi--expand-origin (get children i) origin))))))))
+
+(defn zi--expand-symbol? [node text]
+  (if (nil? node) false
+    (if (= (get node :kind) :symbol) (= (get node :value) text) false)))
+
+(defn zi--expand-member? [items value]
+  (loop [i 0]
+    (if (= i (count items)) false
+      (if (= (get items i) value) true (recur (+ i 1))))))
+
+(defn zi--expand-binding [bindings text last?]
+  (loop [i 0 found nil]
+    (if (= i (count bindings)) found
+      (let [pair (get bindings i)]
+        (if (= (get pair 0) text)
+          (if last? (recur (+ i 1) pair) pair)
+          (recur (+ i 1) found))))))
+
+;; Bindings stay ordered: repeated variables constrain outside ellipsis and
+;; accumulate inside it, just as the current Rust syntax-rules subset does.
+(defn zi--expand-match-items [patterns args literals bindings root? repeat? prefix]
+  (loop [i 0 state bindings]
+    (if (= i (count args)) state
+      (let* [repeated (if repeat? (>= i prefix) false)
+             pattern (if repeated (get patterns prefix) (get patterns i))
+             head (if repeated false (if root? (= i 0) false))
+             next (zi--expand-match pattern (get args i) literals state head repeated)]
+        (if (nil? next) nil (recur (+ i 1) next))))))
+
+(defn zi--expand-match [pattern arg literals bindings root? repeated?]
+  (let* [kind (get pattern :kind)
+         arg-kind (get arg :kind)
+         text (get pattern :value)]
+    (cond
+      ((= kind :symbol)
+        (cond
+          (root? bindings)
+          ((= text "_") bindings)
+          ((zi--expand-member? literals text)
+            (if (zi--expand-symbol? arg text) bindings nil))
+          ((str-starts-with? text "...")
+            (if (= (syntax->data pattern) (syntax->data arg)) bindings nil))
+          (repeated? (vector-conj bindings [text arg]))
+          (else
+            (let [existing (zi--expand-binding bindings text false)]
+              (if existing
+                (if (= (syntax->data (get existing 1)) (syntax->data arg)) bindings nil)
+                (vector-conj bindings [text arg]))))))
+      ((and (= kind :list) (= arg-kind :list))
+        (let* [ps (get pattern :children)
+               xs (get arg :children)
+               repeat (if (>= (count ps) 2)
+                        (zi--expand-symbol? (get ps (- (count ps) 1)) "...") false)
+               prefix (if repeat (- (count ps) 2) (count ps))]
+          (if (if repeat (>= (count xs) prefix) (= (count xs) (count ps)))
+            (zi--expand-match-items ps xs literals bindings root? repeat prefix)
+            nil)))
+      ((and (= kind :vector) (= arg-kind :vector))
+        (let [ps (get pattern :children) xs (get arg :children)]
+          (if (= (count ps) (count xs))
+            (zi--expand-match-items ps xs literals bindings false false (count ps)) nil)))
+      (else (if (= (syntax->data pattern) (syntax->data arg)) bindings nil)))))
+
+(defn zi--expand-rename [node renames]
+  (let* [text (get node :value)
+         existing (get renames text nil)]
+    (if existing [(put node :value existing) renames]
+      (do
+        (set! zi--hygiene-counter (+ zi--hygiene-counter 1))
+        (let [renamed (str text "__hyg_" zi--hygiene-counter)]
+          [(put node :value renamed) (put renames text renamed)])))))
+
+(defn zi--expand-binder [node bindings literals renames scope]
+  (let* [text (get node :value)
+         variable (if (= text "_") false
+                    (if (zi--expand-member? literals text) false
+                      (zi--expand-binding bindings text false)))]
+    (if (and (= (get node :kind) :symbol) (not variable) (not (= text "_")))
+      (let [result (zi--expand-rename node renames)]
+        [(get result 0) (get result 1) (vector-conj scope text)])
+      (let [result (zi--expand-template node bindings literals renames scope)]
+        [(get result 0) (get result 1) scope]))))
+
+(defn zi--expand-template-items [items start bindings literals renames scope]
+  (loop [i start names renames out []]
+    (if (= i (count items)) [out names]
+      (let [result (zi--expand-template (get items i) bindings literals names scope)]
+        (recur (+ i 1) (get result 1) (vector-conj out (get result 0)))))))
+
+(defn zi--expand-binders [items pairs? bindings literals renames scope]
+  (loop [i 0 names renames inner scope out []]
+    (if (= i (count items)) [out names inner]
+      (if (if pairs? (= (mod i 2) 0) true)
+        (let [result (zi--expand-binder (get items i) bindings literals names inner)]
+          (recur (+ i 1) (get result 1) (get result 2) (vector-conj out (get result 0))))
+        (let [result (zi--expand-template (get items i) bindings literals names inner)]
+          (recur (+ i 1) (get result 1) inner (vector-conj out (get result 0))))))))
+
+(defn zi--expand-binding-form [node index pairs? bindings literals renames scope leading]
+  (let* [items (get node :children)
+         binder (get items index)
+         result
+           (if (= (get binder :kind) :vector)
+             (let [r (zi--expand-binders (get binder :children) pairs? bindings literals renames scope)]
+               [(put binder :children (get r 0)) (get r 1) (get r 2)])
+             (let [r (zi--expand-template binder bindings literals renames scope)]
+               [(get r 0) (get r 1) scope]))
+         body (zi--expand-template-items items (+ index 1) bindings literals (get result 1) (get result 2))]
+    [(put node :children
+       (reduce vector-conj (vector-conj leading (get result 0)) (get body 0)))
+     (get body 1)]))
+
+(defn zi--expand-template-repeat [pattern bindings literals renames]
+  (if (= (get pattern :kind) :symbol)
+    (loop [i 0 names renames out []]
+      (if (= i (count bindings)) [out names]
+        (let [pair (get bindings i)]
+          (if (= (get pair 0) (get pattern :value))
+            ;; ponytail: match Rust's datum-only repetition hygiene; marked
+            ;; identifiers are needed to remove caller/binder name collisions.
+            (let [r (zi--expand-template (get pair 1) bindings literals names [])]
+              (recur (+ i 1) (get r 1) (vector-conj out (get r 0))))
+            (recur (+ i 1) names out)))))
+    [[] renames]))
+
+(defn zi--expand-template-list [node bindings literals renames scope]
+  (let* [items (get node :children)
+         head (get items 0 nil)
+         op (if (nil? head) nil
+              (if (= (get head :kind) :symbol) (get head :value) nil))]
+    (cond
+      ((and (>= (count items) 2) (zi--expand-member? ["let" "let*" "loop"] op))
+        (zi--expand-binding-form node 1 true bindings literals renames scope [head]))
+      ((and (>= (count items) 2) (zi--expand-member? ["def" "defmacro"] op))
+        (let* [r (zi--expand-binder (get items 1) bindings literals renames scope)
+               body (zi--expand-template-items items 2 bindings literals (get r 1) scope)]
+          [(put node :children (reduce vector-conj [head (get r 0)] (get body 0))) (get body 1)]))
+      ((and (>= (count items) 3) (= op "defn"))
+        (let [r (zi--expand-binder (get items 1) bindings literals renames scope)]
+          (zi--expand-binding-form node 2 false bindings literals (get r 1) (get r 2) [head (get r 0)])))
+      ((and (>= (count items) 2) (= op "fn"))
+        (zi--expand-binding-form node 1 false bindings literals renames scope [head]))
+      (else
+        (loop [i 0 names renames out []]
+          (if (>= i (count items)) [(put node :children out) names]
+            (if (if (< (+ i 1) (count items))
+                  (zi--expand-symbol? (get items (+ i 1)) "...") false)
+              (let [r (zi--expand-template-repeat (get items i) bindings literals names)]
+                (recur (+ i 2) (get r 1) (reduce vector-conj out (get r 0))))
+              (let [r (zi--expand-template (get items i) bindings literals names scope)]
+                (recur (+ i 1) (get r 1) (vector-conj out (get r 0)))))))))))
+
+;; Sexp identity excludes provenance, and nil/boolean have no span slot.
+;; Other variants retain their spans, including nested map keys.
+(defn zi--expand-key [node]
+  (let* [kind (get node :kind)
+         span (get node :span)
+         children (get node :children)]
+    (cond
+      ((= kind :nil) [:nil])
+      ((= kind :boolean) [:boolean (syntax->data node)])
+      ((or (= kind :list) (= kind :vector))
+        [kind span
+          (loop [i 0 out []]
+            (if (= i (count children)) out
+              (recur (+ i 1) (vector-conj out (zi--expand-key (get children i))))))])
+      ((= kind :map)
+        [kind span
+          (loop [i 0 out {}]
+            (if (= i (count children)) out
+              (recur (+ i 2)
+                (put out (zi--expand-key (get children i))
+                  (zi--expand-key (get children (+ i 1)))))))])
+      (else [kind span (syntax->data node)]))))
+
+;; Map substitution can turn two keys into the same syntax key. Like the
+;; Rust template map insertion, the later entry replaces the earlier one.
+(defn zi--expand-map-items [items]
+  (loop [i 0 out []]
+    (if (= i (count items)) out
+      (let* [key (get items i)
+             identity (zi--expand-key key)
+             replaced
+               (loop [j (+ i 2)]
+                 (if (= j (count items)) false
+                   (if (= identity (zi--expand-key (get items j))) true (recur (+ j 2)))))]
+        (recur (+ i 2)
+          (if replaced out
+            (vector-conj (vector-conj out key) (get items (+ i 1)))))))))
+
+(defn zi--expand-template [node bindings literals renames scope]
+  (let* [kind (get node :kind) text (get node :value)]
+    (cond
+      ((= kind :symbol)
+        (if (or (= text "_") (= text "...") (zi--expand-member? literals text))
+          [node renames]
+          (let [bound (zi--expand-binding bindings text true)]
+            (if bound [(get bound 1) renames]
+              (if (or (zi--expand-member? scope text) (get renames text nil))
+                (zi--expand-rename node renames) [node renames])))))
+      ((= kind :list) (zi--expand-template-list node bindings literals renames scope))
+      ((or (= kind :vector) (= kind :map))
+        (let [r (zi--expand-template-items (get node :children) 0 bindings literals renames scope)]
+          [(put node :children
+             (if (= kind :map) (zi--expand-map-items (get r 0)) (get r 0)))
+           (get r 1)]))
+      (else [node renames]))))
+
+(defn zi--expand-rules [rules args]
+  (let* [items (get rules :children)
+         span (get rules :span)]
+    (if (< (count items) 3)
+      (zi--expand-error "syntax-rules requires (literal ...) and at least one clause" span)
+      (let* [literal-node (get items 1)
+             literal-kind (get literal-node :kind)]
+        (if (not (or (= literal-kind :list) (= literal-kind :vector)))
+          (zi--expand-error "syntax-rules literals must be a list" span)
+          (let* [literals
+                   (reduce (fn [out item]
+                             (if (= (get item :kind) :symbol)
+                               (vector-conj out (get item :value)) out))
+                     [] (get literal-node :children))
+                 dummy (zi--expand-node :symbol "_" [] {:kind :generated :by "syntax-rules" :call-site nil})
+                 adjusted (zi--expand-node :list nil (reduce vector-conj [dummy] args)
+                            {:kind :generated :by "syntax-rules" :call-site nil})]
+            (loop [i 2]
+              (if (= i (count items))
+                (zi--expand-error "no matching syntax-rules clause" span)
+                (let* [clause (get items i)
+                       children (get clause :children)
+                       pair (if (and (= (get clause :kind) :list) (= (count children) 1))
+                              (let [inner (get children 0)]
+                                (if (and (= (get inner :kind) :list) (= (count (get inner :children)) 2))
+                                  (get inner :children) children)) children)]
+                  (if (not (and (= (get clause :kind) :list) (= (count pair) 2)))
+                    (zi--expand-error "syntax-rules clause must have (pattern template)" (get clause :span))
+                    (let [bindings (zi--expand-match (get pair 0) adjusted literals [] true false)]
+                      (if (nil? bindings) (recur (+ i 1))
+                        (get (zi--expand-template (get pair 1) bindings literals {} []) 0)))))))))))))
+
+;; doc: Expand exactly one macro call using its definition environment. Procedural
+;; bodies enter zi-apply at runtime, allowing reader/expand/evaluator load order.
+;; The returned tree records the macro call-site without replacing definition spans.
+(defn zi-expand [descriptor args-nodes call-node]
+  (let* [body (get descriptor :body)
+         first-body (get body 0 nil)
+         rule? (if (and (= (count body) 1) (= (get first-body :kind nil) :list))
+                 (zi--expand-symbol? (get (get first-body :children) 0 nil) "syntax-rules") false)
+         by (get descriptor :name)
+         call-span (get call-node :span)
+         node (if rule? (zi--expand-rules first-body args-nodes)
+                (zi-expand-data
+                  (zi-apply descriptor
+                    (loop [i 0 args []]
+                      (if (= i (count args-nodes)) args
+                        (recur (+ i 1) (vector-conj args (syntax->data (get args-nodes i)))))))
+                  by call-span))
+         result (zi--expand-origin node {:kind :macro-call :by by :call-site call-span})]
+    (syntax->data result)
+    result))

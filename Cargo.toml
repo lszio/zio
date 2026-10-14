@@ -1,8 +1,39 @@
 [workspace]
 resolver = "2"
-members = ["core", "cli", "ai", "learning", "app"]
+members = ["langs/core", "langs/cli", "langs/wasi", "contribs/native/js", "contribs/native/host", "contribs/native/loom", "contribs/language-server"]
+
+# Groiz lives in its own repository (https://github.com/lszio/groiz),
+# mounted as the apps/grove submodule with its own workspace. Build and
+# test it through its manifest:
+#   cargo test --manifest-path apps/grove/Cargo.toml --workspace
 
 [workspace.package]
 version = "0.2.0"
 edition = "2024"
 license = "MIT"
+repository = "https://github.com/lszio/zio"
+homepage = "https://github.com/lszio/zio"
+authors = ["lszio"]
+description = "Zio — a general-purpose language with ZOS, a self-hosting compiler, and libraries and applications built on it"
+keywords = ["language", "compiler", "lisp", "self-hosting", "interpreter"]
+categories = ["compilers", "development-tools"]
+
+# Internal crates carry a version requirement alongside the path, because
+# a member that is published to crates.io cannot depend on a path
+# dependency without one: cargo drops the `path` on publish and resolves
+# the version against the registry. The workspace-level declaration keeps
+# that requirement in one place; members inherit it with
+# `workspace = true`.
+[workspace.dependencies]
+zio-core = { version = "0.2.0", path = "langs/core" }
+zio-host = { version = "0.2.0", path = "contribs/native/host" }
+zio-js = { version = "0.2.0", path = "contribs/native/js" }
+
+# The published binaries. `zio` is the language entry point, `zio-lsp`
+# the language server, and `grove` the installed product launcher written
+# by tools/install.sh — it is a shell script, so it is not a crate target.
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true

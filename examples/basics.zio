@@ -20,7 +20,8 @@
 (println [1 2 3])             ;; [1 2 3] — vector literal
 (println #(1 2 3))            ;; [1 2 3] — dispatch reader vector
 (println {:a 1 :b 2})         ;; {:a 1 :b 2}
-;; Set literals are documented as planned in docs/feature-matrix.md.
+(println (count #{:red :green :blue}))  ;; 3 — set literal (map-backed)
+(println (get #{:red} :red))  ;; true
 
 (println (cons 1 (list 2 3))) ;; (1 2 3)
 (println (car (list 1 2 3)))  ;; 1
@@ -62,6 +63,11 @@
 
 (println (unless false 42))   ;; 42
 (println (unless true 42))    ;; nil
+
+;; quasiquote template — the same macro, written as a template
+(defmacro unless2 [test body]
+  `(if ~test nil ~body))
+(println (unless2 false 42))  ;; 42
 
 ;; macroexpand shows the expanded form
 (println "macroexpand-1 of unless:")

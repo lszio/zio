@@ -1,0 +1,46 @@
+{
+  "name": "zio",
+  "displayName": "Zio",
+  "description": "Zio language support: hand-rolled stdio LSP client against zio-lsp.",
+  "publisher": "zio",
+  "version": "0.1.0",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.85.0",
+    "node": ">=18"
+  },
+  "main": "./out/extension.js",
+  "activationEvents": [
+    "onLanguage:zio",
+    "workspaceContains:**/*.zio"
+  ],
+  "categories": ["Programming Languages"],
+  "contributes": {
+    "languages": [
+      {
+        "id": "zio",
+        "aliases": ["Zio", "zio"],
+        "extensions": [".zio"],
+        "filenames": [],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "zio",
+        "scopeName": "source.zio",
+        "path": "./syntaxes/zio.tmLanguage.json"
+      }
+    ]
+  },
+  "scripts": {
+    "compile": "tsc -p .",
+    "watch": "tsc -watch -p .",
+    "package": "vsce package"
+  },
+  "devDependencies": {
+    "@types/node": "^18.19.0",
+    "@types/vscode": "^1.85.0",
+    "typescript": "^5.4.0"
+  }
+}

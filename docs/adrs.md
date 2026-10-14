@@ -1,5 +1,7 @@
 # Zio 架构决策记录（ADRs）
 
+> 2026-10-07：以下 ADR 保留历史决策与证据；其中独立 Rust 库/旧目录目标由[当前架构](zio-architecture.md)及[批准目录计划](superpowers/plans/2026-10-07-language-first-layout.md)取代。库目标为 Zio，现有 Rust Groiz 业务仍待迁移；历史验收数字不代表本轮重新实跑。
+
 > 轻量级架构决策日志。每个 ADR 记录一个关键决策的背景、决策、理由、代价、备选方案。
 >
 > ADR 的“已采纳”只表示设计决策成立，不表示其所有下游能力都已实现。
@@ -104,7 +106,7 @@ pub struct EvalContext {
 
 **状态**: ✅ 已实现
 
-此 ADR 只覆盖 core 中 `im` 类型的结构共享。`lib/zio/persistent.zio`
+此 ADR 只覆盖 core 中 `im` 类型的结构共享。`libs/std/persistent.zio`
 的 library API 状态（Experimental，部分函数待核心 map 迭代支持）以
 [特性矩阵](feature-matrix.md)为准。
 
@@ -298,6 +300,7 @@ pub enum Value {
 
 - Immediate 类型保持内联（性能不损失）
 - Heap Object 通过 trait object 获得开放扩展能力
+
 - `as_any()` 允许向下转型到具体类型
 
 ### 代价
@@ -426,7 +429,7 @@ Clojure 风格集合等特性。如果全部进入 core，核心将膨胀到不�
 **Zio 核心不包含**（全部作为扩展库）：
 - Datalog 查询（→ `zio-datalog`）
 - Agent 编排（→ `zio-agent`）
-- 自学习模型（→ `zio-ai`）
+- 自学习模型（→ `loom`）
 - Clojure 风格集合（→ `zio-persistent`）
 - Entity/Protocol（→ `zio-entity` / `zio-protocol`）
 - Actor 并发（→ `zio-actor`）
@@ -448,11 +451,12 @@ Clojure 风格集合等特性。如果全部进入 core，核心将膨胀到不�
 - 库之间的版本兼容性需要保证
 - 某些库可能需要核心的 API 扩展（通过 MOP）
 
+
 ---
 
 ## ADR-010: 卫生宏分阶段实现
 
-**状态**: ✅ 已实现（Phase 1：`syntax-rules` 模式匹配 + 自动重命名，见 `core/src/macros.rs`；Explicit Renaming 等高级机制仍为规划）
+**状态**: ✅ 已实现（Phase 1：`syntax-rules` 模式匹配 + 自动重命名，见 `langs/core/src/macros.rs`；Explicit Renaming 等高级机制仍为规划）
 
 ### 背景
 
@@ -598,6 +602,7 @@ core 的 `Value` 含 `Future` 与 `Channel` 变体，`future-call` / `chan` /
 `eval.rs` 的 `apply()` 直接 downcast 到 `GFObject` 并在 eval 层构建
 method combination（`:before`/`:primary`/`:after`/`:around` 链）。这使
 Runtime 层硬编码知晓 ZOS 的具体类型与分派语义，违反定理 5（协议比实现
+
 重要）：MOP 的任何演化（分派缓存、combination 变体）都要修改 eval.rs。
 
 ### 决策
@@ -712,7 +717,7 @@ ADR-012 将并发原语诚实化为同步占位，并把"真并发"推迟为独�
 
 ### 背景
 
-同象性学习器 MVP(`lib/zio/learn.zio`,枚举 + eval 评分)验证了"数据 →
+同象性学习器 MVP(`libs/learning/learn.zio`,枚举 + eval 评分)验证了"数据 →
 搜索 → 程序"的闭环,但枚举提议器受组合爆炸约束(深度 2 即需秒级,
 深度 3 不可行)。程序合成的瓶颈在提议而非评分;学习机器(LLM、遗传
 算子、RL 策略、神经网络)是提议能力的不同来源;zio 的 eval 是共享的
@@ -729,10 +734,12 @@ ADR-012 将并发原语诚实化为同步占位，并把"真并发"推迟为独�
    预测器、先验模型)只能重排/剪枝候选以节省 eval 预算,不得替代
    eval 判定成功。embedding 只做可选的语义桥(自然语言任务),不做
    候选去重(候选去重用 AST 规范化 + 结构哈希)。
-3. **宿主协议外部 attach**:trait `LlmHost` / `EmbedHost`(远期
-   `ModelHost`,仅命名预留)进新 crate `zio-ai`(ADR-009 预留名,
-   承载 "LLM API / 自学习" 的宿主能力面;crate 内不含学习算法)。
-   `zio_ai::install(ctx, …)` 以 NativeFn 闭包注册 `llm-complete` /
+3. **宿主协议外部 attach**:trait `LlmHost` / `EmbedHost` / `ModelHost`
+   进 crate `loom`(H00 已交付,`contribs/native/loom/` 整体迁移;承载 "LLM API / 自学习"
+   的宿主能力面;crate 内不含学习算法)。`ModelHost::respond` 是唯一
+   provider 端口,窄口 `LlmHost` 经同一个桥接实现它——不保留并行
+   text-only transport。
+   `loom::install(ctx, …)` 以 NativeFn 闭包注册 `llm-complete` /
    `embed`,core 零改动;无宿主返回 `capability-denied:` 前缀的稳定
    错误(合同锚定)。**不采用** IoHost 式 `EvalContext` 字段方案——
    trait 进 core 违反 ADR-009;协议独立成 crate 的前提是注入点外置。
@@ -743,9 +750,10 @@ ADR-012 将并发原语诚实化为同步占位，并把"真并发"推迟为独�
 5. **确定性回放合同**:核心循环对同样提议永远产出同样结果;随机性
    (GP 的 `:seed`、LLM temperature 的 Mock 冻结)隔离在提议边界;
    Mock record/replay 使学习过程精确复现,replay miss 即 fail-fast。
-6. **记忆的语言化(经验即数据)**:`lib/zio/memory.zio` 三索引经验库
+6. **记忆的语言化(经验即数据)**:`libs/learning/memory.zio` 三索引经验库
    ——结构索引(规范化 AST)、行为指纹(规范输入电池上的输出向量,
-   解释器即 embedder)、可选向量索引(`lib/zio/vector.zio`,自然语言
+   解释器即 embedder)、可选向量索引(`libs/numa/vector.zio`,自然语言
+
    任务的语义桥);宏蒸馏升级为**反统一蒸馏**(Plotkin LGG →
    defmacro)+ **环境吸收**(宏定义进经验模块,后续学习 require 之,
    `:ops` 词汇表与白名单扩充;经验文件本身是可 load 的 zio 源码);
@@ -786,17 +794,19 @@ ADR-012 将并发原语诚实化为同步占位，并把"真并发"推迟为独�
 
 **状态**: 🟢 已实现 W00–W17（P1–P4 全部交付并实测）；P2–P4 的边界仍是本决策的约束
 
+> 历史 W00–W17 组件与 demo 交付记录，不表示开放任务或新的 agent 产品主线完成。Groiz 的独立应用定位由 ADR-019 更新；本决策的制品、授权和反馈边界继续有效，实际依赖以 workspace manifest 为准。
+
 ### 背景
 
-ADR-016 把学习能力放在 Zio（策略/表示）与 `zio-ai`（宿主协议）里，且
+ADR-016 把学习能力放在 Zio（策略/表示）与 `loom`（宿主协议）里，且
 core 不引入任何领域字段。grove 要在此之上加入持久化、权限、预算与
 真实张量训练，直接扩 ADR-016 会让它同时承担"库策略"和"产品宿主"
 两种职责，违反它自己的"核心最小"代价条目。
 
 ### 决策
 
-1. **新增 `grove` crate（`learning/`）作为可信宿主**，依赖方向单向：
-   `core` ← `zio-ai` ← `grove` ← （未来的 `grove-app`）。core 仍不认识
+1. **新增 `grove` crate（`apps/grove/native/learning/`）作为可信宿主**，依赖方向单向：
+   `core` ← `loom` ← `grove` ← （未来的 `grove-app`）。core 仍不认识
    学习概念；`grove::install` 以外部 attach 注册 native binding，未装配
    能力返回 `capability-denied:`（沿用 ADR-016 的前缀约定）。
 2. **不可变内容先于引用提交**。制品按内容摘要寻址，写入顺序是
@@ -804,7 +814,7 @@ core 不引入任何领域字段。grove 要在此之上加入持久化、权限
    只会留下无引用对象，不会产生指向不存在字节的已提交记录。
 3. **反馈是纯 Zio 政策，宿主只做授权与事务**。字段作用域、人工优先于
    教师、冲突隔离（后写不获胜）、abstain 一等、冻结数据视图不变更，
-   全部是 `lib/zio/learn/feedback.zio` 的纯函数；`grove` 不复制这套
+   全部是 `libs/learning/learn/feedback.zio` 的纯函数；`grove` 不复制这套
    判断，只做角色门控、幂等回执和生命周期状态。
 4. **教师是独立角色，不是 completion 的别名**。教师必须声明模态、
    输出类型、软输出词表和数据许可；未声明的能力按缺失报告，不以
@@ -835,8 +845,8 @@ core 不引入任何领域字段。grove 要在此之上加入持久化、权限
 ### 交付与衡量
 
 P1 证据：`cargo test -p grove`（store 22 + feedback 12）、
-`cargo test -p zio-ai --test teacher_contract --features http`（16）、
-`workers/torch/tests/test_training.py`（8）、本地教师真实训练并经
+`cargo test -p loom --features http --test teacher_contract`（16）、
+`apps/grove/workers/torch/tests/test_training.py`（8）、本地教师真实训练并经
 Rust 宿主查询。W00–W17 全部证据见
 [grove 交付计划](superpowers/plans/2026-10-02-self-learning.md) 第 12 节
 与 [特性矩阵](feature-matrix.md)。
@@ -846,6 +856,8 @@ Rust 宿主查询。W00–W17 全部证据见
 ## ADR-018: 组合、路由与部署 —— 语义身份，不是权重算术
 
 **状态**: 🟢 已实现（W13、W16，并约束 W11 的推理路径）
+
+> 以上为历史交付范围。2026-10-05 审核发现 frozen 声明尚未被 worker 优化器与联合参数提交强制执行；本文定义的冻结约束仍是目标不变量，不以组合校验或 demo 分数证明该保护已实现。
 
 ### 背景
 
@@ -892,6 +904,7 @@ W13 要求模块可组合，W16 要求多专家可集成。两者都面对同一
 
 ### 代价
 
+
 - `ModelSnapshot` 新增 `modules` / `ensemble` / `graph` 三个字段；旧
   记录以 `#[serde(default)]` 继续可读，但结构化快照的构造点显著增多；
 - 语义空间目前是自由字符串，没有全局词表强制，因此校验依赖声明的
@@ -901,9 +914,142 @@ W13 要求模块可组合，W16 要求多专家可集成。两者都面对同一
 
 ### 交付与衡量
 
-`learning/tests/composition_contract.rs`（9）、`ensemble_contract.rs`（12）、
+`apps/grove/native/learning/tests/composition_contract.rs`（9）、`ensemble_contract.rs`（12）、
 `grove-app` 的 `ui_contract`（5）与 `learning_e2e`（6），
 `cargo test --workspace --all-features` 364 通过，
-`python -m unittest discover -s workers/torch/tests` 72 通过，
+`python -m unittest discover -s apps/grove/workers/torch/tests` 72 通过，
 `grove demo --case modular` 真实演化并组合两个模块、拒绝异构空间、
 联合训练至 1.000 并以整体分数发布。
+
+---
+
+## ADR-019: Groiz 独立应用与同像性逻辑演化
+
+**状态**: ✅ 已采纳（2026-10-05）；新产品主线为 Planned，不代表运行时已实现
+
+**执行入口**：[统一实现计划](superpowers/plans/2026-10-05-zio-grove-convergence.md)。
+T/C/I/H/G 是新的工作包，不重命名历史 L/W；实施前完成符号影响分析，
+提交前检查变更范围。计划与文档同步不代表对应运行时能力已交付。
+
+**命名与官方库边界补充（已采纳）**：Numa（4 字符）为计算库，Rill（4 字符）
+为 CLI 库，Loom（4 字符）为 harness/ACP 库；Groiz（5 字符）为消费它们的应用。
+三库独立版本、按需引入和安装，不是语言内置组成；Zio/ZOS 与自举工具链仍是
+语言，核心不反向依赖库或产品。当前 `loom`/`zio-cli` 及历史命令不在文档
+修订中重命名；H00/I00/C01 负责迁移/抽取/创建和全部调用者切换。
+目标目录 `contribs/native/loom/`、`rill/`、`numa/` 与模块词根独立；实际注册表包 ID 尚未核验，
+实施前锁定。此补充更新当前定位，不改写 ADR-009/016 等历史发生时的名称。
+
+### 背景
+
+此前将 Groiz 描述为“学习库 + 可选产品壳”，容易把产品价值等同于算法集合，
+或把模型/教师/执行器全部实现当作应用交付前提。用户明确 Groiz 的第一身份
+是独立应用：它组织模块、自学习过程与版本治理，公共能力按实际需要下沉。
+首条主线是可编码 agent 逻辑、LLM 生成并执行 Zio 代码、站点审查与智能升级。
+
+### 决策
+
+1. **ZOS 保留在语言核心**。核心收敛是职责与语义入口收敛，不移除对象、
+   类、泛型函数、方法或 MOP 方向；计算、CLI、学习和 agent 会话不进入
+   领域特殊形式。ZOS 内部负责分派规则，执行器通过明确入口调用。
+2. **工具链自举与应用演化分开验收**。目标为 Zio 编写完整展开、分析与
+   编译器，Rust 保留最小运行时、宿主与必要性能原语。由初始执行器运行
+   编译器，再编译自身并重复构建；对照程序行为与规范化产物。首轮语义
+   集合明确包含所需 ZOS 能力，不以完整未实现 MOP 为启动前提。
+3. **Groiz 是独立应用，不是通用学习库优先**。应用拥有模块组织、运行、
+   反馈、实验、检查点、谱系、审查、发布与站点。内部可以有库结构；
+   官方计算 Numa、CLI Rill、harness/供应商/ACP Loom 独立提供公开合同，
+   应用消费这些库；受约束执行通过公开宿主接口接入。按实际需求实现接口，
+   不预设微服务、插件平台或独立仓库，不重复语言/数值引擎，不让库依赖 Groiz。
+4. **Zio 解释器模块同时支持代码工具与 agent 逻辑**。LLM 候选经解析、
+   展开、能力检查与隔离执行，结果/错误/证据作为数据供修订；版本化 Zio
+   程序真实驱动任务分解、上下文选择、路由、校验、修订与停止。复用现有
+   执行器，不以展示 DSL、echo 或提示词摘要替代行为。
+5. **同像性不自动等于解释性或正确性**。程序与依赖版本、实际执行路径、
+   评价与变更证据相互关联。站点展示真实逻辑、调用、差异、回归与批准，
+   敏感内容按许可保存或脱敏；LLM 自述不能替代事实记录，不承诺神经网络
+   全部内部机制透明，也不要求未公开内部推理作为审计事实。
+6. **自动实验，人工正式发布**。批准的预算、触发规则和可修改区域内可
+   自动训练、提出候选与保存检查点；学习策略/教师配置/预算变更单独审批。
+   ZOS、可信编译器、权限、独立评价、检查点验证和发布门槛不向普通任务
+   开放。执行器与宿主提交同时验证冻结区；候选不能修改其自身评分规则。
+   批准绑定候选与评价，发布仍检查硬门槛和预期旧版本；在途调用固定旧版，
+   状态显式迁移或重置，失败不覆盖已发布版本。
+7. **模块可追加，能力如实声明**。源码、向量、神经网络和 LLM 模块分别
+   声明执行、更新、评价与检查点兼容能力。恢复区分权重初始化、学习续接
+   和受控回放；未知兼容或缺少状态拒绝，不偷偷降级。反馈入库、纳入数据、
+   训练消费、候选生成和正式发布是不同事实。
+8. **ACP 先客户端后服务端**。Agent Client Protocol 为双向目标；
+   Loom 客户端连接外部 agent，Groiz 教师适配器将回答/示范/程序提议转为
+   有来源、许可的信号；之后由 Groiz 装配 Loom 服务端，目标入口为
+   `grove acp serve`，不默认内置到语言 CLI。两方向分别验收，共享会话/权限，
+   教师不持发布权限，ACP 不进入语言核心。
+
+### 理由与代价
+
+- 独立应用主线验证用户价值；官方库独立演进、按需消费，接口由真实复用驱动，不先建空框架。
+- 可执行逻辑与事实记录支持审查及候选对照，比只调整提示词或展示训练分数更明确。
+- 记录、隔离、状态兼容与独立评价是实际成本；同像性不会消除这些成本。
+- 保留 ZOS 增加首轮自举语义范围，但不要求先完成全部未来对象系统功能。
+
+### 备选方案
+
+- 学习库优先、产品仅装配：不符合独立应用定位。
+- 仅把 Zio 当生成代码工具：缺少真实 agent 内部逻辑的审查与演化。
+- 同时完成所有模型后端或允许候选自动改写评价器：扩大交付面或破坏可信边界。
+
+### 验收与当前差距
+
+验收基线为[整体设计第 10 节](self-learning-architecture.md#10-新产品主线与历史交付)
+的 G1–G3：真实 Zio agent → 真实模型生成与执行 → 站点证据与候选差异 →
+独立评价 → 人工批准升级。现有 CPU demo、检查点与存储合同继续复用。
+Web train/resume 尚未接执行队列，冻结约束尚未贯穿优化器/提交，反馈消费证明、
+持久进度及同像性逻辑审查待实现。历史 W00–W17 不为这些新能力提供完成证明。
+
+## ADR-020: FFI 调用约定 —— 值即对象，链式即线程宏
+
+**状态**: ✅ 已采纳（2026-10-10）；`->`/`->>` 已交付，JS 一等值已交付（wasm），Rust 宿主对象合同为方向性约定
+
+### 背景
+
+FFI 表面此前有两种不一致的形态：wasm 侧 `js/eval` 把 JS 结果 Debug 成字符串
+返回，无法对返回对象做第二次操作；Rust 宿主（loom `install`、host bindings）
+以平铺 native 函数暴露能力。ZOS 对象只有 `(gf obj args)` 调用约定，没有链式
+语法。用户提出 FFI 的调用与实现方式需要充分考虑，并明确问及对象链式调用。
+
+### 决策
+
+1. **链式调用不进运行时**。不引入方法链 sugar、不改动 eval/apply。链式由
+   bootstrap 线程宏 `->`（首参插入）与 `->>`（尾参插入）承担，适配一切值：
+   ZOS 对象（`(-> obj (gf a) (gf b))`）、map、JS 句柄、普通函数。宏在
+   `langs/core/assets/std/core.zio`，展开期构造，零运行时新语义。
+2. **FFI 值是一等对象，不是字符串**。wasm 侧 JS 结果映射规则：null/undefined
+   → nil，boolean/number/string → 对应原始值（整值浮点归 Integer），其余
+   一律包装为不透明 `#<js-object>` ZOS 对象（原子分配 identity）。句柄可用
+   `js/prop`（读）、`js/set`（写）、`js/call`（方法调用，参数按映射规则传入）
+   操作，`js/eval` 返回映射后的真值而非 Debug 字符串。
+3. **点分全局路径（wasm）**。`js/<global.path>` 符号在 env 查找失败时按
+   JS globalThis 解析：`(js/console.log "x")`、`(js/Math.max 1 2)`、
+   `(-> 3.7 (js/Math.floor))`。路径末端是函数则包装为捕获父对象为 `this`
+   的 native 函数（`console.log` 真经由 `console` 调用）；是数据则按映射
+   规则返回。已注册 builtin（`js/eval` 等）优先于该解析。解释器路径专用；
+   字节码编译体不经过此钩子。接收者为原始值时按 `Object(x)` 语义装箱
+   （`"abc"` 的 `length`/字符串方法可用）；Zio 复合数据（map/vector/list）
+   经 JSON 规则深转换为纯 JS 数据传入，与句柄（不透明引用）明确区分，
+   ZOS 对象仍在边界拒绝。
+4. **Rust 宿主遵循同一合同**：宿主把 native 句柄包装为 `ZosObject` 实现
+   （`header`/`as_any`/`clone_box`），操作以命名 native 函数暴露，返回宿主
+   对象即可被 `->` 链式消费。不引入新的 Value 变体、不做每对象的调用协议
+   （无 `__call__` 魔法方法），调用面始终是显式命名函数。点分解析是 `js`
+   命名空间的 wasm 特例；Rust 宿主不获得隐式点分解析，仍以注册函数为准。
+5. **边界拒绝静默损坏**。不支持把 ZOS 对象字符串化后传入 JS 或宿主；类型
+   不符在边界报错并命名实际类型。复合数据的深转换是显式规则（经 JSON
+   语义），不是静默降级——句柄与纯数据的区分因此保持。
+
+### 后果与边界
+
+- 链式表达力随宏与命名函数增长，不依赖运行时协议；代价是宿主不能给对象
+  重载调用语法（Lisp 传统即 `(gf obj args)`，非缺陷）。
+- `js/*` 仅存在于 wasm feature；native CLI 不暴露，`site_presets.rs` 契约
+  只覆盖原生程序。JS 数组/函数到 Zio 复合值的深映射尚未实现（句柄保持
+  不透明），需要时按本 ADR 增补映射规则并配契约。
+- `->`/`->>` 是普通宏：展开结果中的裸符号会被求值，线程宏不引入引用语义。

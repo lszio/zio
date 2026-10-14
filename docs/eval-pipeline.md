@@ -1,10 +1,10 @@
 # Eval 求值与编译管线
 
-> Version 0.4 — eval/apply 循环、TCO、ZOS 集成、编译器未来规划
+> Version 0.6 — AST、Zio 元循环与首轮便携工具链自举（2026-10-11）
 >
-> 当前可执行路径是 AST evaluator；ZOS class/generic dispatch 只有
-> experimental subset。ZIR、bytecode VM 和 JIT 均为
-> [Planned](feature-matrix.md)。仓库数量见[项目状态](status.md)。
+> AST evaluator 仍是默认源码执行器；Zio 元循环与编译前端为显式执行面。
+> L02 已验收 Stage 1/2/3 便携字节码固定点；ZOS class/generic dispatch 为
+> Experimental 子集，优化 ZIR/JIT 仍属规划。数量见[项目状态](status.md)，状态见[特性矩阵](feature-matrix.md)。
 
 ---
 
@@ -76,9 +76,22 @@ ZIR、bytecode VM 与 JIT 尚未实现；其批准设计和状态见
 [特性矩阵](feature-matrix.md)。当前 AST 解释器及 experimental ZOS 子集
 用于验证语言语义。
 
+### 1.4 生成代码与真实 agent 逻辑
+
+`eval` 只执行程序，不等于模型/工具会话循环。Groiz 的计划主线复用本执行器，
+由 Zio 程序实际控制任务步骤，再由 Loom 装配模型、工具、会话、预算、
+取消、provider 与 ACP；生成代码的解析、宏/依赖传递权限检查与隔离执行
+是另一明确边界。Loom 不持 Groiz 的学习目标、独立评价或发布治理。
+当前 `macroexpand` 只展开外层形式，不是完整编译前端；Sexp 转 Value 再返回
+会丢失原来源，不能用打印后的 AST 声称已经保留可审计的执行位置。
+计划增加可关闭的执行观测：开启时关联程序版本、源码/表达式、分支与能力
+调用；关闭时不构造轨迹对象，不把学习策略或模型协议放入核心。
+
+Zio 库目标采用 Zio 实现并归入 `libs/`：Numa 持计算，Rill 持 CLI 组合，Loom 持 harness 组合。现有 Rust 通用传输/宿主合同位于 `contribs/native/loom/`，不是 Zio 库本体；普通语言 CLI 位于 `langs/cli/`，不装配 LLM replay。Groiz 是 `apps/grove/` 独立应用，其 Rust 业务仍待后续迁为 Zio；语言介绍、文档与 playground 位于 `apps/site/`。历史目录切换不证明功能交付；L02 首轮便携工具链自举另有真实验收，完整库、Tree-sitter、LSP 和发行分别核对[特性矩阵](feature-matrix.md)。当前合同见[架构](zio-architecture.md)与[批准目录计划](superpowers/plans/2026-10-07-language-first-layout.md)。短名不等于已注册包 ID。
+
 ---
 
-## 2 Eval 引擎详解
+## 2 Eval 循环
 
 ### 2.1 eval_inner 核心逻辑
 
@@ -129,6 +142,7 @@ pub fn apply(func: Value, args: Vector<Value>, engine: &dyn EvalEngine) -> TailR
 当前 evaluator 有两条不同的无栈增长路径：
 
 - 普通函数调用出现在尾位置时，`eval_inner` 返回
+
   `TailResult::TailCall(Value, Vector<Value>)`。`eval()` trampoline（以及非尾调用
   内部的 trampoline）反复调用 `apply`，因此普通自递归和 `even?`/`odd?`
   这类互递归都不会为每次尾调用增加 Rust 栈帧。函数体以及 `if`、`cond`、
@@ -148,8 +162,8 @@ pub fn apply(func: Value, args: Vector<Value>, engine: &dyn EvalEngine) -> TailR
 
 ZOS 是 `zio-core` crate 的一部分，不是独立 crate：
 
-```
-zio-core/src/
+langs/core/src/
+langs/core/src/
 ├── lib.rs            — 模块入口
 ├── value.rs          — Value 枚举 + Value::Object
 ├── sexp.rs           — Sexp 语法树
@@ -178,8 +192,8 @@ zio-core/src/
 
 当前 experimental ZOS subset：
 
-```
-zio-core/src/zos/
+langs/core/src/zos/
+langs/core/src/zos/
 ├── mod.rs            — ZOS 模块入口
 ├── object.rs         — ObjectHeader + ZosObject trait
 ├── class.rs          — Class 定义 + 注册表 + defclass
@@ -194,17 +208,23 @@ zio-core/src/zos/
 [特性矩阵](feature-matrix.md)为准。
 
 ### 3.2 EvalEngine 拆分
-
-这是 `core/src/context.rs` 中已经存在的当前 API。求值与模块注册分别由两个
+这是 `langs/core/src/context.rs` 中已经存在的当前 API。求值与模块注册分别由两个
+这是 `langs/core/src/context.rs` 中已经存在的当前 API。求值与模块注册分别由两个
 能力 trait 表达，`EvalEngine` 是组合二者的 marker supertrait：
 
 ```rust
-/// 最小编译/求值能力。不含模块和 ZOS。
+/// 最小求值、源码定位与宿主 I/O 能力。不含模块注册和 ZOS。
 pub trait EvalRuntime {
     fn eval_expr(&self, expr: &Sexp, env: &Arc<Env>, tail: bool)
         -> Result<TailResult, EvalError>;
     fn env(&self) -> &Arc<Env>;
+    fn source_map(&self) -> &Arc<crate::span::SourceMap>;
+    fn io(&self) -> &dyn crate::io::IoHost {
+        &DEFAULT_STD_IO
+    }
 }
+
+static DEFAULT_STD_IO: crate::io::StdIoHost = crate::io::StdIoHost;
 
 /// 模块注册表。独立于求值。
 pub trait ModuleRegistry {
@@ -215,40 +235,45 @@ pub trait ModuleRegistry {
         -> Option<Result<Module, EvalError>>;
     fn begin_loading(&self, path: &Path) -> Result<(), EvalError>;
     fn end_loading(&self, path: &Path);
+    fn push_module_exports(&self);
+    fn add_module_export(&self, name: String);
+    fn take_module_exports(&self) -> Vec<String>;
 }
 
 pub trait EvalEngine: EvalRuntime + ModuleRegistry {}
 ```
 
-`EvalContext` 持有根环境、`ModuleTable` 和可选 loader，并分别实现
+`EvalContext` 持有根环境、`ModuleTable`、可选 loader、源码注册表、宿主 I/O
+与模块导出栈，并分别实现
 `EvalRuntime` 与 `ModuleRegistry`，最后实现 `EvalEngine`。只需要最小求值能力
 的嵌入边界可以依赖 `EvalRuntime`；当前完整 AST evaluator 和 CLI 路径使用
 `EvalEngine`。单独的 `ZosRuntime`/VM 能力边界不在当前 `context.rs` API 中；
-ZIR、bytecode VM 与 JIT 仍是下节所述的规划范围。
+ZIR 与 JIT 仍是规划；字节码 VM 和 Zio 前端已按下节的首轮合同验收。
 
 ---
 
-## 4 编译管线（Planned）
+## 4 编译管线与后续规划
 
-### 4.1 ZIR 设计要点
+### 4.1 自举交付顺序
 
-ZIR 分以下阶段引入：
+| 步骤 | 状态 | 管线与验收 |
+|------|------|------------|
+| 当前语义参考 | Stable / Experimental ZOS | Reader → Sexp → AST eval；固定首轮语言与 ZOS 合同 |
+| Zio 前端 | Experimental / L01–L02 verified | Zio reader → expand → 绑定/尾位置/capture 分析；源码与三执行面合同对照 |
+| 最小编译器与后端 | Experimental | Zio 编译器生成 v1 便携字节码；Rust VM 复用核心值、宿主和 ZOS 分派 |
+| 首轮工具链自举 | L02 verified | fresh context 安装完整编译前端；Stage 1/2/3 规范文件字节相同，执行 sum=10、closure=15 |
+| 后续性能路线 | Planned | 热点测量后再增加优化 ZIR/JIT，不作为 Groiz G1 或第一轮自举的前置任务 |
 
-| Phase | 状态 | 管线 |
-|-------|------|------|
-| 1-4 | ✅ 纯 AST 解释器 | Reader → Sexp → Eval → Value |
-| 5 | 📋 评估阶段 | 分析解释器热点，验证 ZIR 可行性 |
-| 6 | 📋 字节码编译器（如验证通过） | 单通道、显式尾调用指令、Span 嵌入 |
-| 7 | 📋 Cranelift JIT | 编译热函数到机器码 |
+### 4.2 引导执行与编译器的区别
 
-### 4.2 编译器层可选性
+AST evaluator 保留为引导环境和语义对照，普通解释执行不依赖新编译器。
+编译器不是语言语义的替代品，但**完成工具链自举必须实际有 Zio 编译器
+并编译自身**；不能以编辑器、`eval` 或宏 demo 代替。ZOS 语义仍属于核心，
+编译后路径通过同一对象分派入口，不能把 ZOS 拆成可选领域插件。
 
-`compiler` 和 `vm` 层始终是**可选的**。所有语言特性（包括 ZOS）都在 AST 解释器层定义。编译器层只是渐进加速器，不是硬依赖。
-
-```
-基础模式（Phase 1-4）：Reader → AST eval
-加速模式（Phase 6+）： Reader → ZIR → bytecode → eval 或 JIT
-```
+便携模块格式与 VM 复用 `langs/core/src/bytecode.rs`，不建立第二套 ZIR/VM。
+优化 ZIR/JIT 仍属后续路线；当前依赖、实跑证据与剩余镜像/发行工作以
+[语言工具链主计划](superpowers/plans/2026-10-11-zio-language-toolchain.md)为准。
 
 ---
 
@@ -262,3 +287,4 @@ ZIR 分以下阶段引入：
 | [zos-spec.md](zos-spec.md) | ZOS 完整规范 |
 | [zio-philosophy.md](zio-philosophy.md) | 语言哲学和设计定理 |
 | [adrs.md](adrs.md) | 架构决策记录（特别是 ADR-005, 006, 008） |
+| [superpowers/plans/2026-10-05-zio-grove-convergence.md](superpowers/plans/2026-10-05-zio-grove-convergence.md) | 当前实现依赖与真实验收；工具链独立于 Groiz 主线 |

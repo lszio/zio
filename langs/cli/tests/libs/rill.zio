@@ -1,0 +1,47 @@
+(load "libs/rill/cli.zio")
+(defn check [label actual expected]
+  (if (= actual expected) (println "PASS" label)
+    (error (str "FAIL " label " got: " actual " want: " expected))))
+
+;; A full checkpoint launch has typed global options and composable dispatch.
+(def launch (rill-parse rill-grove-spec
+                       ["--root" "/store" "checkpoint" "--run=r-1" "--state" "/state" "--quota" "200"]))
+(check "dispatch-real-launch"
+       (rill-dispatch launch {"checkpoint" (fn [parsed]
+                                             (let* [opts (get parsed :options)]
+                                               [(get opts :root) (get opts :run) (get opts :state) (get opts :quota)]))})
+       ["/store" "r-1" "/state" 200])
+
+;; All existing Grove commands have executable schemas, not hand-parsed aliases.
+(def invocations
+  [["demo" "--case" "dual"] ["inspect"]
+   ["checkpoint" "--run" "r" "--state" "s"]
+   ["fork" "--checkpoint" "c" "--branch" "b"]
+   ["resume" "--checkpoint" "c" "--run" "next"]
+   ["compare" "--protocol" "p" "--snapshots" "a,b"]
+   ["select" "--protocol" "p" "--snapshots" "a,b"]
+   ["approve" "--protocol" "p" "--snapshot" "a" "--expected-version" "0"]
+   ["decline" "--snapshot" "a" "--candidate" "c" "--reason" "not ready"]
+   ["run" "--task" "task.json" "--provider-config" "provider.json" "--max-turns" "2"]
+   ["serve" "--bind" "127.0.0.1:8000" "--workers" "2"]])
+(check "all-command-schemas"
+       (apply vector (map (fn [args]
+                            (get (rill-parse rill-grove-spec
+                                             (reduce vector-conj args ["--root" "/store"])) :command)) invocations))
+       (get rill-grove-spec :command-order))
+(check "missing-command-requirement" (try (rill-parse rill-grove-spec ["checkpoint" "--root" "/store"]) false (catch any true)) true)
+(check "unknown-option" (try (rill-parse rill-grove-spec ["inspect" "--root" "/store" "--force"]) false (catch any true)) true)
+(check "missing-value" (try (rill-parse rill-grove-spec ["inspect" "--root"]) false (catch any true)) true)
+(check "bad-number" (try (rill-parse rill-grove-spec ["inspect" "--root" "/store" "--quota" "2.5"]) false (catch any true)) true)
+(check "invalid-choice" (try (rill-parse rill-grove-spec ["demo" "--root" "/store" "--case" "fake"]) false (catch any true)) true)
+(check "duplicate-option" (try (rill-parse rill-grove-spec ["inspect" "--root" "a" "--root" "b"]) false (catch any true)) true)
+(check "help-without-capabilities" (get (rill-parse rill-grove-spec ["checkpoint" "--help"]) :help) true)
+(check "help-is-report" (string? (rill-dispatch (rill-parse rill-grove-spec ["--help"]) {})) true)
+
+;; A non-Grove consumer combines boolean flags and -- escaped positionals.
+(def small {:name "echo" :positionals true
+            :options [{:name "verbose" :short "v" :key :verbose :type :flag}]})
+(check "composed-positional-parser"
+       (let* [parsed (rill-parse small ["-v" "--" "--literal" "a=b"])]
+         [(get (get parsed :options) :verbose) (get parsed :args)])
+       [true ["--literal" "a=b"]])

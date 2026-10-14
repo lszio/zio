@@ -1,0 +1,4 @@
+;; doc: L01 metacircular smoke: the Zio reader and evaluator execute the L00 baseline.
+;; doc: Run from the repository root: cargo run -p zio-cli -- examples/toolchain/meta-eval.zio
+;; doc: The driver uses host file I/O; target parsing/evaluation belongs to Zio, not Rust eval.
+(zio-meta-eval (slurp "examples/toolchain/semantics.zio") "examples/toolchain/semantics.zio")

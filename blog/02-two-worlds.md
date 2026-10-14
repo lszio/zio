@@ -1,5 +1,7 @@
 # 02: 两个世界：Sexp 与 Value
 
+> 2026-10-07 目录更新：本文教学代码与旧阶段/验收描述保留历史语境；源码链接和运行路径已映射到当前位置。现行目标是 `libs/` 的 Zio 库与 `apps/grove/` 的 Zio 业务迁移，Rust Grove 业务尚未整体重写；通用 Rust transport/host adapter 在 `contribs/native/loom/`。当前归属见[架构](../docs/zio-architecture.md)与[批准目录计划](../docs/superpowers/plans/2026-10-07-language-first-layout.md)。
+
 > 一个表示"代码"，一个表示"运行时的值"。它们是两个枚举，但长得非常像。为什么分开？
 
 ---
@@ -29,7 +31,7 @@
 
 ## 两个枚举
 
-代码域：[`core/src/sexp.rs`](../core/src/sexp.rs) 中的 `Sexp`
+代码域：[`langs/core/src/sexp.rs`](../langs/core/src/sexp.rs) 中的 `Sexp`
 
 ```rust
 pub enum Sexp {
@@ -46,7 +48,7 @@ pub enum Sexp {
 }
 ```
 
-运行时域：[`core/src/value.rs`](../core/src/value.rs) 中的 `Value`
+运行时域：[`langs/core/src/value.rs`](../langs/core/src/value.rs) 中的 `Value`
 
 ```rust
 pub enum Value {
@@ -148,6 +150,7 @@ Value:  Nil
 impl From<Sexp> for Value { /* 递归转换 */ }
 pub fn sexp_to_value(s: &Sexp) -> Value { /* 同上 */ }
 pub fn value_to_sexp(v: &Value) -> Sexp { /* 反向 */ }
+
 ```
 
 代价是什么？
@@ -176,10 +179,10 @@ ADR-001: Sexp 与 Value 分离
 打开 [`docs/adrs.md`](../docs/adrs.md#adr-001-sexp-与-value-分离) 查看 ADR-001 完整记录。
 
 ## 在代码中
-
-- 对比 [`core/src/sexp.rs`](../core/src/sexp.rs) 和 [`core/src/value.rs`](../core/src/value.rs) 的枚举定义
-- 看 [`core/src/special/data.rs`](../core/src/special/data.rs) 中 `quote` 的实现
-- 看 [`core/src/macros.rs`](../core/src/macros.rs) 中宏展开后的 `value_to_sexp` 调用
+- 对比 [`langs/core/src/sexp.rs`](../langs/core/src/sexp.rs) 和 [`langs/core/src/value.rs`](../langs/core/src/value.rs) 的枚举定义
+- 看 [`langs/core/src/special/data.rs`](../langs/core/src/special/data.rs) 中 `quote` 的实现
+- 看 [`langs/core/src/macros.rs`](../langs/core/src/macros.rs) 中宏展开后的 `value_to_sexp` 调用
+- 看 [`langs/core/src/macros.rs`](../langs/core/src/macros.rs) 中宏展开后的 `value_to_sexp` 调用
 
 ```rust
 // macros.rs 中宏展开的关键调用：

@@ -1,0 +1,134 @@
+;; ── zio.learning.runner — stable model/runner API ───────────────
+;;
+;; The orchestration owner (apps/grove/orchestration) consumes this
+;; API. The runtime primitives (`learn--build`, `learn--train-step`,
+;; `learn--evaluate`, `learn--export`, `learn--import`) are
+;; implementation detail; this module is the published surface that
+;; the parent verifies once. New recipe families add new entries here
+;; — they don't grow the runtime.
+;;
+;; Surface (stable):
+;;   (learn--runner-build tensor config)        -> model
+;;   (learn--runner-train-step model request)   -> {:model :step :loss :metrics :consumed}
+;;   (learn--runner-evaluate model rows)        -> {:predictions :logits :accuracy}
+;;   (learn--runner-export model)               -> snapshot-map
+;;   (learn--runner-import tensor snapshot)     -> model
+;;   (learn--runner-rollout model env)          -> trajectory
+;;   (learn--runner-features row space)         -> feature-vector
+;;   (learn--runner-read-gvd1 path)             -> rows
+;;   (learn--runner-space-spec space)           -> {:width :encoder-id :space-version}
+;;   (learn--runner-space-list)                 -> vector of supported space ids
+;;   (learn--runner-recipe-list)                -> vector of supported recipe ids
+;;   (learn--runner-licence-check row)          -> row (refuses retracted/forbidden)
+;;
+;; Recipes (from recipes.zio) supported end-to-end with real gradients:
+;;   "supervised@1"        — cross-entropy on the student's argmax label
+;;   "hard-distill@1"      — cross-entropy on teacher argmax
+;;   "soft-distill@1"      — KL with temperature on teacher's softmax
+;;   "preference@1"        — pairwise logistic on (preferred, unpreferred)
+;;   "demonstration@1"     — masked CE on legal demonstrator actions
+;;   "self-supervised@1"   — masked reconstruction on the pixel stream
+;;   "environment-feedback@1" — REINFORCE on delayed returns per trajectory
+;;   "policy-gradient@1"   — REINFORCE with baseline on restricted lineworld
+;;
+;; Every recipe's loss is built on the supported tensor op set
+;; (cross-entropy, log-softmax, mul, sub, sum, mean, gather,
+;; logsigmoid, relu, linear, clamp, pow, div) and a backward step that
+;; drives Adam. The decoder weights of self-supervised are intentionally
+;; non-trainable (the representation moves; the projection is fixed).
+
+(load "libs/learning/runtime.zio")
+(load "libs/learning/learn/recipes.zio")
+
+;; doc: `learn--runner-build` — 稳定入口：按 config 在张量后端上构建模型。
+;; doc:
+;; doc: 转发 learn--build。本模块是编排方消费的已发布表面，runtime 原语
+;; doc: 是实现细节，只在此处被父层验证一次。
+(defn learn--runner-build [tensor config]
+  (learn--build tensor config))
+
+;; doc: `learn--runner-train-step` — 稳定入口：对 model 执行一次训练步。
+;; doc:
+;; doc: 转发 learn--train-step；request 携带 :recipe :rows 及配方数据，
+;; doc: 返回 {:model :step :loss :metrics :consumed :source-records}。
+(defn learn--runner-train-step [model request]
+  (learn--train-step model request))
+
+;; doc: `learn--runner-evaluate` — 稳定入口：批量前向评估。
+;; doc:
+;; doc: 转发 learn--evaluate；返回 {:predictions :logits :decidable :correct
+;; doc: :accuracy}，无可判定行时 :accuracy 为 nil。
+(defn learn--runner-evaluate [model rows]
+  (learn--evaluate model rows))
+
+;; doc: `learn--runner-export` — 稳定入口：导出可移植快照 map。
+;; doc:
+;; doc: 转发 learn--export；快照 schema 为 zio.learning.state/1，携带特征
+;; doc: 空间 id/宽度/encoder/版本三元组。
+(defn learn--runner-export [model]
+  (learn--export model))
+
+;; doc: `learn--runner-import` — 稳定入口：从快照恢复模型。
+;; doc:
+;; doc: 转发 learn--import；空间不一致的外来快照被拒绝，而不是静默重定
+;; doc: 输入宽度。
+(defn learn--runner-import [tensor snapshot]
+  (learn--import tensor snapshot))
+
+;; doc: `learn--runner-rollout` — 稳定入口：在 lineworld 环境中走一条轨迹。
+;; doc:
+;; doc: 转发 learn--rollout 且贪心固定为 false（动作按 softmax 采样）；
+;; doc: 返回 {:states :actions :return :steps :terminated}。
+(defn learn--runner-rollout [model env]
+  (learn--rollout model env false))
+
+;; doc: `learn--runner-features` — 稳定入口：观察行 → 特征向量。
+;; doc:
+;; doc: 转发 learn--features；行必须恰有 256 像素加 2 读数，空间必须已声明。
+(defn learn--runner-features [row space]
+  (learn--features row space))
+
+;; doc: `learn--runner-read-gvd1` — 稳定入口：读取并解析 GVD1 数据集文件。
+;; doc:
+;; doc: 转发 learn--read-gvd1，返回行向量；magic/截断/stride 校验失败时报错。
+(defn learn--runner-read-gvd1 [path]
+  (learn--read-gvd1 path))
+
+;; doc: `learn--runner-space-spec` — 稳定入口：查特征空间规格。
+;; doc:
+;; doc: 转发 learn--space-spec；返回 {:width :encoder-id :space-version
+;; doc: :description}，未声明空间返回 nil。
+(defn learn--runner-space-spec [space]
+  (learn--space-spec space))
+
+;; doc: `learn--runner-space-list` — 当前注册的全部特征空间 id 向量。
+;; doc:
+;; doc: 即 learn--space-specs 的键；新空间只在 runtime 注册，本表面不变。
+(defn learn--runner-space-list []
+  (keys learn--space-specs))
+
+;; doc: `learn--runner-recipe-list` — 当前注册的全部配方 id 向量。
+;; doc:
+;; doc: 取自 recipes--all 各项的 :id；新配方家族在此追加条目，而不是扩充 runtime。
+(defn learn--runner-recipe-list []
+  (map (fn [r] (get r :id nil)) recipes--all))
+
+;; doc: `learn--runner-licence-check` — 稳定入口：训练来源许可闸门。
+;; doc:
+;; doc: 转发 learn--source-allowed；retracted / "forbidden" / "display-only"
+;; doc: 的行报错拒绝，通过则原样返回 row。
+(defn learn--runner-licence-check [row]
+  (learn--source-allowed row))
+
+;; doc: `learn--runner-spaces-equal?` — 稳定入口：两个特征空间是否完全一致。
+;; doc:
+;; doc: 转发 learn--spaces-equal?；宽度、encoder id、版本全部相同才算相等。
+(defn learn--runner-spaces-equal? [a b]
+  (learn--spaces-equal? a b))
+
+(export learn--runner-build learn--runner-train-step learn--runner-evaluate
+         learn--runner-export learn--runner-import learn--runner-rollout
+         learn--runner-features learn--runner-read-gvd1
+         learn--runner-space-spec learn--runner-space-list
+         learn--runner-recipe-list learn--runner-licence-check
+         learn--runner-spaces-equal?)

@@ -1,5 +1,7 @@
 # 13 - REPL 与 CLI 实现
 
+> 2026-10-07 目录更新：本文教学代码与旧阶段/验收描述保留历史语境；源码链接和运行路径已映射到当前位置。现行目标是 `libs/` 的 Zio 库与 `apps/grove/` 的 Zio 业务迁移，Rust Grove 业务尚未整体重写；通用 Rust transport/host adapter 在 `contribs/native/loom/`。当前归属见[架构](../docs/zio-architecture.md)与[批准目录计划](../docs/superpowers/plans/2026-10-07-language-first-layout.md)。
+
 ## REPL 是什么？
 
 REPL = **R**ead **E**val **P**rint **L**oop。
@@ -19,7 +21,10 @@ Zio 回应: 25
 
 ## CLI 入口
 
-打开 `cli/src/main.rs`。整个 REPL 实现不到 200 行。
+打开 `langs/cli/src/main.rs`。本章保留简化的 REPL 教学实现，不是当前入口的完整清单。
+`zio-cli` 是普通语言二进制，不提供 `--llm-replay`；模型与 replay 合同在
+`contribs/native/loom/`，由授权宿主或应用装配。Rill 是未来 Zio CLI 组合库方向，
+不是独立 Rust 业务库目标。目录归属见[架构](../docs/zio-architecture.md)。
 
 ### Main 函数
 
@@ -91,48 +96,41 @@ fn run_repl(sm: &Arc<SourceMap>) {
 
 ### 上下文创建
 
-```rust
-fn make_ctx(sm: &Arc<SourceMap>) -> EvalContext {
-    let env = make_root_env();
-    let loader = make_require_loader(sm);
-    EvalContext::with_loader(env, loader)
-}
+装配不在 CLI 里，也不在 core 的 eval 里：`langs/core/src/bootstrap.rs` 是唯一的装配入口，
+CLI、编译器前端和 Grove 的候选执行都调用同一个 `language_context`。
 
-fn make_root_env() -> Arc<Env> {
-    let env = Arc::new(Env::new(None));  // 根环境
-    builtins::setup_env(&env);            // 安装全部内置函数（数量见 status.md）
-    setup_special_forms(&env);            // 也可以设置特殊形式引用
-    env
-}
+```rust
+let ctx = zio_core::bootstrap::language_context(
+    zio_core::bootstrap::ModuleRoots::new(roots)?,  // 显式授予的模块根
+)?;                                                 // 标准库失败即返回 Err
 ```
+
+它做三件事：安装内置函数（`builtins::setup_env`）、按授予根安装 `require` 加载器、
+加载 `core.zio` 标准库。标准库是失败即停的 —— 半加载的 stdlib 会让之后的每个符号解析
+都变成猜测，所以解析或求值出错直接返回错误，不降级为警告。
 
 根环境创建时为空（`outer: None`），然后通过 `setup_env` 注入所有内置函数。
 
 ## 脚本运行
 
 ```rust
-fn run_script(path: &str, sm: &Arc<SourceMap>) -> Result<Value, EvalError> {
-    let ctx = make_ctx(sm);
-    load_stdlib(&ctx, sm);        // 加载标准库
-
-    let source = read_source_file(&PathBuf::from(path))?;
-    let mut last_val = Value::Nil;
-
-    // 支持文件中有多个表达式，逐个求值
-    for expr in parse_all(&source) {
-        last_val = eval::eval(&expr, &ctx)?;
-    }
-
-    Ok(last_val)
+fn run_script(path: &str) -> Result<Value, EvalError> {
+    let ctx = language_context(script_roots(path))?;
+    let source = std::fs::read_to_string(path)?;
+    // 源文件按路径名注册进 ctx 的 SourceMap，错误定位直接指向脚本行号
+    eval_source(&ctx, path, &source)
 }
 ```
+
+`eval_source` 是"运行一段 Zio 文本"的唯一入口：它注册来源、逐个求值顶层 form、
+返回最后一个值。
 
 ## 标准库加载
 
 ```rust
 fn load_stdlib(ctx: &EvalContext, sm: &Arc<SourceMap>) {
     // 从嵌入式标准库加载 core.zio
-    let stdlib = zio_core::stdlib_source();  // include_str!("../stdlib/zio/core.zio")
+    let stdlib = zio_core::stdlib_source();  // 标准库源位于 langs/core/assets/std/core.zio
     let exprs = parse_all(stdlib);
     for expr in exprs {
         eval::eval(&expr, ctx).unwrap();
@@ -148,6 +146,7 @@ REPL 的一个实用功能：当括号没闭合时，等待更多输入。
 
 ```lisp
 zio> (+ 1
+
   | 2
   | 3)
 6
@@ -187,7 +186,7 @@ zio> (+ 1 2)     ← REPL 仍然活着
 从启动到退出：
 
 ```
-1. cargo run
+1. cargo run -p zio-cli
    ↓
 2. main() 检测参数：< 2 个 → REPL 模式
    ↓
@@ -213,7 +212,7 @@ zio> (+ 1 2)     ← REPL 仍然活着
 
 ```bash
 # 1. 启动 REPL
-cargo run
+cargo run -p zio-cli
 
 # 2. 在 REPL 中
 zio> (+ 1 2 3)
@@ -227,7 +226,7 @@ zio> (fib 10)
 
 # 3. 运行脚本
 echo '(println "Hello from script!")' > hello.zio
-cargo run -- hello.zio
+cargo run -p zio-cli -- hello.zio
 
 # 4. 错误恢复
 zio> (/ 1 0)
@@ -238,11 +237,11 @@ nil
 ```
 
 ## 对应源码
-
-- `cli/src/main.rs` —— REPL + 脚本运行器（~170 行）
-- `core/src/context.rs` —— EvalContext 定义
-- `core/src/builtins/mod.rs:setup_env` —— 内置函数聚合注册
-- `core/src/lib.rs` —— stdlib_source() 嵌入标准库
+- `langs/cli/src/main.rs` —— REPL + 脚本运行器（~170 行）
+- `langs/core/src/context.rs` —— EvalContext 定义
+- `langs/core/src/builtins/mod.rs:setup_env` —— 内置函数聚合注册
+- `langs/core/src/lib.rs` —— stdlib_source() 嵌入标准库
+- `langs/core/src/lib.rs` —— stdlib_source() 嵌入标准库
 
 ## 核心记忆
 

@@ -1,0 +1,56 @@
+---
+title: Loom · Agent 与模型会话
+description: 用 Zio 组织模型提案、执行反馈、调用预算与 ACP 协议，把权限留在宿主边界。
+order: 24
+---
+
+## 决策逻辑写在语言里
+
+Loom 提供几块可以独立理解的能力：`agent` 根据执行反馈继续修订或停止；`proposer` 把模型文本整理为候选程序字符串；`session` 管理调用预算与会话策略；`acp` 处理 JSON-RPC 2.0 的协议与请求关联。
+
+它不只是静态 Agent 数据模型：当前 `agent-run` 会请求源码、执行候选，并把失败信息送回下一轮。但调用真实模型、隔离执行候选、计算费用和回收进程仍属于宿主，不能由候选程序自行授予。
+
+## 先把预算表达为数据
+
+不调用模型，也能创建并检查会话预算的初始状态：
+
+```lisp
+(load "libs/loom/session.zio")
+
+(def ledger
+  (loom--budget-new
+    {:max-calls 3
+     :max-cost-micros 10000
+     :per-call-ceiling-micros 2000}))
+
+[(get ledger :calls)
+ (get ledger :spent)
+ (get ledger :held)
+ (get ledger :cancelled)]
+;; 得到 [0 0 0 false]
+```
+
+要实际预留和结算，调用者提供 `tx` 回调：它接收对账本的转换函数，并原子提交返回的 `:ledger`，向调用者返回 `:result`。库不自行打开应用数据库。预留同时约束调用次数、已花费金额和在途占用；未知费用不是免费，预期费用为零时使用显式的每次费用上限，没有正上限会拒绝预留。
+
+结算为未知费用时会吸收完整预留额并记录未观测费用；重复结算不能悄悄改写已观测金额。原子性依赖调用者真实的事务存储，普通 map 不是跨线程或跨进程事务实现。
+
+## 模型提案与执行循环
+
+`make-llm-proposer` 返回 `(fn [task history] candidates)` 形式的提案函数，候选是字符串。提案模块整理逐行响应、去重并限制候选数量；解析、白名单、评分和执行由学习循环负责，模型回答本身不算可信程序。
+
+`agent-run` 通过 `harness-complete` 获取源码，再通过 `harness-execute-zio` 执行。执行状态为 `completed` 时返回候选结果，否则带反馈继续，到轮数上限停止。**候选成功执行不等于已获准发布，也不是正确性证明。** 宿主应独立计量调用，并限制运行时间、进程和可达能力，不能只信任 Zio 循环里的计数。
+
+## 加载与运行条件
+
+从仓库根目录的原生会话用 `load` 按需引入模块。纯账本数据、响应校验和协议状态操作不需要真实提供者；真实提案需要 `llm-complete` 绑定，Agent 执行需要上述 harness 绑定。HTTP 会话路径还使用宿主 HTTP、环境变量与 JSON 能力，进程取消依赖相应生命周期绑定。
+
+ACP 默认传输通过 `host/rpc-read` / `host/rpc-write` 读写 Content-Length stdio 帧，也可以接入调用者提供的传输。没有这些绑定时，当前默认读取退回超时、写入返回 nil；这不是可工作的真实连接，需要明确安装传输。不要把普通浏览器 Playground 当作已配置模型、密钥、stdio 或进程隔离的 Loom 宿主。
+
+## 全部模块参考
+
+- [Agent：执行反馈与修订循环](/reference/loom-agent/) — 请求源码、构造反馈与轮数边界。
+- [Proposer：模型文本到候选提案](/reference/loom-proposer/) — 提案协议、提示数据、响应整理与配置。
+- [Session：预算、模型响应与会话策略](/reference/loom-session/) — 预留与结算、工具消息关联、提供者调用与取消。
+- [ACP：协议与传输](/reference/loom-acp/) — 信封校验、请求关联、队列与服务循环，使用前确认实际传输合同。
+
+把提案接入搜索与训练，可继续阅读 [Learning](/libraries/learning/)。返回[库目录](/libraries/)。

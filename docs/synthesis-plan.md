@@ -1,7 +1,7 @@
 # Zio 程序合成模块计划 —— 学习型提议 × eval 裁判 × 语言化记忆
 
-> Version 0.2 — 规划文档(全部为计划,不代表已实现;实现状态以
-> [特性矩阵](feature-matrix.md)为准)
+> Version 0.3 — 历史 L1–L4 合成模块研究计划；已有组件与未实现目标分开，
+> 当前状态以[特性矩阵](feature-matrix.md)为准。
 >
 > 本文档定义一个独立演进的模块:**程序合成(自学习)模块**——在现有
 > 同象性学习器 MVP 之上,以可插拔的学习机器(LLM 为主线,遗传算子、
@@ -9,11 +9,13 @@
 > 为裁判,完成"程序改写自身"的闭环。包含论文与汇报的交付规划。
 > v0.1 → v0.2 修订见[第 9 节](#9-修订记录)。
 >
-> 后续整体设计：[grove](self-learning-architecture.md)；
-> [grove 交付计划](superpowers/plans/2026-10-02-self-learning.md) 覆盖多源反馈、
-> 代码/权重联合学习、检查点、群体与模块演化。其中 W00–W10 已实现为
-> Experimental（状态与证据见该计划第 12 节）；grove 的实施不改变本计划
-> 及 ADR-016 的现有实现合同与状态，本文件描述的 L1–L4 也不因此重编号。
+> L1–L4 保留自己的研究编号与已有算术候选合同，不扩写为通用 agent 安全合同。
+> Groiz 的独立应用定位与权限依据[整体设计](self-learning-architecture.md)及
+> [ADR-019](adrs.md#adr-019-grove-独立应用与同像性逻辑演化)；当前开工顺序见[统一实现计划](superpowers/plans/2026-10-05-zio-grove-convergence.md)。
+> [历史 W00–W17 交付](superpowers/plans/2026-10-02-self-learning.md)提供 CPU
+> 组件与 demo 证据，不证明新的生成执行、真实 agent 或可审查升级已经完成。
+>
+> **2026-10-07 结构更新**：Zio 库在 `libs/`，通用 Rust transport/host adapter 在 `contribs/native/loom/`，Groiz 在 `apps/grove/`。Rust Groiz 业务尚待迁为 Zio。下文 L1–L4 研究设计与旧交付证据保留历史语境；不代表本轮重新实跑。当前归属见[架构](zio-architecture.md)与[批准目录计划](superpowers/plans/2026-10-07-language-first-layout.md)。
 
 ---
 
@@ -38,22 +40,22 @@
 实现,学习循环只有一份**。混合提议器 = 多路候选在每代做 merge
 (SICP 3.5 流的有限代快照;不引入 delay/force,每代是有限批)。
 
-eval 裁判是 SICP 4.1 元循环求值器的自指延伸:语言用自己的 eval 评判
-用自己写成的程序——同像性使候选无需任何桥接即可进入裁判。
+eval 裁判用于本模块封闭算术候选的实际行为评分。对于 Groiz 的通用逻辑，
+eval 只提供执行结果；独立任务评价、能力检查与隔离由可信边界分别承担。
 
 ### 1.2 角色分工与扩展位
 
 | 能力 | 角色 | 强项 | 短板(由闸门 + 裁判兜底) |
 |------|------|------|--------------------------|
-| zio eval | **裁判**(ground truth) | 确定性、可验证、可打分 | 盲目——枚举搜索空间组合爆炸 |
+| zio eval | **执行与算术行为评分** | 实际执行、可重复核对 | 不是通用任务成功判定或权限/隔离证明 |
 | 学习机器(LLM / 遗传算子 / RL 策略 / 神经网络…)| **提议器** | 从样本/描述直接产生候选 | 幻觉、随机、不可信 |
 | Embedding | **记忆的语义桥**(可选索引,L4) | 跨模态/自然语言任务的相似检索 | 不生成、不执行;仅当任务以 NL 到达时启用;**不用于候选去重** |
 
 两条教义,先于任何技术选型:
 
-- **唯一裁判教义**:eval 是唯一 ground truth。任何学习型组件(损失
-  预测器、先验模型、神经排序器)只能对候选**重排/剪枝以节省 eval
-  预算**,不得替代 eval 判定成功——建议性,非权威。
+- **实际行为证据**：本模块以独立样本上的实际 eval 结果评分，不以学习机器
+  的预测损失或自评分替代；Groiz 通用任务由固定的独立评价协议判定成功，
+  eval 只执行程序，不能读取评价答案或修改裁判。
 - **RL 环境视角**:学习循环本身就是一个 RL 环境——state =
   (task, history),action = 候选批,reward = −损失。经验库
   (memory.zio)记录的 (任务, 程序, 得分) 就是轨迹数据;任何 RL
@@ -107,10 +109,10 @@ eval 裁判是 SICP 4.1 元循环求值器的自指延伸:语言用自己的 eva
 2. 语法正则、树结构对 token 序列友好(对遗传算子则是天然的变异/交叉底物);
 3. 学习器的 `:ops` / `:constants` / `:max-depth` 约束直接映射为
    提示词约束 + 解析后 AST 闭世界白名单,双层护栏;
-4. 提议器是不可信外部进程,与 ProcessHost"不用 shell、参数白名单"
-   同一安全等级——**包含由构造保证**:候选永远只过解析 → 白名单
-   **两道闸门**,再进入唯一裁判 eval。校验逻辑在循环内,对所有提议器
-   一致生效;eval 是评分权威,不承担安全闸职能。
+4. 提议器不可信；本模块的封闭算术语法只允许配置的符号/常数/运算，
+   对所有提议器一致检查解析、AST 大小与白名单，再执行评分。
+   这不证明宏、模块、动态 eval 或通用宿主调用安全；Groiz 生成执行另需
+   展开前后传递能力校验、受限文件系统和时间/内存/调用预算。
 
 ### 1.5 与项目论点的关系
 
@@ -120,7 +122,7 @@ README 定义 zio = "同像性 + eval/apply" 的 Lisp。本模块把 AI 组件�
 `macroexpand` / `print` 检视的数据变换循环。** 终态即落地页口号
 "Programs that rewrite themselves"的可 demo 闭环。
 
-当前 MVP 学习器(`lib/zio/learn.zio`)卡在枚举:beam 24、深度 2 约需
+当前 MVP 学习器(`libs/learning/learn.zio`)卡在枚举:beam 24、深度 2 约需
 5 秒(AST 解释器),深度 3 不可行(量化判据见 5.4)。
 
 ---
@@ -129,22 +131,22 @@ README 定义 zio = "同像性 + eval/apply" 的 Lisp。本模块把 AI 组件�
 
 ### 2.1 布局
 
-与 core 的边界遵循 ADR-009(核心最小):宿主 AI 能力协议是 ADR-009
-预留的 "LLM API / 自学习" 能力面,进新 crate `zio-ai`;学习逻辑全部是
-纯 Zio 库。**core 零改动。**
+已有 L1–L3 使用外部 `loom` attach 与纯 Zio 提议器，不将 AI/学习字段放进
+核心。ADR-019 保留这一依赖方向与核心 ZOS；通用执行观测及工具链属于
+语言机制，不受本研究计划“core 零改动”的历史实施范围限制。
 
 ```text
-ai/                        # crate zio-ai:宿主 AI 能力协议(能力插座,不含算法)
+contribs/native/loom/                        # crate zio-ai:宿主 AI 能力协议(能力插座,不含算法)
 ├── src/lib.rs             # LlmHost / EmbedHost trait + install(外部 attach)
 ├── src/mock.rs            # Mock:record / replay 两种模式
 └── src/http.rs            # OpenAI 兼容实现(feature = "http")
-lib/zio/learn.zio          # 学习循环:driver + 白名单 + 预算 + 评分(已存在,泛化)
-lib/zio/proposer.zio       # [L2] 提示模板 + 响应解析 + 重试 + make-llm-proposer(/ make-gp-proposer)
-lib/zio/vector.zio         # [L4] 通用余弦向量库(纯 Zio)
-lib/zio/memory.zio         # [L4] 经验库:三索引检索 + 反统一蒸馏 + 环境吸收
+libs/learning/learn.zio          # 学习循环:driver + 白名单 + 预算 + 评分(已存在,泛化)
+libs/loom/proposer.zio       # [L2] 提示模板 + 响应解析 + 重试 + make-llm-proposer(/ make-gp-proposer)
+libs/numa/vector.zio         # [L4] 通用余弦向量库(纯 Zio)
+libs/learning/memory.zio         # [L4] 经验库:三索引检索 + 反统一蒸馏 + 环境吸收
 ```
 
-- **注入方式 = 外部 attach**:`zio_ai::install(ctx, llm, embed)` 用
+- **注入方式 = 外部 attach**:`loom::install(ctx, llm, embed)` 用
   NativeFn 闭包把 `llm-complete` / `embed` 注册进 env。host 以
   `Option<Arc<dyn LlmHost>>` 传入:绑定总是注册,宿主缺失时调用返回
   稳定前缀错误 `capability-denied: …`(合同测试锚定该前缀;真正的
@@ -160,17 +162,17 @@ lib/zio/memory.zio         # [L4] 经验库:三索引检索 + 反统一蒸馏 + 
   提议器/学习型先验);trait 形状待真实需求出现再定,现在不实现。
 - LLM/embed 的 Rust 数学加速(原生 HNSW 索引等)为远期项,进
   NumericKernel 相邻层,不进 core;
-- 工作区从 2 个 crate 变为 3 个时,`tools/project-status.sh` 的
-  "Workspace crates" 计数需同步(现硬编码为 2)。
+- 当前 workspace 的成员以 Cargo manifest 为准；数量由
+  `tools/project-status.sh` 从 manifest 生成，不在本计划手工硬编码。
 
 ### 2.2 命名表(v0.1 → v0.2)
 
 | 旧名 | 新名 | 理由 |
 |------|------|------|
-| crate `zio-cognitive` | **`zio-ai`** | ADR-009 预留名;按域命名的宿主能力协议,能力各自有精确命名的 trait(`LlmHost` / `EmbedHost` / 远期 `ModelHost`)。不叫 zio-llm 因为它不止 LLM,不叫 zio-cognitive 因为"认知"是修辞 |
+| crate `zio-cognitive` | **`loom`** | ADR-009 预留名;按域命名的宿主能力协议,能力各自有精确命名的 trait(`LlmHost` / `EmbedHost` / 远期 `ModelHost`)。不叫 zio-llm 因为它不止 LLM,不叫 zio-cognitive 因为"认知"是修辞 |
 | `docs/cognitive-plan.md` | **`docs/synthesis-plan.md`** | 模块的研究域是程序合成,与论文题目 Homoiconic Program Synthesis 对齐 |
-| `lib/zio/llm.zio` | **`lib/zio/proposer.zio`** | 按角色命名(SICP 传统);LLM 提议器与遗传提议器都是"提议器",同住一库 |
-| `lib/zio/embed.zio` | **`lib/zio/vector.zio`** | 它是通用余弦向量库(结构命名),embedding 只是数据来源之一 |
+| `lib/zio/llm.zio` | **`libs/loom/proposer.zio`** | 按角色命名(SICP 传统);LLM 提议器与遗传提议器都是"提议器",同住一库 |
+| `lib/zio/embed.zio` | **`libs/numa/vector.zio`** | 它是通用余弦向量库(结构命名),embedding 只是数据来源之一 |
 | `examples/cognitive-demo.zio` | **`examples/synthesis-demo.zio`** | 同上 |
 | "三道闸" | **"两道闸门 + 一个裁判"** | eval 执行候选而非拒绝候选,是评分权威不是安全闸 |
 | 构造器命名 | **`make-*`**(SICP 惯例) | `make-llm-proposer` / `make-gp-proposer` / `make-enum-proposer` / `make-vector-db` / `make-memory` |
@@ -236,10 +238,10 @@ crate 计数更新(ADR-016 已在案,本阶段交付其协议实现)。
 
 | 任务 | 说明 |
 |------|------|
-| 经验库 `lib/zio/memory.zio`(主线) | `make-memory` / `memory-remember!` / `memory-recall`:(任务, 程序, 得分) 三元组——**这就是 RL 轨迹数据**。检索走**三索引**:① 结构索引(L3 规范化 AST + 子表达式共享);② **行为指纹**——程序在规范输入电池上的输出向量,由 eval 确定性计算(解释器即 embedder);③ 向量索引(可选,仅 NL 任务)。相似度 = 多索引加权;命中历史做 few-shot 注入 |
+| 经验库 `libs/learning/memory.zio`(主线) | `make-memory` / `memory-remember!` / `memory-recall`:(任务, 程序, 得分) 三元组——**这就是 RL 轨迹数据**。检索走**三索引**:① 结构索引(L3 规范化 AST + 子表达式共享);② **行为指纹**——程序在规范输入电池上的输出向量,由 eval 确定性计算(解释器即 embedder);③ 向量索引(可选,仅 NL 任务)。相似度 = 多索引加权;命中历史做 few-shot 注入 |
 | **反统一蒸馏**(主线) | 对聚类成功程序求**最小泛化**(Plotkin LGG / anti-unification)——泛化的符号算法,公共模式直接提升为 `defmacro` 候选;行为描述子 = 指纹/输出向量(MAP-Elites 标准);蒸馏候选必须通过既有合同测试 |
 | **环境吸收**(主线) | 晋升的宏定义进经验模块(`memory/experience.zio`——**本身是可 load 的 zio 源码**);后续学习 `(require :learn.experience)` 后 `:ops` 词汇表与白名单同步扩充(基础词汇 ∪ 经验模块导出)。记忆的终态不是数据库,是语言本身 |
-| `lib/zio/vector.zio`(可选语义桥) | 通用余弦向量库(独立可用):`make-vector-db` / `vector-insert!` / `vector-search` / `vector-save` / `vector-load`(json 持久化,带模型版本字段);sqrt 用纯 Zio 牛顿迭代(core 无 sqrt/abs,是否加内建另行决策);对拍 Rust 参考实现;规模 ≤ 10³ 条 |
+| `libs/numa/vector.zio`(可选语义桥) | 通用余弦向量库(独立可用):`make-vector-db` / `vector-insert!` / `vector-search` / `vector-save` / `vector-load`(json 持久化,带模型版本字段);sqrt 用纯 Zio 牛顿迭代(core 无 sqrt/abs,是否加内建另行决策);对拍 Rust 参考实现;规模 ≤ 10³ 条 |
 | 自修复 | eval 报错(含行列号,ADR-004)回喂提议器修复候选 |
 | Bandit 元调度(可选) | 消费轨迹数据,在提议器/参数之间调度(1.2 RL 环境视角的元层实例) |
 | 玩具神经网络(可选) | 纯 Zio 前向传播(权重是 zio 数据)——"模型即数据"的同像性演示,不作训练目标 |
@@ -282,6 +284,7 @@ crate 计数更新(ADR-016 已在案,本阶段交付其协议实现)。
 ### 5.2 贡献声明(草拟)
 
 1. **两道确定性闸门 + 唯一评分权威**:在同像性基底上,不可信提议器的
+
    可靠性问题被转化为 reader 解析 + 闭世界 AST 白名单两道确定性检查;
    eval 不是闸门,是共享的确定性裁判(评分即语义 require)。校验在
    循环内对所有提议器一致生效,随机性被限制在提议边界;
@@ -411,7 +414,7 @@ Mock 回放深度 3 求解 → 真实 API(可选开关)→ 检索命中历史 �
 
 1. 宿主协议从"经 EvalEngine 注入的宿主路由 + trait 进新 crate"(依赖
    方向自相矛盾:EvalContext 在 core,无法持有依赖方 crate 的 trait)
-   改为**外部 attach**:`zio_ai::install` 注册绑定,core 零改动;
+   改为**外部 attach**:`loom::install` 注册绑定,core 零改动;
 2. 解析/白名单职责从 LLM 层上移到学习循环——白名单是任务属性,必须
    对所有提议器一致生效;"三道闸"改为"两道闸门 + 一个裁判";
 3. 新增 L3 硬需求:**候选级错误隔离**(try/catch)与**预算一等公民**
@@ -432,4 +435,5 @@ Mock 回放深度 3 求解 → 真实 API(可选开关)→ 检索命中历史 �
 10. **记忆的语言化(向量化之后)**:memory.zio 重设计为三索引经验库
     (结构、行为指纹、可选向量);"解释器即 embedder";宏蒸馏升级为
     反统一蒸馏(Plotkin LGG)+ 环境吸收(require 经验模块,`:ops`
+
     词汇扩充);新增 DSL 收缩指标;embedding 降为可选语义桥。

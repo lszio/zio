@@ -1,0 +1,18 @@
+{
+  "comment": [
+    "Public feedback examples for the agent-code task: what the model is",
+    "shown so it knows the shape of the answer. G02 checks the loop and the",
+    "sandbox; the held-back cases the evaluator computes ground truth from",
+    "arrive with G04's independent evaluation, and are not here yet."
+  ],
+  "shape": {
+    "entrypoint": "agent-entry",
+    "arguments": 0,
+    "prints": ["even-sum", "negative-count"]
+  },
+  "worked_example": {
+    "input": [1, -2, 3, -4, 5, -6],
+    "even_sum": -12,
+    "negative_count": 3
+  }
+}

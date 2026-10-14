@@ -3,7 +3,7 @@
 ;; candidates with eval, and the winner becomes a real function.
 (println "=== Homoiconic learner ===")
 
-(load "lib/zio/learn.zio")
+(load "libs/learning/learn.zio")
 
 ;; design-spec example: discover y = 2x + 1
 (def samples '[[1 3] [2 5] [3 7]])

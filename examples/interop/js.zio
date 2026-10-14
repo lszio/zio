@@ -1,0 +1,43 @@
+;; Native JavaScript interop, exercised end to end through the Zio
+;; surface. Run with the interpreted executor:
+;;   zio --lib-dir . examples/interop/js.zio
+;;
+;; The engine has no filesystem, network or process access — it only sees
+;; what this program hands it, plus the one callback registered below.
+
+(require :libs.interop.js
+         :refer [new-engine eval call invoke get put on eval-property])
+
+(let [engine (new-engine)]
+
+  ;; Primitives cross by value, and stay exact above 2^53.
+  (println "Math.max:" (eval engine "Math.max(3, 9, 4)"))
+  (println "exact bigint:" (eval engine "9007199254740993n"))
+
+  ;; Objects cross as opaque handles and mutate through the engine.
+  (let [point (eval engine "({ x: 1, y: 2 })")]
+    (put engine point "x" 10)
+    (println "mutated x:" (get engine point "x"))
+    (println "whole object x:"
+             (eval-property engine "({ x: 7 })" "x")))
+
+  ;; A method reaches `this` through its receiver.
+  (let [counter (eval engine
+                  "({ n: 0, bump() { this.n += 1; return this.n } })")
+        bump    (get engine counter "bump")]
+    (invoke engine counter bump)
+    (println "after bump:" (invoke engine counter bump)))
+
+  ;; A Zio callback called from JS, in both directions.
+  (on engine "hostDouble" (fn [n] (* n 2)))
+  (println "callback:" (eval engine "hostDouble(21)"))
+
+  ;; A promise is a value, never awaited implicitly.
+  (println "promise is a value:"
+           (string? (eval engine "Promise.resolve(1)")))
+
+  ;; The engine has no host authority of its own.
+  (println "no process:" (eval engine
+                            "typeof process === 'undefined'")))
+
+(println "js interop done")

@@ -1,0 +1,100 @@
+---
+import '../styles/global.css';
+const buildInfo = import.meta.env.ZIO_BUILD_INFO;
+
+interface Props {
+  title: string;
+  description: string;
+}
+
+const { title, description } = Astro.props;
+
+// The site is served from the domain root, but Astro.base stays the single
+// source of truth for the prefix so the same build works behind a subpath.
+// Normalised once: BASE_URL is '/' at the root and a bare '/site' on a
+// subpath, so every join below writes `${base}/…` explicitly rather than
+// relying on which shape it got.
+const base = import.meta.env.BASE_URL.replace(/\/$/, '');
+const links = [
+  { href: `${base}/intro/`, label: '语言介绍' },
+  { href: `${base}/docs/`, label: '文档' },
+  { href: `${base}/libraries/`, label: '库' },
+  { href: `${base}/playground/`, label: 'Playground' },
+];
+const footerLinks = [
+  { href: `${base}/syntax/`, label: '语法' },
+  { href: `${base}/reference/`, label: 'API 参考' },
+  { href: `${base}/contribute/`, label: '如何贡献' },
+  { href: 'https://github.com/lszio/zio', label: '源码' },
+];
+const current = Astro.url.pathname;
+// Hash links stay on the landing page; only the real subpages get aria-current.
+const isActive = (href: string) => !href.includes('#') && current.startsWith(href.replace(/\/$/, ''));
+---
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{title}</title>
+  <meta name="description" content={description}>
+  <link rel="icon" type="image/svg+xml" href={`${base}/favicon.svg`}>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+</head>
+<body>
+  <div class="bg-glow"></div>
+
+  <header>
+    <div class="container nav-bar">
+      <a href={`${base}/`} class="logo">
+        <span class="logo-brackets">&lt;(</span>ZIO<span class="logo-brackets">)&gt;</span>
+        <span class="logo-tag">v{buildInfo.version} · {buildInfo.release ? '正式版' : '开发版'}</span>
+      </a>
+      <ul class="nav-links">
+        {links.map((l) => (
+          <li><a href={l.href} aria-current={isActive(l.href) ? 'page' : undefined}>{l.label}</a></li>
+        ))}
+      </ul>
+      <div class="nav-actions">
+        <slot name="actions">
+          <a href={`${base}/contribute/`} class="btn btn-secondary">如何贡献</a>
+        </slot>
+      </div>
+    </div>
+  </header>
+
+  <main>
+    <slot />
+  </main>
+
+  <!-- Sitewide doc enhancement: rainbow-paren lisp highlighting, paren-pair
+       click/jump, mermaid fences, table scroll wrappers (scripts/doc-rich.js). -->
+  <script>
+    import '../scripts/doc-rich.js';
+  </script>
+
+  <footer>
+    <div class="container footer-grid">
+      <div>
+        <div class="logo" style="margin-bottom: 8px;">
+          <span class="logo-brackets">&lt;(</span>ZIO<span class="logo-brackets">)&gt;</span>
+        </div>
+        <p>Lisp 家族的通用编程语言 · 表达式、函数、数据与宏。</p>
+      </div>
+      <div class="footer-links">
+        {footerLinks.map((link) => <a href={link.href}>{link.label}</a>)}
+      </div>
+    </div>
+    <div class="container build-provenance" aria-label="文档构建版本">
+      <span>文档对应此构建 · v{buildInfo.version} · {buildInfo.release ? '正式版' : '开发版'}</span>
+      <span>分支：{buildInfo.branch ?? (buildInfo.commit ? 'detached HEAD' : '信息不可用')}</span>
+      {buildInfo.commit
+        ? <a href={`https://github.com/lszio/zio/commit/${buildInfo.commit}`}>commit {buildInfo.commit.slice(0, 8)}</a>
+        : <span>Git 构建信息不可用</span>}
+      {buildInfo.dirty === true && <span>包含未提交修改</span>}
+    </div>
+  </footer>
+</body>
+</html>

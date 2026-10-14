@@ -1,5 +1,7 @@
 # 11 - ZOS：运行时对象系统
 
+> 2026-10-07 目录更新：本文教学代码与旧阶段/验收描述保留历史语境；源码链接和运行路径已映射到当前位置。现行目标是 `libs/` 的 Zio 库与 `apps/grove/` 的 Zio 业务迁移，Rust Grove 业务尚未整体重写；通用 Rust transport/host adapter 在 `contribs/native/loom/`。当前归属见[架构](../docs/zio-architecture.md)与[批准目录计划](../docs/superpowers/plans/2026-10-07-language-first-layout.md)。
+
 ## 从 Lisp 到面向对象
 
 ZOS = Zio Object System。它不像 Java/C++ 的类系统——ZOS 是**运行时对象模型**，允许你在运行时创建类、修改类、多分派函数。
@@ -30,7 +32,7 @@ ZOS 核心概念：
 这段代码在 ZOS 中创建了一个 Class 对象：
 
 ```rust
-// core/src/zos/object.rs
+// langs/core/src/zos/object.rs
 pub struct Class {
     pub name: String,                     // "Point"
     pub superclasses: Vec<ClassRef>,      // [TObject]
@@ -55,7 +57,7 @@ pub struct SlotDefinition {
 在运行时，实例是一个 `ZosInstance`：
 
 ```rust
-// core/src/value.rs
+// langs/core/src/value.rs
 pub struct ZosInstance {
     pub class: ClassRef,
     pub slots: HashMap<String, Value>,  // {"x": 10, "y": 20}
@@ -71,7 +73,7 @@ pub struct ZosInstance {
 GF 是"待分派函数"的入口：
 
 ```rust
-// core/src/zos/gf.rs
+// langs/core/src/zos/gf.rs
 pub struct GenericFunction {
     pub name: Symbol,
     pub lambda_list: Vec<ArgSpec>,     // [(shape, required)]
@@ -148,6 +150,7 @@ pub fn apply(func: Value, args: Vector<Value>, engine: &dyn EvalEngine)
             }
         }
     }
+
 }
 ```
 

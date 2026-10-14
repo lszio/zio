@@ -1,5 +1,7 @@
 # 01: 你好，eval
 
+> 2026-10-07 目录更新：本文教学代码与旧阶段/验收描述保留历史语境；源码链接和运行路径已映射到当前位置。现行目标是 `libs/` 的 Zio 库与 `apps/grove/` 的 Zio 业务迁移，Rust Grove 业务尚未整体重写；通用 Rust transport/host adapter 在 `contribs/native/loom/`。当前归属见[架构](../docs/zio-architecture.md)与[批准目录计划](../docs/superpowers/plans/2026-10-07-language-first-layout.md)。
+
 > 评估一段 Lisp 代码，就是"求值"（eval）。从 S 表达式（S-expression）到运行时值（Value），这就是 eval 循环的核心。
 
 ---
@@ -12,9 +14,11 @@ Lisp 的 eval 和其他语言的解释器有一个根本不同：**代码本身�
 
 这个性质叫**同像性**（homoiconicity），它是宏系统的基石。但同像性也带来了第一个架构决策：我们需要两套类型系统——一套表示"代码"，一套表示"运行时的值"。
 
+本文保留早期 AST 解释器的示意代码和阶段叙述。同像性支持结构化表示、编辑与宏展开，不使神经模型透明，也不能证明候选正确；执行证据与独立评价另有边界。Zio 编写展开/分析/编译的自举仍是 Planned，区别于 Zio 编写 APP，见[批准架构](../docs/zio-architecture.md)与[实施计划](../docs/superpowers/plans/2026-10-05-zio-grove-convergence.md)。
+
 ## eval 循环
 
-打开 [`core/src/eval.rs`](../core/src/eval.rs)，看 `eval_inner` 函数：
+打开 [`langs/core/src/eval.rs`](../langs/core/src/eval.rs)，看 `eval_inner` 函数：
 
 ```rust
 fn eval_inner(expr: &Sexp, env: &Arc<Env>, tail: bool, engine: &dyn EvalEngine) -> Result<TailResult, EvalError> {
@@ -102,13 +106,13 @@ eval 的处理流程：
 
 ## 在代码中
 
-- 打开 [`core/src/eval.rs`](../core/src/eval.rs)，看 `eval_inner`（第 81-161 行）
-- 打开 [`core/src/sexp.rs`](../core/src/sexp.rs)，看 `Sexp` 枚举的定义
-- 打开 [`core/src/value.rs`](../core/src/value.rs)，对比 `Value` 枚举
+- 打开 [`langs/core/src/eval.rs`](../langs/core/src/eval.rs)，看 `eval_inner`（第 81-161 行）
+- 打开 [`langs/core/src/sexp.rs`](../langs/core/src/sexp.rs)，看 `Sexp` 枚举的定义
+- 打开 [`langs/core/src/value.rs`](../langs/core/src/value.rs)，对比 `Value` 枚举
 
 ```bash
 # 启动 REPL，试试 eval
-cargo run
+cargo run -p zio-cli
 
 # 在 REPL 中
 zio> (+ 1 2 3)

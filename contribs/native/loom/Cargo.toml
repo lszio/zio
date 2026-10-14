@@ -1,0 +1,29 @@
+[package]
+name = "loom"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Native model/session transport adapter for Zio applications; not the Zio Loom library."
+keywords = ["language", "runtime", "model", "session"]
+
+# Not published. The package name `loom` is taken on crates.io by an
+# unrelated concurrency-testing crate, and the in-repo consumers — the
+# pinned Grove submodule included — depend on it by that path name, so
+# renaming it here would break their manifests. The language library
+# surface published for a release is zio-core / zio-host / zio-js /
+# zio-lsp / zio-wasi / zio-cli; this adapter belongs to the applications
+# that drive models, not to the language.
+publish = false
+
+[dependencies]
+zio-core = { workspace = true }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+parking_lot = "0.12"
+ureq = { version = "2", features = ["json"], optional = true }
+
+[features]
+default = []
+http = ["dep:ureq"]
