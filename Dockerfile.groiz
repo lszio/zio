@@ -38,11 +38,14 @@ RUN useradd --system --create-home --home-dir /srv/grove grove && \
     mkdir -p /srv/grove/data/worker-scratch && \
     chown -R grove:grove /srv/grove
 USER grove
-ENV GROVE_ROOT=/srv/grove/data \
-    GROVE_WORKERS=2 \
-    GROVE_BIND=0.0.0.0:8787 \
-    GROVE_TENSOR_PYTHON=/opt/grove-venv/bin/python \
-    GROVE_WORKER_SCRIPT=/opt/zio/share/grove/workers/torch/worker.py
+# `groiz` is the installed launcher's name and it reads the GROIZ_*
+# names; the Dockerfile kept the pre-rename GROVE_* ones, so the
+# container started with no bind, no worker interpreter and no tokens.
+ENV GROIZ_ROOT=/srv/grove/data \
+    GROIZ_WORKERS=2 \
+    GROIZ_BIND=0.0.0.0:8787 \
+    GROIZ_TENSOR_PYTHON=/opt/grove-venv/bin/python \
+    GROIZ_WORKER_SCRIPT=/opt/zio/share/groiz/workers/torch/worker.py
 EXPOSE 8787
 # Health asks the running service, it does not start a second one: two
 # owners on one store would fight over the coordinator epoch. The body is
@@ -50,4 +53,4 @@ EXPOSE 8787
 # scheduler cannot advance — a stalled queue must not report healthy.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
   CMD ["/opt/grove-venv/bin/python", "-c", "import urllib.request,json,sys; r=urllib.request.urlopen('http://127.0.0.1:8787/api/health', timeout=3); sys.exit(0 if r.status == 200 and json.load(r).get('status') == 'ok' else 1)"]
-CMD ["/opt/zio/bin/grove", "serve", "--root", "/srv/grove/data"]
+CMD ["/opt/zio/bin/groiz", "serve", "--root", "/srv/grove/data"]
