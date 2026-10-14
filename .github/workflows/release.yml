@@ -87,15 +87,13 @@ jobs:
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-24.04-arm
             archive: zio-linux-aarch64
-          - target: x86_64-apple-darwin
-            os: macos-latest
-            archive: zio-macos-x86_64
-          - target: aarch64-apple-darwin
-            os: macos-14
-            archive: zio-macos-aarch64
-          - target: x86_64-pc-windows-msvc
-            os: windows-latest
-            archive: zio-windows-x86_64
+          # macOS and Windows are absent because zio-host does not
+          # compile for them: its restricted-process and filesystem
+          # mechanisms are Linux implementations of the boundary, not
+          # portable ones. An archive for a platform the crate cannot
+          # build for would be a claim, and a stub boundary would be a
+          # worse one, so the gap is named here and in docs/release.md
+          # instead of being papered over with a target that fails.
     steps:
       - uses: actions/checkout@v4
         with:
@@ -153,27 +151,49 @@ jobs:
           ref: ${{ needs.plan.outputs.tag }}
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - uses: actions-rs/cargo@v1
-        with:
-          command: publish
-          # Dependency order, and every package of the published library
-          # family. zio-core first — every other crate resolves it from
-          # the registry once it is there — and zio-cli last, since it
-          # depends on the others. `loom` is deliberately absent: the
-          # name is taken on crates.io and its in-repo consumers depend
-          # on it by that path, so the crate sets `publish = false`.
-          #
-          # This step is strict on purpose. A silently failed publish is
-          # a release that claims Rust libraries it never delivered, so a
-          # failure stops the release rather than warning about it.
-          args: >-
-            --package zio-core
-            --package zio-js
-            --package zio-host
-            --package zio-lsp
-            --package zio-wasi
-            --package zio-cli
-            --token ${{ secrets.CRATES_TOKEN }}
+      # Dependency order, and every package of the published library
+      # family. zio-core first — every other crate resolves it from the
+      # registry once it is there — and zio-cli last, since it depends on
+      # the others. `loom` is deliberately absent: the name is taken on
+      # crates.io and its in-repo consumers depend on it by that path, so
+      # the crate sets `publish = false`.
+      #
+      # One package per step, because a release is re-run: crates.io
+      # rate-limits new crates (the first attempt at 0.2.0 published five
+      # and was refused the sixth with a 429), and `cargo publish` of a
+      # version already on the registry is an error rather than a no-op.
+      # So "already uploaded" is a skip, a rate limit is waited out, and
+      # anything else fails the job — a release must not quietly omit a
+      # library it claimed.
+      - name: Publish the crates
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_TOKEN }}
+        run: |
+          set -euo pipefail
+          for pkg in zio-core zio-js zio-host zio-lsp zio-wasi zio-cli; do
+            for attempt in 1 2 3 4 5; do
+              if out="$(cargo publish --package "$pkg" 2>&1)"; then
+                echo "$pkg published"
+                break
+              fi
+              printf '%s\n' "$out"
+              case "$out" in
+                *"already uploaded"*|*"already exists"*)
+                  echo "$pkg is already at this version; nothing to publish"
+                  break ;;
+                *"Too Many Requests"*|*"status 429"*)
+                  echo "$pkg rate limited; waiting five minutes (attempt $attempt)"
+                  sleep 300 ;;
+                *)
+                  echo "$pkg failed to publish" >&2
+                  exit 1 ;;
+              esac
+              if [ "$attempt" = 5 ]; then
+                echo "$pkg did not publish within the retry budget" >&2
+                exit 1
+              fi
+            done
+          done
 
   npm:
     name: publish npm wasm package
@@ -213,10 +233,22 @@ jobs:
           node-version: "22"
           registry-url: "https://registry.npmjs.org"
       - name: Publish
-        run: npm publish --access public
         working-directory: dist/npm
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        # A version is immutable on npm, and a re-run of a release reaches
+        # this step with the package already uploaded: publishing again is
+        # a 403, not a no-op, and the release would be red for a reason
+        # that is not a defect.
+        run: |
+          set -euo pipefail
+          name="$(node -p "require('./package.json').name")"
+          version="$(node -p "require('./package.json').version")"
+          if npm view "$name@$version" version >/dev/null 2>&1; then
+            echo "$name@$version is already published; nothing to do"
+          else
+            npm publish --access public
+          fi
 
   npm-cli:
     name: publish npm cli package
@@ -248,10 +280,18 @@ jobs:
           node-version: "22"
           registry-url: "https://registry.npmjs.org"
       - name: Publish
-        run: npm publish --access public
         working-directory: dist/npm-cli
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+          name="$(node -p "require('./package.json').name")"
+          version="$(node -p "require('./package.json').version")"
+          if npm view "$name@$version" version >/dev/null 2>&1; then
+            echo "$name@$version is already published; nothing to do"
+          else
+            npm publish --access public
+          fi
 
   docker:
     name: docker image
@@ -271,6 +311,11 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      # The gha cache export needs the docker-container driver; the default
+      # docker driver refuses it outright ("Cache export is not supported
+      # for the docker driver"), which is how the first attempt at 0.2.0
+      # failed this job.
+      - uses: docker/setup-buildx-action@v3
       - id: meta
         uses: docker/metadata-action@v5
         with:
