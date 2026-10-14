@@ -1,0 +1,14 @@
+;; A00 bundled application. `zio build examples/toolchain/app.zio
+;; --target native -o /tmp/zio-app` produces a single executable that
+;; runs this program without a checkout: the bundle carries the
+;; declared module, the reader/compiler (for the dynamic eval) and the
+;; runtime itself.
+
+(module tools :export [square] (defn square [x] (* x x)))
+(require :tools :refer [square])
+
+;; 49 — plain top-level execution.
+(println (square 7))
+
+;; 50 — explicit dynamic eval; requires the compiler in the bundle.
+(println (eval '((fn [x] (+ x 1)) 49)))

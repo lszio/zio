@@ -11,7 +11,6 @@
 //! `:kind` is never mistaken for syntax.
 
 use im::HashMap;
-use im::Vector;
 
 use crate::sexp::Sexp;
 use crate::span::Span;
@@ -174,7 +173,7 @@ fn span_from_value(value: &Value) -> Option<Span> {
 pub struct SyntaxNode {
     pub kind: NodeKind,
     pub value: Option<String>,
-    pub children: Vector<SyntaxNode>,
+    pub children: Vec<SyntaxNode>,
     pub span: Option<Span>,
     pub origin: Origin,
 }
@@ -233,14 +232,14 @@ impl SyntaxNode {
     /// Tag a parsed form, keeping its span.
     pub fn from_sexp(sexp: &Sexp) -> Self {
         let (kind, value, children) = match sexp {
-            Sexp::Nil => (NodeKind::Nil, None, Vector::new()),
-            Sexp::Boolean(b) => (NodeKind::Boolean, Some(b.to_string()), Vector::new()),
-            Sexp::Integer(i, _) => (NodeKind::Integer, Some(i.to_string()), Vector::new()),
-            Sexp::Float(f, _) => (NodeKind::Float, Some(f.to_string()), Vector::new()),
-            Sexp::String(s, _) => (NodeKind::String, Some(s.clone()), Vector::new()),
-            Sexp::Symbol(s, _) => (NodeKind::Symbol, Some(s.clone()), Vector::new()),
-            Sexp::Keyword(k, _) => (NodeKind::Keyword, Some(k.clone()), Vector::new()),
-            Sexp::Char(c, _) => (NodeKind::Char, Some(c.to_string()), Vector::new()),
+            Sexp::Nil => (NodeKind::Nil, None, Vec::new()),
+            Sexp::Boolean(b) => (NodeKind::Boolean, Some(b.to_string()), Vec::new()),
+            Sexp::Integer(i, _) => (NodeKind::Integer, Some(i.to_string()), Vec::new()),
+            Sexp::Float(f, _) => (NodeKind::Float, Some(f.to_string()), Vec::new()),
+            Sexp::String(s, _) => (NodeKind::String, Some(s.clone()), Vec::new()),
+            Sexp::Symbol(s, _) => (NodeKind::Symbol, Some(s.clone()), Vec::new()),
+            Sexp::Keyword(k, _) => (NodeKind::Keyword, Some(k.clone()), Vec::new()),
+            Sexp::Char(c, _) => (NodeKind::Char, Some(c.to_string()), Vec::new()),
             Sexp::List(l, _) | Sexp::Vector(l, _) => (
                 if matches!(sexp, Sexp::List(_, _)) {
                     NodeKind::List
@@ -256,10 +255,10 @@ impl SyntaxNode {
                 let mut pairs: Vec<(Sexp, Sexp)> =
                     m.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
                 pairs.sort_by_key(|(k, _)| k.to_string());
-                let mut children = Vector::new();
+                let mut children = Vec::with_capacity(pairs.len() * 2);
                 for (k, v) in pairs {
-                    children.push_back(SyntaxNode::from_sexp(&k));
-                    children.push_back(SyntaxNode::from_sexp(&v));
+                    children.push(SyntaxNode::from_sexp(&k));
+                    children.push(SyntaxNode::from_sexp(&v));
                 }
                 (NodeKind::Map, None, children)
             }
@@ -280,7 +279,7 @@ impl SyntaxNode {
 
     /// Rebuild the parsed form, spans included.
     pub fn to_sexp(&self) -> Result<Sexp, crate::error::EvalError> {
-        self.validate()?;
+        self.validate_node()?;
         let span = self.span;
         let text = || self.value.as_deref().expect("validated syntax payload");
         Ok(match &self.kind {
@@ -374,9 +373,9 @@ impl SyntaxNode {
         };
         let children = match map.get(&Value::Keyword("children".into()))? {
             Value::Vector(items) => {
-                let mut out = Vector::new();
+                let mut out = Vec::with_capacity(items.len());
                 for item in items {
-                    out.push_back(SyntaxNode::from_value(item)?);
+                    out.push(SyntaxNode::from_value(item)?);
                 }
                 out
             }
@@ -394,12 +393,24 @@ impl SyntaxNode {
             span,
             origin,
         };
-        node.validate().ok()?;
-        node.to_sexp().ok()?;
+        node.validate_node().ok()?;
+        // Only maps need reconstruction to reject duplicate decoded keys.
+        // Rebuilding every subtree here would make list decoding quadratic.
+        if node.kind == NodeKind::Map {
+            node.to_sexp().ok()?;
+        }
         Some(node)
     }
 
     pub fn validate(&self) -> Result<(), crate::error::EvalError> {
+        self.validate_node()?;
+        for child in &self.children {
+            child.validate()?;
+        }
+        Ok(())
+    }
+
+    fn validate_node(&self) -> Result<(), crate::error::EvalError> {
         let invalid = || {
             crate::error::EvalError::invalid_form("malformed syntax node").with_opt_span(self.span)
         };
@@ -418,10 +429,10 @@ impl SyntaxNode {
             let valid = match self.kind {
                 NodeKind::Boolean => matches!(text, "true" | "false"),
                 NodeKind::Integer => text.parse::<i64>().is_ok(),
-                NodeKind::Float => text.parse::<f64>().is_ok_and(f64::is_finite),
+                NodeKind::Float => text.parse::<f64>().is_ok(),
                 NodeKind::Char => text.chars().count() == 1,
-                NodeKind::Symbol | NodeKind::Keyword => !text.is_empty(),
-                NodeKind::String => true,
+                NodeKind::Symbol => !text.is_empty(),
+                NodeKind::Keyword | NodeKind::String => true,
                 _ => false,
             };
             if !valid {
@@ -433,9 +444,6 @@ impl SyntaxNode {
         }
         if self.kind == NodeKind::Map && !self.children.len().is_multiple_of(2) {
             return Err(invalid());
-        }
-        for child in &self.children {
-            child.validate()?;
         }
         Ok(())
     }

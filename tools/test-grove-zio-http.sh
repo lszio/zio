@@ -12,18 +12,18 @@ cd "$root"
 cargo build -q -p zio-cli
 port="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()')"
 bind="127.0.0.1:$port"
-export GROVE_TOKEN_READER=reader-test
-export GROVE_TOKEN_ANNOTATOR=annotator-test
-export GROVE_TOKEN_OPERATOR=operator-test
-export GROVE_TOKEN_PUBLISHER=publisher-test
+export GROIZ_TOKEN_READER=reader-test
+export GROIZ_TOKEN_ANNOTATOR=annotator-test
+export GROIZ_TOKEN_OPERATOR=operator-test
+export GROIZ_TOKEN_PUBLISHER=publisher-test
 
 run_grove() {
   local args=()
   for arg in "$@"; do
     args+=(--args "$arg")
   done
-  local python_path="${GROVE_TENSOR_PYTHON:-$root/.venv/bin/python}"
-  local worker_script="${GROVE_WORKER_SCRIPT:-$root/apps/grove/workers/torch/worker.py}"
+  local python_path="${GROIZ_TENSOR_PYTHON:-$root/.venv/bin/python}"
+  local worker_script="${GROIZ_WORKER_SCRIPT:-$root/apps/grove/workers/torch/worker.py}"
   [[ "$python_path" == /* ]] || python_path="$root/$python_path"
   [[ "$worker_script" == /* ]] || worker_script="$root/$worker_script"
   local py_real base_dir alias_dir mount_dir

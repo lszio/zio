@@ -16,21 +16,21 @@
 ## 什么跑在哪里
 
 - `site`：nginx 托管 Astro 静态站点与 WASM 引擎，暴露 80。
-- `grove`：Zio Grove 应用（`Dockerfile.grove`），HTTP 绑定 `0.0.0.0:8787`，CPU 训练 worker，数据在命名卷 `grove-data`（挂载于 `/srv/grove/data`）。
-- 健康检查定义在镜像内（`Dockerfile.grove` 的 `HEALTHCHECK`），要求响应体 `status == "ok"`；调度器降级时报告 unhealthy。
+- `grove`：Groiz 应用（`Dockerfile.groiz`），HTTP 绑定 `0.0.0.0:8787`，CPU 训练 worker，数据在命名卷 `grove-data`（挂载于 `/srv/grove/data`）。
+- 健康检查定义在镜像内（`Dockerfile.groiz` 的 `HEALTHCHECK`），要求响应体 `status == "ok"`；调度器降级时报告 unhealthy。
 
 `8787` 与 `80` 仅映射到宿主 `127.0.0.1` 供本地端到端验证；Dokploy 走内部网络路由域名，不对外发布端口。
 
 ## 令牌
 
-`grove` 通过环境变量读取 `GROVE_TOKEN_READER` / `GROVE_TOKEN_OPERATOR` / `GROVE_TOKEN_PUBLISHER`，HTTP `Authorization: Bearer <token>` 按变量映射到角色。令牌未设置时服务以空令牌启动；非 loopback 地址在无任何 `GROVE_TOKEN_*` 时拒绝绑定（见 `apps/grove/api.zio`）。
+`groiz` 通过环境变量读取 `GROIZ_TOKEN_READER` / `GROIZ_TOKEN_OPERATOR` / `GROIZ_TOKEN_PUBLISHER`，HTTP `Authorization: Bearer <token>` 按变量映射到角色。令牌未设置时服务以空令牌启动；非 loopback 地址在无任何 `GROIZ_TOKEN_*` 时拒绝绑定（见 `apps/grove/api.zio`）。
 
 首次部署前必须在 Dokploy 栈环境里生成并设置这些令牌，例如 `openssl rand -hex 32`，令牌属于机密，不进仓库。
 
 ## 生产首次切换
 
 1. 在 Dokploy 项目创建/更新栈 `zio`，指向仓库 `docker-compose.dokploy.yml`。
-2. 在栈环境设置三个 `GROVE_TOKEN_*`。
+2. 在栈环境设置三个 `GROIZ_TOKEN_*`。
 3. **手动改域名上游**：`zio.lszio.space` 的 domain upstream 从服务 `zio` 切到 `site`（compose 文件头部有注释提醒）。
 4. 部署后验证：`curl -fsS https://zio.lszio.space/` 返回站点；`curl -fsS http://grove:8787/healthz`（栈内）返回 `status == "ok"`。
 
@@ -65,5 +65,5 @@ docker volume rm -f grove-restore-drill
 
 - [ ] GitHub 分支保护：`main`/`dev` 设必需检查（含 `grove-service`）——需在 GitHub 仓库设置手动配置。
 - [ ] Dokploy 域名上游切换：`zio` 与 `zio-dev` 两个栈都从服务 `zio` 切到 `site`。
-- [ ] 三个 `GROVE_TOKEN_*` 在两个常驻栈的 Dokploy 环境里生成并设置。
+- [ ] 三个 `GROIZ_TOKEN_*` 在两个常驻栈的 Dokploy 环境里生成并设置。
 - [ ] 预览所需 `DOKPLOY_*` secrets/vars 与 `PREVIEW_ZONE` 在 GitHub 仓库配置。

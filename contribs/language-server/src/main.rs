@@ -331,6 +331,26 @@ impl Server {
         if method == "textDocument/semanticTokens/full" {
             return Ok(json!({"data":semantic(source,a)}));
         }
+        // Formatting answers with the whole document as one edit. The
+        // formatter is deterministic, so an editor that already saved
+        // the formatted text gets an empty edit back rather than a
+        // second rewrite.
+        if method == "textDocument/formatting" {
+            let formatted =
+                zio_core::fmt::format_source(source).map_err(|e| (-32603, e.to_string()))?;
+            if formatted == *source {
+                return Ok(json!([]));
+            }
+            let end_line = source.matches('\n').count();
+            let last_col = source.rsplit('\n').next().unwrap_or("").chars().count();
+            return Ok(json!([{
+                "range": {
+                    "start": {"line": 0, "character": 0},
+                    "end": {"line": end_line, "character": last_col},
+                },
+                "newText": formatted,
+            }]));
+        }
         let point =
             offset(source, &p["position"]).ok_or((-32602, "invalid UTF-16 position".into()))?;
         if method == "textDocument/completion" {

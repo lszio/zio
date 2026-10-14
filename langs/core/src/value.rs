@@ -54,6 +54,9 @@ impl NativeFn {
     }
 
     pub fn call(&self, args: Vector<Value>, engine: &dyn EvalEngine) -> Result<Value, EvalError> {
+        if let Some(result) = engine.intercept_native(self, &args) {
+            return result;
+        }
         (self.func)(args, engine)
     }
 

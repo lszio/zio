@@ -53,6 +53,29 @@ impl Env {
         self.data.borrow().get(key).cloned()
     }
 
+    /// Snapshot of this scope's own bindings, unordered. Image encoding
+    /// sorts for determinism; evaluation order never depends on it.
+    pub(crate) fn owned_bindings(&self) -> Vec<(String, Value)> {
+        self.data
+            .borrow()
+            .iter()
+            .map(|(name, value)| (name.clone(), value.clone()))
+            .collect()
+    }
+
+    /// The enclosing scope, when this is not the root.
+    pub(crate) fn parent(&self) -> Option<Arc<Env>> {
+        self.outer.clone()
+    }
+
+    /// Remove `key` from this scope only. Inherited bindings are left
+    /// alone: a definition installed later re-binds the name here, so a
+    /// stale same-scope binding can be cleared without touching outer
+    /// capabilities.
+    pub fn delete_owned(&self, key: &str) -> Option<Value> {
+        self.data.borrow_mut().remove(key)
+    }
+
     /// Bind parameters to arguments in a new child environment.
     pub fn bind(
         outer: &Arc<Env>,

@@ -1,8 +1,8 @@
 # Zio 术语表
 
-> 语言、ZOS、工具链、公共基础设施与 Grove 的术语。规范名不等于已有 API；当前成熟度见[特性矩阵](feature-matrix.md)，架构与权限以[ADR-019](adrs.md#adr-019-grove-独立应用与同像性逻辑演化)为准。
+> 语言、ZOS、工具链、公共基础设施与 Groiz 的术语。规范名不等于已有 API；当前成熟度见[特性矩阵](feature-matrix.md)，架构与权限以[ADR-019](adrs.md#adr-019-grove-独立应用与同像性逻辑演化)为准。
 
-Zio 库目标采用 Zio 实现并归入 `libs/`：Numa 持计算，Rill 持 CLI 组合，Loom 持 harness 组合。现有 Rust 通用传输/宿主合同位于 `contribs/native/loom/`，不是 Zio 库本体；普通语言 CLI 位于 `langs/cli/`，不装配 LLM replay。Grove 是 `apps/grove/` 独立应用，其 Rust 业务仍待后续迁为 Zio；语言介绍、文档与 playground 位于 `apps/site/`。本轮只完成结构切换，不证明完整库交付、Tree-sitter、LSP 或编译器自举。当前合同见[架构](zio-architecture.md)与[批准目录计划](superpowers/plans/2026-10-07-language-first-layout.md)。短名不等于已注册包 ID。
+Zio 库目标采用 Zio 实现并归入 `libs/`：Numa 持计算，Rill 持 CLI 组合，Loom 持 harness 组合。现有 Rust 通用传输/宿主合同位于 `contribs/native/loom/`，不是 Zio 库本体；普通语言 CLI 位于 `langs/cli/`，不装配 LLM replay。Groiz 是 `apps/grove/` 独立应用，其 Rust 业务仍待后续迁为 Zio；语言介绍、文档与 playground 位于 `apps/site/`。本轮只完成结构切换，不证明完整库交付、Tree-sitter、LSP 或编译器自举。当前合同见[架构](zio-architecture.md)与[批准目录计划](superpowers/plans/2026-10-07-language-first-layout.md)。短名不等于已注册包 ID。
 
 ---
 
@@ -22,7 +22,7 @@ ZOS 的核心元编程协议。定义了类、通用函数、方法等元对象�
 
 ### ACP（Agent Client Protocol）
 
-外部 agent 与客户端之间的会话协议。目标双向支持：先 Loom 客户端与 Grove 教师适配，再服务端；不进入 Zio 核心语义。两方向分别验收，不将自有教师 HTTP 协议称为 ACP。
+外部 agent 与客户端之间的会话协议。目标双向支持：先 Loom 客户端与 Groiz 教师适配，再服务端；不进入 Zio 核心语义。两方向分别验收，不将自有教师 HTTP 协议称为 ACP。
 
 ### Agent logic（可编码 agent 逻辑）
 
@@ -103,7 +103,7 @@ Zio 的第一类函数。包括用户定义函数（带词法闭包）、NativeF
 
 ZOS 的多分派函数。不是单分派对象的方法，而是完全独立、基于全部参数类型分派的行为入口。
 
-### Grove
+### Groiz
 
 五字母正式短名，独立的模块化自学习与逻辑演化应用，消费 Zio 与 Numa、Rill、Loom，拥有学习目标、实验、反馈、检查点、独立评价、人工审查、逻辑演化和发布及 Web。内部宿主 `grove` crate 位于 `apps/grove/native/learning/`，应用 `grove-app` 位于 `apps/grove/native/app/`；内部采用库结构不意味着库优先或可选产品壳，语言核心无反向依赖。
 
@@ -119,7 +119,7 @@ ZOS 的多分派函数。不是单分派对象的方法，而是完全独立、�
 
 ### Harness
 
-Agent 执行基础设施的职责名称，官方 Zio 库正式短名为 [Loom](#loom)。Loom 持有模型/工具会话、预算、取消、provider 与 ACP；不持 Grove 的学习目标、独立评价或正式发布批准。
+Agent 执行基础设施的职责名称，官方 Zio 库正式短名为 [Loom](#loom)。Loom 持有模型/工具会话、预算、取消、provider 与 ACP；不持 Groiz 的学习目标、独立评价或正式发布批准。
 
 ### Heap Object
 
@@ -141,9 +141,9 @@ ZOS 中可以内联在 `Value` 枚举中的类型。包括 Integer、Float、Boo
 
 四字母 harness 库方向。Zio 组合位于 `libs/loom/`；已有 Rust crate `loom`
 位于 `contribs/native/loom/`，提供通用模型/工具合同、预算与传输适配，
-不能把它视为 Zio 库已整体完成。学习目标、评价与批准留在 Grove。
+不能把它视为 Zio 库已整体完成。学习目标、评价与批准留在 Groiz。
 ACP 与各模型能力的状态以特性矩阵为准；语言 CLI 不装配 LLM replay。
-由 Grove 注入执行回调并通过未来 `grove acp serve` 装配，不是语言 CLI 子命令。
+由 Groiz 注入执行回调并通过未来 `grove acp serve` 装配，不是语言 CLI 子命令。
 
 ---
 
@@ -165,7 +165,7 @@ GF（Generic Function）的一个实现。由 `defmethod` 定义，包含参数�
 
 ZOS 中多个 Method 组合执行的方式。支持 `:before`、`:after`、`:around`、`primary` 四种限定符，通过 `call-next-method` 串联。
 
-### Module（Grove 模块）
+### Module（Groiz 模块）
 
 版本化的源码、向量、神经网络或 LLM 能力单元，分别声明执行、更新、可修改范围、评价及状态兼容能力。共享生命周期，不假定所有模块都支持权重训练；LLM 推理、教师、适配器训练与完整权重训练是不同能力。
 
@@ -181,7 +181,7 @@ Rust 实现的 Zio 函数。签名：`fn(Vector<Value>, &dyn EvalEngine) -> Resu
 四字母计算库方向，Zio 向量库已位于 `libs/numa/vector.zio`。
 连续数组、矩阵及更广后端能力仍按特性矩阵验收；CPU worker 是
 `apps/grove/workers/torch/` 应用后端，不证明整个 Numa 库已完成。
-计算与 Grove 训练、评价、发布治理分开，不以新建独立 Rust 业务库为目标。
+计算与 Groiz 训练、评价、发布治理分开，不以新建独立 Rust 业务库为目标。
 
 ---
 

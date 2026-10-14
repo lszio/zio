@@ -198,6 +198,19 @@ impl SourceMap {
         id
     }
 
+    /// Validate a source-backed span without copying its registered source.
+    pub fn valid_span(&self, span: Span) -> bool {
+        let files = self.files.lock();
+        let Some(Some(file)) = files.get(span.source_id.0) else {
+            return false;
+        };
+        span.start <= span.end
+            && span.end.0 <= file.source.len()
+            && file.source.is_char_boundary(span.start.0)
+            && file.source.is_char_boundary(span.end.0)
+            && file.line_col(span.start) == (span.line, span.col)
+    }
+
     /// Most recent registered revision, used to retain a loaded source identity.
     pub fn get_latest_id(&self, name: &str) -> Option<SourceId> {
         self.files

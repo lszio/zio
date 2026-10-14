@@ -11,7 +11,7 @@ B. a real human approval — the dual demo trains on the frozen task and
    commits its trained weights, then the publisher token approves that
    candidate through `POST /api/approve` and the pointer moves to it.
 
-Usage:  GROVE_TOKEN_* are required.
+Usage:  GROIZ_TOKEN_* are required.
         python3 tools/smoke-grove-logic-approval.py
 """
 import json
@@ -55,9 +55,9 @@ def wait_for_health(token):
 
 
 def main():
-    reader = os.environ["GROVE_TOKEN_READER"]
-    operator = os.environ["GROVE_TOKEN_OPERATOR"]
-    publisher = os.environ["GROVE_TOKEN_PUBLISHER"]
+    reader = os.environ["GROIZ_TOKEN_READER"]
+    operator = os.environ["GROIZ_TOKEN_OPERATOR"]
+    publisher = os.environ["GROIZ_TOKEN_PUBLISHER"]
     root = "/tmp/grove-g04-smoke"
     subprocess.run(["rm", "-rf", root], check=False)
 

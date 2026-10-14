@@ -44,40 +44,45 @@ pub fn eval_special_form(
     tail: bool,
     engine: &dyn EvalEngine,
 ) -> Result<Option<TailResult>, EvalError> {
-    let result = match name {
-        "quote" => Some(data::do_quote(args)?),
-        "quasiquote" => Some(data::do_quasiquote(args, env, engine)?),
-        "unquote" | "unquote-splicing" => {
-            return Err(EvalError::invalid_form(format!(
-                "{name} (~ / ~@) used outside quasiquote (`)"
-            )));
-        }
-        "set!" => Some(data::do_set(args, env, engine)?),
-        "def" => Some(bindings::do_def(args, env, engine)?),
-        "defn" => Some(bindings::do_defn(args, env, engine)?),
-        "if" => Some(control::do_if(args, env, tail, engine)?),
-        "do" => Some(control::do_do(args, env, tail, engine)?),
-        "fn" => Some(bindings::do_fn(args, env)?),
-        "let" => Some(letloop::do_let(args, env, tail, engine)?),
-        "let*" => Some(letloop::do_let_star(args, env, tail, engine)?),
-        "loop" => Some(letloop::do_loop(args, env, engine)?),
-        "recur" => Some(letloop::do_recur(args, env, tail, engine)?),
-        "defmacro" => Some(bindings::do_defmacro(args, env, engine)?),
-        "and" => Some(control::do_and(args, env, tail, engine)?),
-        "or" => Some(control::do_or(args, env, tail, engine)?),
-        "cond" => Some(control::do_cond(args, env, tail, engine)?),
-        "module" => Some(module_forms::do_module(args, env, engine)?),
-        "require" => Some(module_forms::do_require(args, env, engine)?),
-        "export" => Some(module_forms::do_export(args, env, engine)?),
-        "defclass" => Some(zos_forms::do_defclass(args, env, engine)?),
-        "defgeneric" => Some(zos_forms::do_defgeneric(args, env, engine)?),
-        "defmethod" => Some(zos_forms::do_defmethod(args, env, engine)?),
-        "call-next-method" => Some(zos_forms::do_call_next_method(args, env, engine)?),
-        "defpackage" => Some(zos_forms::do_defpackage(args, env, engine)?),
-        "try" => Some(zos_forms::do_try(args, env, tail, engine)?),
-        _ => None,
-    };
-    Ok(result)
+    // Select before calling: one return slot, not one per handler in debug
+    // builds. This dispatcher sits on every recursive AST evaluation path.
+    let handler: fn(&[Sexp], &Arc<Env>, bool, &dyn EvalEngine) -> Result<TailResult, EvalError> =
+        match name {
+            "quote" => |args, _, _, _| data::do_quote(args),
+            "quasiquote" => |args, env, _, engine| data::do_quasiquote(args, env, engine),
+            "unquote" | "unquote-splicing" => {
+                return Err(EvalError::invalid_form(format!(
+                    "{name} (~ / ~@) used outside quasiquote (`)"
+                )));
+            }
+            "set!" => |args, env, _, engine| data::do_set(args, env, engine),
+            "def" => |args, env, _, engine| bindings::do_def(args, env, engine),
+            "defn" => |args, env, _, engine| bindings::do_defn(args, env, engine),
+            "if" => control::do_if,
+            "do" => control::do_do,
+            "fn" => |args, env, _, _| bindings::do_fn(args, env),
+            "let" => letloop::do_let,
+            "let*" => letloop::do_let_star,
+            "loop" => |args, env, _, engine| letloop::do_loop(args, env, engine),
+            "recur" => letloop::do_recur,
+            "defmacro" => |args, env, _, engine| bindings::do_defmacro(args, env, engine),
+            "and" => control::do_and,
+            "or" => control::do_or,
+            "cond" => control::do_cond,
+            "module" => |args, env, _, engine| module_forms::do_module(args, env, engine),
+            "require" => |args, env, _, engine| module_forms::do_require(args, env, engine),
+            "export" => |args, env, _, engine| module_forms::do_export(args, env, engine),
+            "defclass" => |args, env, _, engine| zos_forms::do_defclass(args, env, engine),
+            "defgeneric" => |args, env, _, engine| zos_forms::do_defgeneric(args, env, engine),
+            "defmethod" => |args, env, _, engine| zos_forms::do_defmethod(args, env, engine),
+            "call-next-method" => {
+                |args, env, _, engine| zos_forms::do_call_next_method(args, env, engine)
+            }
+            "defpackage" => |args, env, _, engine| zos_forms::do_defpackage(args, env, engine),
+            "try" => zos_forms::do_try,
+            _ => return Ok(None),
+        };
+    handler(args, env, tail, engine).map(Some)
 }
 // ── Shared Helpers ─────────────────────────────────────────────────
 

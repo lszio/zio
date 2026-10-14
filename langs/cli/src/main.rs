@@ -14,6 +14,7 @@
 
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::sync::Arc;
 
 use zio_core::bootstrap::{ModuleRoots, eval_source, language_context};
@@ -21,6 +22,9 @@ use zio_core::context::{EvalContext, EvalRuntime};
 use zio_core::error::EvalError;
 use zio_core::im::Vector;
 use zio_core::value::Value;
+
+mod bundle;
+mod commands;
 
 // ── Context setup ───────────────────────────────────────────────
 
@@ -52,13 +56,32 @@ fn repl_ctx() -> Result<EvalContext, EvalError> {
     make_ctx(language_roots(&[])?)
 }
 
+fn repl_ctx_rc() -> Result<Rc<EvalContext>, EvalError> {
+    let ctx = Rc::new(repl_ctx()?);
+    zio_js::interop::register(Rc::clone(&ctx));
+    Ok(ctx)
+}
+
 // ── Script runner ───────────────────────────────────────────────
 
 /// Run a script in the language context, without application host bindings.
 fn run_script(path: &str, extra_roots: &[PathBuf]) -> Result<Value, EvalError> {
+    // USAGE documents `-` as stdin for the plain run; the bounded run
+    // path has its own stdin handling and this is the shared case.
+    let (source, name) = if path == "-" {
+        let mut source = String::new();
+        io::stdin()
+            .read_to_string(&mut source)
+            .map_err(|e| EvalError::custom(format!("cannot read stdin: {e}")))?;
+        (source, "stdin.zio".to_string())
+    } else {
+        (
+            std::fs::read_to_string(path)
+                .map_err(|e| EvalError::custom(format!("cannot read {path}: {e}")))?,
+            path.to_string(),
+        )
+    };
     let ctx = script_ctx(path, extra_roots)?;
-    let source = std::fs::read_to_string(path)
-        .map_err(|e| EvalError::custom(format!("cannot read {path}: {e}")))?;
     // A script `load`s siblings by relative path for the same reason an
     // application does: the file it was handed may be anywhere, and the
     // files it ships with are next to it.
@@ -68,12 +91,14 @@ fn run_script(path: &str, extra_roots: &[PathBuf]) -> Result<Value, EvalError> {
     {
         *ctx.source_dir.borrow_mut() = Some(parent.to_path_buf());
     }
-    zio_core::bytecode::run_source(&ctx, path, &source)
+    zio_core::bytecode::run_source(&ctx, &name, &source)
 }
 
 /// A script's own directory is granted first, so a script sitting next to
 /// its libraries can `require` them without any ambient configuration.
-fn script_ctx(path: &str, extra_roots: &[PathBuf]) -> Result<EvalContext, EvalError> {
+/// The context is shared so the native JS bindings (J00) can own it and
+/// call back into the interpreter from inside a QuickJS callback.
+fn script_ctx(path: &str, extra_roots: &[PathBuf]) -> Result<Rc<EvalContext>, EvalError> {
     let mut roots = extra_roots.to_vec();
     if let Some(parent) = Path::new(path)
         .parent()
@@ -81,7 +106,9 @@ fn script_ctx(path: &str, extra_roots: &[PathBuf]) -> Result<EvalContext, EvalEr
     {
         roots.push(parent.to_path_buf());
     }
-    make_ctx(language_roots(&roots)?)
+    let ctx = Rc::new(make_ctx(language_roots(&roots)?)?);
+    zio_js::interop::register(Rc::clone(&ctx));
+    Ok(ctx)
 }
 
 // ── Bounded candidate runner ────────────────────────────────────
@@ -434,10 +461,10 @@ fn app_context(launch: &AppLaunch) -> Result<EvalContext, EvalError> {
     // Only the environment names the application actually reads are
     // visible, and only the token names the launcher declares.
     for name in [
-        "GROVE_TOKEN_READER",
-        "GROVE_TOKEN_ANNOTATOR",
-        "GROVE_TOKEN_OPERATOR",
-        "GROVE_TOKEN_PUBLISHER",
+        "GROIZ_TOKEN_READER",
+        "GROIZ_TOKEN_ANNOTATOR",
+        "GROIZ_TOKEN_OPERATOR",
+        "GROIZ_TOKEN_PUBLISHER",
     ] {
         policy.environment.insert(name.to_string());
     }
@@ -493,7 +520,7 @@ fn run_app(launch: &AppLaunch, argv: &[String]) -> Result<Value, EvalError> {
 // ── REPL ────────────────────────────────────────────────────────
 
 fn run_repl() {
-    let ctx = match repl_ctx() {
+    let ctx = match repl_ctx_rc() {
         Ok(ctx) => ctx,
         Err(e) => {
             eprintln!("Error: {e}");
@@ -559,6 +586,12 @@ const USAGE: &str = "Usage: zio [--lib-dir DIR]... [--entry NAME] [--step-limit 
        zio --app PATH --app-root DIR [--app-share DIR] [--app-resource-root DIR]\n\
        \x20        [--app-web-root DIR] [--app-tensor-backend FILE] [--app-tensor-python FILE]\n\
        \x20        [--app-root-dir DIR] [--app-bind ADDR] [--app-workers N] [--args ARG]...\n\
+       zio self-build [--verify] [--out-dir DIR]\n\
+       zio image save PROGRAM.zio -o IMAGE [--root NAME]...\n\
+       zio image inspect IMAGE\n\
+       zio image run IMAGE [--eval EXPR] [--grant-dir DIR]...\n\
+       zio compile PROGRAM.zio -o OUT\n\
+       zio build INPUT --target native|browser|wasm-wasi -o APP [--entry NAME] [--module NAME=PATH]...\n\
        \n\
        --entry NAME     call NAME after the source loads, with no arguments\n\
        --step-limit N   stop after N evaluator steps (required with --entry)\n\
@@ -567,9 +600,150 @@ const USAGE: &str = "Usage: zio [--lib-dir DIR]... [--entry NAME] [--step-limit 
        --args ARG       pass ARG to the application entry (repeatable)\n\
        '-'              read the source from stdin\n";
 
+/// Build canonical compiler stages and exercise the latest portable compiler.
+fn run_self_build(output_dir: &Path, verify: bool) -> Result<(), EvalError> {
+    use zio_core::bytecode;
+    let ctx = language_context(ModuleRoots::empty())?;
+    let build = bytecode::self_build(&ctx)?;
+    if build.normalized.len() != 3 || build.modules.len() != 3 {
+        return Err(EvalError::custom("self-build did not produce stages 1/2/3"));
+    }
+    std::fs::create_dir_all(output_dir)
+        .map_err(|e| EvalError::custom(format!("create {}: {e}", output_dir.display())))?;
+    println!("Stage 0: interpreted Zio frontend -> Stage 1");
+    let mut bytes = Vec::with_capacity(3);
+    for (index, normalized) in build.normalized.iter().enumerate() {
+        let path = output_dir.join(format!("stage-{}.json", index + 1));
+        std::fs::write(&path, normalized.as_bytes())
+            .map_err(|e| EvalError::custom(format!("write {}: {e}", path.display())))?;
+        let stored = std::fs::read(&path)
+            .map_err(|e| EvalError::custom(format!("read {}: {e}", path.display())))?;
+        if stored != normalized.as_bytes() {
+            return Err(EvalError::custom(format!(
+                "canonical stage changed after writing {}",
+                path.display()
+            )));
+        }
+        println!(
+            "Stage {}: {} ({} bytes)",
+            index + 1,
+            path.display(),
+            stored.len()
+        );
+        bytes.push(stored);
+    }
+    let equal = bytes[0] == bytes[1] && bytes[1] == bytes[2];
+    println!("Stage 1/2/3 canonical bytes equal: {equal}");
+    if !build.equal || !equal {
+        return Err(EvalError::custom("self-build canonical stages differ"));
+    }
+    if !verify {
+        return Ok(());
+    }
+    let mut final_ctx = None;
+    for (index, stored) in bytes.iter().enumerate() {
+        let stage_ctx = language_context(ModuleRoots::empty())?;
+        let portable =
+            bytecode::deserialize_module(std::str::from_utf8(stored).map_err(|e| {
+                EvalError::custom(format!("stage {} is not UTF-8: {e}", index + 1))
+            })?)?;
+        bytecode::install_compiled_compiler(&stage_ctx, &portable)?;
+        for name in ["zi-read", "zi-expand", "zi-apply", "zio--compile"] {
+            if !matches!(stage_ctx.env.get(name),
+                Some(Value::Function(function)) if function.compiled.is_some())
+            {
+                return Err(EvalError::custom(format!(
+                    "stage {} did not install compiled {name}",
+                    index + 1
+                )));
+            }
+            println!("Stage {} entry: {name} (compiled)", index + 1);
+        }
+        final_ctx = Some(stage_ctx);
+    }
+    let final_ctx =
+        final_ctx.ok_or_else(|| EvalError::custom("self-build has no final compiler"))?;
+    let answer = "(defn total [xs] (loop [i 0 acc 0] (if (= i (count xs)) acc (recur (+ i 1) (+ acc (nth xs i)))))) (defn adder [k] (fn [x] (+ x k))) {:sum (total [1 2 3 4]) :closure ((adder 10) 5)}";
+    let module = bytecode::compile_source(&final_ctx, "self-build-answer.zio", answer)?;
+    let value = bytecode::execute_module(&final_ctx, &module)?;
+    let Value::Map(values) = value else {
+        return Err(EvalError::custom("self-build known answer is not a map"));
+    };
+    if values.get(&Value::Keyword("sum".into())) != Some(&Value::Integer(10))
+        || values.get(&Value::Keyword("closure".into())) != Some(&Value::Integer(15))
+    {
+        return Err(EvalError::custom("self-build known answer differs"));
+    }
+    println!("Known answer: sum=10 closure=15");
+    println!("Self-build verified: fresh compiled frontend + exact file bytes");
+    Ok(())
+}
+
 /// `zio [--flags] [script]` — flags may precede the script path.
 fn main() {
+    // A bundled application runs its payload; a plain runtime continues.
+    if let Some(result) = bundle::maybe_run_bundled() {
+        if let Err(error) = result {
+            eprintln!("Error: {error}");
+            std::process::exit(1);
+        }
+        return;
+    }
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().is_some_and(|arg| arg == "build") {
+        if let Err(error) = bundle::run_build(&args[1..]) {
+            eprintln!("Error: {error}");
+            std::process::exit(1);
+        }
+        return;
+    }
+    if args.first().is_some_and(|arg| arg == "fmt") {
+        if let Err(error) = commands::run_fmt(&args[1..]) {
+            eprintln!("Error: {error}");
+            std::process::exit(1);
+        }
+        return;
+    }
+    if args.first().is_some_and(|arg| arg == "lsp") {
+        std::process::exit(commands::run_lsp(&args[1..]));
+    }
+    if args.first().is_some_and(|arg| arg == "image") {
+        if let Err(error) = commands::run_image(&args[1..]) {
+            eprintln!("Error: {error}");
+            std::process::exit(1);
+        }
+        return;
+    }
+    if args.first().is_some_and(|arg| arg == "compile") {
+        if let Err(error) = commands::run_compile(&args[1..]) {
+            eprintln!("Error: {error}");
+            std::process::exit(1);
+        }
+        return;
+    }
+    if args.first().is_some_and(|arg| arg == "self-build") {
+        let default_dir = Path::new("target/zio-self-build");
+        let (verify, output_dir) = match &args[1..] {
+            [] => (false, default_dir),
+            [flag] if flag == "--verify" => (true, default_dir),
+            [flag, path] if flag == "--out-dir" => (false, Path::new(path)),
+            [verify, flag, path] if verify == "--verify" && flag == "--out-dir" => {
+                (true, Path::new(path))
+            }
+            [flag, path, verify] if flag == "--out-dir" && verify == "--verify" => {
+                (true, Path::new(path))
+            }
+            _ => {
+                eprintln!("Usage: zio self-build [--verify] [--out-dir DIR]");
+                std::process::exit(2);
+            }
+        };
+        if let Err(error) = run_self_build(output_dir, verify) {
+            eprintln!("Error: {error}");
+            std::process::exit(1);
+        }
+        return;
+    }
     let mut extra_roots: Vec<PathBuf> = Vec::new();
     let mut script: Option<String> = None;
     let mut bounded = BoundedRun {

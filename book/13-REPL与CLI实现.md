@@ -130,7 +130,7 @@ fn run_script(path: &str) -> Result<Value, EvalError> {
 ```rust
 fn load_stdlib(ctx: &EvalContext, sm: &Arc<SourceMap>) {
     // 从嵌入式标准库加载 core.zio
-    let stdlib = zio_core::stdlib_source();  // 标准库源位于 libs/std/core.zio
+    let stdlib = zio_core::stdlib_source();  // 标准库源位于 langs/core/assets/std/core.zio
     let exprs = parse_all(stdlib);
     for expr in exprs {
         eval::eval(&expr, ctx).unwrap();

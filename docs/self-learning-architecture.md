@@ -1,9 +1,9 @@
 # grove 整体设计
 
-> 状态：产品合同设计；2026-10-07 目录归属以[当前架构](zio-architecture.md)为准。G02 agent/生成执行与 G04 人工批准的已有证据见[特性矩阵](feature-matrix.md)；服务贯通、ACP 与 Rust Grove 业务迁为 Zio 仍需分别验收。
+> 状态：产品合同设计；2026-10-07 目录归属以[当前架构](zio-architecture.md)为准。G02 agent/生成执行与 G04 人工批准的已有证据见[特性矩阵](feature-matrix.md)；服务贯通、ACP 与 Rust Groiz 业务迁为 Zio 仍需分别验收。
 > 初始设计日期：2026-10-02。实现状态以 [特性矩阵](feature-matrix.md) 为准；定位与升级权限以 [ADR-019](adrs.md#adr-019-grove-独立应用与同像性逻辑演化) 为准。
-> 统一命名：独立应用与命令为 `grove`；当前内部宿主 crate 为 `grove`（`apps/grove/native/learning/`），应用 crate 为 `grove-app`（`apps/grove/native/app/`）。代码可组织为库，但 Grove 不以通用学习库或可选产品壳为第一身份。
-> 已确认方向：Grove 是消费 Numa（计算）、Rill（CLI）、Loom（harness/ACP）的独立应用；三个库由官方维护、按需消费，不属于语言内置。首个产品验收是 Zio agent 逻辑、LLM 生成执行、站点审查与人工批准升级。
+> 统一命名：独立应用与命令为 `grove`；当前内部宿主 crate 为 `grove`（`apps/grove/native/learning/`），应用 crate 为 `grove-app`（`apps/grove/native/app/`）。代码可组织为库，但 Groiz 不以通用学习库或可选产品壳为第一身份。
+> 已确认方向：Groiz 是消费 Numa（计算）、Rill（CLI）、Loom（harness/ACP）的独立应用；三个库由官方维护、按需消费，不属于语言内置。首个产品验收是 Zio agent 逻辑、LLM 生成执行、站点审查与人工批准升级。
 > 演进方向：源码、向量表示、神经网络和 LLM 模块逐步加入；保留已有训练、检查点、谱系与组合能力，不要求所有模型类型先实现后才能交付首条主线。
 > 本文提出具体边界与合同，API 名称均为设计记法，不是现有可调用接口。
 > 配套：[历史统一实现计划](superpowers/plans/2026-10-05-zio-grove-convergence.md)给出 T/C/I/H/G 工作包与验收；[历史 W00–W17](superpowers/plans/2026-10-02-self-learning.md)只保留原组件和 demo 证据。本文定义能力与合同，不维护第二份平行架构。
@@ -12,13 +12,13 @@
 
 目标是让 agent 的显式逻辑成为真实执行的 Zio 程序：程序可作为数据读取、比较和改写，执行行为与版本绑定，升级依据来自独立评价与人工审查，而不是模型对自身行为的文字解释。
 
-采用独立应用、单机优先的基线：Grove 拥有模块、学习/实验、反馈、独立评价、版本治理与站点；Zio/ZOS 提供语言与对象语义，Rust 提供可信宿主。官方 Zio 库 Numa 提供计算，Rill 提供 CLI，Loom 提供模型/工具会话与 ACP；Grove 消费其公开接口，不在应用中复制引擎，也不让语言核心反向依赖这些库。
+采用独立应用、单机优先的基线：Groiz 拥有模块、学习/实验、反馈、独立评价、版本治理与站点；Zio/ZOS 提供语言与对象语义，Rust 提供可信宿主。官方 Zio 库 Numa 提供计算，Rill 提供 CLI，Loom 提供模型/工具会话与 ACP；Groiz 消费其公开接口，不在应用中复制引擎，也不让语言核心反向依赖这些库。
 
 首条主线必须实际执行 Zio agent 逻辑，实际调用 LLM 生成并修订代码，展示执行证据与候选差异，经独立评价和人工批准切换版本。不能用 echo、模拟调用或入队记录代替执行。已有 CPU 权重训练与多 worker demo 是可复用基础，不是这条主线已交付的证明。
 
 ## 1. 定位与已有基础
 
-Grove 是独立的自学习与逻辑演化应用，不是“通用学习库 + 可选产品壳”。其稳定骨架是模块组织与执行、事实与版本记录、评价与升级治理；具体算法、模型和教师可以后续添加。内部可保留可测试的库结构，只有真实公共需求才下沉，不预设必须拆 crate、微服务或独立仓库。
+Groiz 是独立的自学习与逻辑演化应用，不是“通用学习库 + 可选产品壳”。其稳定骨架是模块组织与执行、事实与版本记录、评价与升级治理；具体算法、模型和教师可以后续添加。内部可保留可测试的库结构，只有真实公共需求才下沉，不预设必须拆 crate、微服务或独立仓库。
 
 模型定义为 `y = P(x; θ, L)`：P 是程序结构，θ 是参数，L 是精确版本绑定的能力库。学习包括参数优化、程序改写和能力抽象。权重可以是外部二进制制品，不要求展开成源码字面量。
 
@@ -27,11 +27,11 @@ Grove 是独立的自学习与逻辑演化应用，不是“通用学习库 + �
 | 位置 | 已有能力 | 不能据此宣称的能力 |
 |---|---|---|
 | `langs/core/`、`libs/learning/learn.zio`、`proposer.zio` | Zio 解释执行、代码作为数据、算术候选生成与评价 | 完整编译前端、隔离的通用生成执行模块、实际驱动 agent 的可升级 Zio 逻辑 |
-| `contribs/native/loom/` | completion、embedding、独立 TeacherHost 与 HTTP 教师合同 | 已接入 Grove 产品的教师工作流、ACP |
+| `contribs/native/loom/` | completion、embedding、独立 TeacherHost 与 HTTP 教师合同 | 已接入 Groiz 产品的教师工作流、ACP |
 | `apps/grove/native/learning/`、`apps/grove/workers/torch/` | 版本化制品、存储与生命周期合同；CPU 参数训练、Adam 与 CPU RNG 检查点 | 通用模型后端、完整异构恢复、冻结参数和文件系统保护已强制落实 |
 | `apps/grove/native/app/`、`apps/grove/native/app/web/` | CLI demo、HTTP、同源 HTML、实际 torch 推理 | 服务持续执行训练队列、持久进度事件、agent 逻辑审查与升级闭环 |
 
-2026-10-05 审核实跑 `cargo run -p zio-cli -- examples/learn-demo.zio`：f(10)=21、f(6)=36、确定性检查为 true；Grove 服务返回产品 HTML。源码显示 Web train/resume 仅记录 queued run，`learned_into` 查询冻结数据集成员，不能证明训练消费；优化器与联合提交未执行 frozen 参数约束。完整审核没有重跑历史 torch 训练或检查点测试。
+2026-10-05 审核实跑 `cargo run -p zio-cli -- examples/learn-demo.zio`：f(10)=21、f(6)=36、确定性检查为 true；Groiz 服务返回产品 HTML。源码显示 Web train/resume 仅记录 queued run，`learned_into` 查询冻结数据集成员，不能证明训练消费；优化器与联合提交未执行 frozen 参数约束。完整审核没有重跑历史 torch 训练或检查点测试。
 
 ### 1.2 与已有设计的关系
 
@@ -48,14 +48,14 @@ Grove 是独立的自学习与逻辑演化应用，不是“通用学习库 + �
 
 | 层 | 拥有的职责 | 不拥有的职责 |
 |---|---|---|
-| Zio 与 ZOS 核心 | 值、作用域、闭包、eval/apply、宏、错误与对象/类/泛型函数/方法/MOP 语义 | 训练、CLI 应用组织、agent 会话或 Grove 领域特殊形式 |
+| Zio 与 ZOS 核心 | 值、作用域、闭包、eval/apply、宏、错误与对象/类/泛型函数/方法/MOP 语义 | 训练、CLI 应用组织、agent 会话或 Groiz 领域特殊形式 |
 | Numa 官方计算库（Planned） | 连续数组、dtype/shape、数值/向量/矩阵与计算/模型后端接口 | Agent 决策、反馈治理、教师政策、晋升决策 |
-| Rill 官方 CLI 库（Planned） | 参数、子命令、帮助、命令组合、终端 I/O、分派、退出状态 | 语言执行器或 Grove 业务 |
-| Loom 官方 harness 库（Planned） | 模型/工具会话、预算/取消、供应商、受约束执行接口、双向 ACP | Grove 学习目标、独立评价与发布批准 |
-| Grove 独立应用 | 模块组织、反馈与实验、学习运行、版本/检查点/谱系、审查批准、教师适配与站点 | 重复实现语言、数值引擎或第二套通用 agent 执行循环 |
+| Rill 官方 CLI 库（Planned） | 参数、子命令、帮助、命令组合、终端 I/O、分派、退出状态 | 语言执行器或 Groiz 业务 |
+| Loom 官方 harness 库（Planned） | 模型/工具会话、预算/取消、供应商、受约束执行接口、双向 ACP | Groiz 学习目标、独立评价与发布批准 |
+| Groiz 独立应用 | 模块组织、反馈与实验、学习运行、版本/检查点/谱系、审查批准、教师适配与站点 | 重复实现语言、数值引擎或第二套通用 agent 执行循环 |
 | 可信宿主 | 持久事务、授权、制品、隔离、资源限制、受保护的验证与发布执行 | 接受候选自行改变安全边界或独立评价合同 |
 
-Zio 库目标采用 Zio 实现并归入 `libs/`：Numa 持计算，Rill 持 CLI 组合，Loom 持 harness 组合。现有 Rust 通用传输/宿主合同位于 `contribs/native/loom/`，不是 Zio 库本体；普通语言 CLI 位于 `langs/cli/`，不装配 LLM replay。Grove 是 `apps/grove/` 独立应用，其 Rust 业务仍待后续迁为 Zio；语言介绍、文档与 playground 位于 `apps/site/`。本轮只完成结构切换，不证明完整库交付、Tree-sitter、LSP 或编译器自举。当前合同见[架构](zio-architecture.md)与[批准目录计划](superpowers/plans/2026-10-07-language-first-layout.md)。短名不等于已注册包 ID。
+Zio 库目标采用 Zio 实现并归入 `libs/`：Numa 持计算，Rill 持 CLI 组合，Loom 持 harness 组合。现有 Rust 通用传输/宿主合同位于 `contribs/native/loom/`，不是 Zio 库本体；普通语言 CLI 位于 `langs/cli/`，不装配 LLM replay。Groiz 是 `apps/grove/` 独立应用，其 Rust 业务仍待后续迁为 Zio；语言介绍、文档与 playground 位于 `apps/site/`。本轮只完成结构切换，不证明完整库交付、Tree-sitter、LSP 或编译器自举。当前合同见[架构](zio-architecture.md)与[批准目录计划](superpowers/plans/2026-10-07-language-first-layout.md)。短名不等于已注册包 ID。
 
 候选生成与训练可在预先批准的预算、触发规则和可修改范围内自动进行；独立评价只产生发布资格，正式发布默认需要人工批准。批准绑定候选及评价版本，受授权控制器重新检查硬门槛和预期旧版本后原子切换；人工同意也不能绕过保护。
 
@@ -102,7 +102,7 @@ workspace 依赖保持单向：core 不依赖 AI/学习/产品；AI 与学习宿
 
 ### 2.4 首个模块：Zio 生成与解释执行
 
-Grove 装配 Zio 解释器模块，通用受约束执行能力可由 harness/执行基础设施复用；不在应用中另写解释器。模块既作为 LLM 的代码工具，也承载真实驱动 agent 的显式逻辑，两种用途不可互相冒充。
+Groiz 装配 Zio 解释器模块，通用受约束执行能力可由 harness/执行基础设施复用；不在应用中另写解释器。模块既作为 LLM 的代码工具，也承载真实驱动 agent 的显式逻辑，两种用途不可互相冒充。
 
 生成闭环为：任务与授权上下文 → LLM 生成 Zio 候选 → 解析、展开与传递能力检查 → 隔离执行 → 返回结果/错误/执行证据 → LLM 修订或继续生成。执行器不自行判定任务成功；宿主输出作为数据进入后续生成，不自动获得指令或权限地位。
 
@@ -134,7 +134,7 @@ Grove 装配 Zio 解释器模块，通用受约束执行能力可由 harness/执
 
 ### 2.7 ACP 与异构模块
 
-ACP 指 Agent Client Protocol。Loom 提供双向协议与会话：先交付客户端与 Grove 教师适配，再交付服务端；分别验收。Grove 注入受限执行/授权回调并以目标命令 `grove acp serve` 装配，不引入 Loom → Grove 依赖。回答、示范和程序提议归一为有来源/许可的信号，教师不持发布权限；ACP 不进入语言核心，普通语言 CLI 不要求安装 Loom。
+ACP 指 Agent Client Protocol。Loom 提供双向协议与会话：先交付客户端与 Groiz 教师适配，再交付服务端；分别验收。Groiz 注入受限执行/授权回调并以目标命令 `grove acp serve` 装配，不引入 Loom → Groiz 依赖。回答、示范和程序提议归一为有来源/许可的信号，教师不持发布权限；ACP 不进入语言核心，普通语言 CLI 不要求安装 Loom。
 
 源码、向量表示、神经网络与 LLM 模块分别声明执行、更新、可修改范围、评价和状态兼容能力。共享的是版本/来源/评价/检查点/发布生命周期，不是一个“训练任意模型”接口；LLM 推理、教师查询、适配器训练和完整权重训练分别声明支持范围。
 
@@ -273,7 +273,7 @@ Candidate 表达基础版本、程序变化、参数制品、依赖及来源；�
 
 Zio AST 和模型清单是模型结构的权威表示；后端计算图是从该表示生成的制品，不能另外手写一份结构。权重、数据与生成程序按不可变版本引用；逻辑模块不要求一模块一文件或一服务。
 
-现有 `learn.zio` 与 `proposer.zio` 是复用起点。Grove 拥有其任务策略与产品工作流，内部可采用库结构；可供计算、CLI 或 harness 复用的能力按实际需求下沉，不把实现通用学习框架作为产品交付前提。
+现有 `learn.zio` 与 `proposer.zio` 是复用起点。Groiz 拥有其任务策略与产品工作流，内部可采用库结构；可供计算、CLI 或 harness 复用的能力按实际需求下沉，不把实现通用学习框架作为产品交付前提。
 
 ### 5.3 可微边界
 
@@ -433,7 +433,7 @@ Population 持有统一资源账本：训练资源、教师调用、评价、存
 
 ### 10.1 首条产品验收主线（Planned）
 
-Grove 启动 → 执行由 Zio 编码的 agent 流程 → LLM 在流程中生成并执行 Zio 代码 → 站点展示程序与实际路径 → 根据反馈提出逻辑变更 → 对照评价 → 人工批准升级。拒绝所有候选也是有效结果，但必须展示真实提议与实验。
+Groiz 启动 → 执行由 Zio 编码的 agent 流程 → LLM 在流程中生成并执行 Zio 代码 → 站点展示程序与实际路径 → 根据反馈提出逻辑变更 → 对照评价 → 人工批准升级。拒绝所有候选也是有效结果，但必须展示真实提议与实验。
 
 | 阶段 | 交付 | 可观察验收 |
 |---|---|---|
@@ -441,7 +441,7 @@ Grove 启动 → 执行由 Zio 编码的 agent 流程 → LLM 在流程中生成
 | G2 可审查逻辑演化与站点 | 反馈关联、候选差异、固定评价、运行检查点、人工批准与安全切换、实时站点及静态 HTML 报告 | 从失败证据产生真实逻辑变更并执行对照；无批准不激活，通过批准仅激活指定版本；在途调用固定旧版，冻结区不变；HTML 可关联代码、路径与评价 |
 | G3 教师与可追加模块 | ACP 客户端与教师接入在前、服务端在后；逐步接入向量/神经/LLM 模块，独立打包 | 客户端取得有来源信号且不提权；服务端可被外部客户端使用；模型能力与恢复等级如实声明；产品不依赖构建机源码/venv 路径 |
 
-顺序为保护边界 → 真正的 runner 与 Zio 执行 → 反馈/评价/批准与站点 → 教师和模型扩展。逻辑演化与参数演化互补，不要求首条主线先完成所有训练方法。语言工具链自举独立推进，不以 Grove 完成为前提，也不让 Grove 等待新编译器。
+顺序为保护边界 → 真正的 runner 与 Zio 执行 → 反馈/评价/批准与站点 → 教师和模型扩展。逻辑演化与参数演化互补，不要求首条主线先完成所有训练方法。语言工具链自举独立推进，不以 Groiz 完成为前提，也不让 Groiz 等待新编译器。
 
 具体依赖：T00 建立共享语言合同；G00 强制保护和恢复；G01/H00 提供
 执行证据及模型会话；G02/G03 贯通生成执行和服务 runner；G04/G05 完成

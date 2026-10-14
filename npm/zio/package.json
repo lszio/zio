@@ -1,0 +1,35 @@
+{
+  "name": "@lszio/zio",
+  "version": "0.2.0",
+  "description": "The Zio language: a general-purpose Lisp with a self-hosting compiler, an image runtime, and one CLI — REPL, script runner, compiler, formatter and language server",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lszio/zio.git"
+  },
+  "homepage": "https://github.com/lszio/zio#readme",
+  "bugs": "https://github.com/lszio/zio/issues",
+  "keywords": [
+    "zio",
+    "lisp",
+    "language",
+    "compiler",
+    "cli"
+  ],
+  "type": "commonjs",
+  "bin": {
+    "zio": "bin/zio.js",
+    "zio-lsp": "bin/zio-lsp.js"
+  },
+  "files": [
+    "bin",
+    "install.js",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

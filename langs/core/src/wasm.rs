@@ -496,6 +496,13 @@ impl ZioSession {
         Ok(ZioSession { ctx, io })
     }
 
+    /// Run a bundle payload (the JSON record `zio build` emits) against
+    /// this session's authority. Returns the entry value; program output
+    /// goes to the console like any other browser run.
+    pub fn run_bundle(&self, payload: &str) -> Result<String, JsValue> {
+        crate::bundle::run_payload(self.io.clone(), payload).map_err(js_error)
+    }
+
     /// Evaluate a Zio source string; returns the last value's repr, or an
     /// `Error: ...` string on failure. State persists across calls.
     pub fn eval(&self, code: &str) -> String {

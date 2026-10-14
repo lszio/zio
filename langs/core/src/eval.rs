@@ -135,19 +135,15 @@ fn eval_inner(
     if !observation.spend_fuel() {
         return Err(EvalError::step_limit_exhausted(observation.fuel_spent()));
     }
+    let result = eval_inner_observed(expr, env, tail, engine)
+        .map_err(|error| error.with_fallback_span(expr.span()));
     if observation.is_active() {
-        // The span is known here, so the event can name *where* — but the
-        // message is only built if the result turns out to be an error.
-        match eval_inner_observed(expr, env, tail, engine) {
-            Ok(result) => return Ok(result),
-            Err(error) => {
-                let message = error.to_string();
-                observation.report(crate::observer::EventKind::Error, || message, expr.span());
-                return Err(error);
-            }
+        if let Err(error) = &result {
+            let message = error.to_string();
+            observation.report(crate::observer::EventKind::Error, || message, expr.span());
         }
     }
-    eval_inner_observed(expr, env, tail, engine)
+    result
 }
 
 fn eval_inner_observed(
@@ -186,103 +182,127 @@ fn eval_inner_observed(
         Sexp::List(list, _) if list.is_empty() => Ok(TailResult::Value(Value::Nil)),
 
         // List: special form, macro, or function call
-        Sexp::List(list, _) => {
-            let first = &list[0];
-            let args: Vec<Sexp> = list.iter().skip(1).cloned().collect();
-
-            // Check if it's a symbol naming a special form
-            if let Sexp::Symbol(name, _) = first {
-                if let Some(result) = eval_special_form(name, &args, env, tail, engine)? {
-                    return Ok(result);
-                }
-            }
-
-            // Evaluate the first element to get the function/macro value
-            let func_val = eval_inner(first, env, false, engine)?.into_value();
-
-            // Check if it's a macro — expand and re-evaluate
-            if let Value::Macro(m) = &func_val {
-                // The expansion is reported at the *call site*, not at the
-                // generated code: the generated node is a fact about this
-                // call, and attributing it to the source would be a lie
-                // about where it came from.
-                let observation = engine.observation();
-                if observation.is_active() {
-                    let name = m.name.clone();
-                    observation.report(
-                        crate::observer::EventKind::MacroExpansion,
-                        || name,
-                        first.span(),
-                    );
-                }
-                // Try symbol-based expansion (fast path)
-                if let Sexp::Symbol(name, _) = first {
-                    if let Some(expanded) = macros::try_expand_by_name(name, &args, env, engine)? {
-                        return eval_inner(&expanded, env, tail, engine);
-                    }
-                }
-                // Fallback: expand from the macro value directly
-                // This handles ((fn [] my-macro) arg1 arg2) patterns
-                let expanded = macros::apply_macro_for_value(m, &args, env, engine)?;
-                return eval_inner(&expanded, env, tail, engine);
-            }
-
-            // Evaluate arguments
-            let mut evaled_args = Vector::new();
-            for item in &args {
-                evaled_args.push_back(eval_inner(item, env, false, engine)?.into_value());
-            }
-
-            // The call is reported with the callee's name when the head
-            // is a symbol, and the head's own text otherwise. This is
-            // "who was called", not "what it returned": a trace that
-            // carried values would grow with the data and leak it.
-            let observation = engine.observation();
-            if observation.is_active() {
-                let name = match first {
-                    Sexp::Symbol(name, _) => name.clone(),
-                    other => other.to_string(),
-                };
-                observation.report(crate::observer::EventKind::Call, || name, first.span());
-            }
-
-            // In tail position: defer to outer trampoline for proper TCO.
-            // This avoids growing the Rust call stack through mutual recursion
-            // (e.g. even?/odd?). The eval() trampoline loop catches TailCall
-            // and drives apply() without recursive eval_inner frames.
-            if tail {
-                return Ok(TailResult::TailCall(func_val, evaled_args));
-            }
-
-            // Non-tail: apply directly with inner trampoline for nested TailCalls.
-            let mut r = apply(func_val, evaled_args, engine)?;
-            loop {
-                match r {
-                    TailResult::Value(_) => break Ok(r),
-                    TailResult::TailCall(f, a) => r = apply(f, a, engine)?,
-                    TailResult::Recur(_) => return Err(EvalError::custom("unexpected recur")),
-                }
-            }
-        }
+        Sexp::List(list, _) => eval_list(list, env, tail, engine),
 
         // Vector: evaluate each element
-        Sexp::Vector(v, _) => {
-            let mut new_v = Vector::new();
-            for item in v {
-                new_v.push_back(eval_inner(item, env, false, engine)?.into_value());
-            }
-            Ok(TailResult::Value(Value::Vector(new_v)))
-        }
+        Sexp::Vector(v, _) => eval_vector(v, env, engine),
 
         // Map: evaluate each key and value
-        Sexp::Map(m, _) => {
-            let mut new_m = im::HashMap::new();
-            for (k, v) in m {
-                let k_val = eval_inner(k, env, false, engine)?.into_value();
-                let v_val = eval_inner(v, env, false, engine)?.into_value();
-                new_m.insert(k_val, v_val);
-            }
-            Ok(TailResult::Value(Value::Map(new_m)))
+        Sexp::Map(m, _) => eval_map(m, env, engine),
+    }
+}
+
+// Scalar evaluation must not reserve the larger call branch's stack frame.
+fn eval_list(
+    list: &Vector<Sexp>,
+    env: &Arc<Env>,
+    tail: bool,
+    engine: &dyn EvalEngine,
+) -> Result<TailResult, EvalError> {
+    let first = &list[0];
+    let args: Vec<Sexp> = list.iter().skip(1).cloned().collect();
+    if let Sexp::Symbol(name, _) = first {
+        if let Some(result) = eval_special_form(name, &args, env, tail, engine)? {
+            return Ok(result);
+        }
+    }
+    let func_val = eval_inner(first, env, false, engine)?.into_value();
+    if let Value::Macro(m) = &func_val {
+        return eval_macro(m, first, &args, env, tail, engine);
+    }
+    let evaled_args = eval_arguments(&args, env, engine)?;
+    let observation = engine.observation();
+    if observation.is_active() {
+        let name = match first {
+            Sexp::Symbol(name, _) => name.clone(),
+            other => other.to_string(),
+        };
+        observation.report(crate::observer::EventKind::Call, || name, first.span());
+    }
+    finish_call(func_val, evaled_args, tail, engine)
+}
+
+fn eval_vector(
+    items: &Vector<Sexp>,
+    env: &Arc<Env>,
+    engine: &dyn EvalEngine,
+) -> Result<TailResult, EvalError> {
+    let mut values = Vector::new();
+    for item in items {
+        values.push_back(eval_inner(item, env, false, engine)?.into_value());
+    }
+    Ok(TailResult::Value(Value::Vector(values)))
+}
+
+fn eval_map(
+    items: &im::HashMap<Sexp, Sexp>,
+    env: &Arc<Env>,
+    engine: &dyn EvalEngine,
+) -> Result<TailResult, EvalError> {
+    let mut values = im::HashMap::new();
+    for (key, value) in items {
+        let key = eval_inner(key, env, false, engine)?.into_value();
+        let value = eval_inner(value, env, false, engine)?.into_value();
+        values.insert(key, value);
+    }
+    Ok(TailResult::Value(Value::Map(values)))
+}
+
+fn eval_arguments(
+    items: &[Sexp],
+    env: &Arc<Env>,
+    engine: &dyn EvalEngine,
+) -> Result<Vector<Value>, EvalError> {
+    let mut values = Vector::new();
+    for item in items {
+        values.push_back(eval_inner(item, env, false, engine)?.into_value());
+    }
+    Ok(values)
+}
+
+fn eval_macro(
+    mac: &crate::value::Macro,
+    first: &Sexp,
+    args: &[Sexp],
+    env: &Arc<Env>,
+    tail: bool,
+    engine: &dyn EvalEngine,
+) -> Result<TailResult, EvalError> {
+    let observation = engine.observation();
+    if observation.is_active() {
+        let name = mac.name.clone();
+        observation.report(
+            crate::observer::EventKind::MacroExpansion,
+            || name,
+            first.span(),
+        );
+    }
+    if let Sexp::Symbol(name, _) = first {
+        if let Some(expanded) = macros::try_expand_by_name(name, args, env, engine)? {
+            return eval_inner(&expanded, env, tail, engine);
+        }
+    }
+    let expanded = macros::apply_macro_for_value(mac, args, env, engine)?;
+    eval_inner(&expanded, env, tail, engine)
+}
+
+fn finish_call(
+    function: Value,
+    args: Vector<Value>,
+    tail: bool,
+    engine: &dyn EvalEngine,
+) -> Result<TailResult, EvalError> {
+    // Native calls finish here and retain their source span. Only Zio
+    // functions need trampoline re-entry.
+    if tail && matches!(function, Value::Function(_)) {
+        return Ok(TailResult::TailCall(function, args));
+    }
+    let mut result = apply(function, args, engine)?;
+    loop {
+        match result {
+            TailResult::Value(_) => return Ok(result),
+            TailResult::TailCall(function, args) => result = apply(function, args, engine)?,
+            TailResult::Recur(_) => return Err(EvalError::custom("unexpected recur")),
         }
     }
 }
@@ -952,7 +972,7 @@ mod tests {
         // defstruct creates constructor + accessors via stdlib macro.
         // Load the full stdlib wrapped in (do ...) like the CLI does.
         let ctx = make_ctx();
-        let stdlib = include_str!("../../../libs/std/core.zio");
+        let stdlib = include_str!("../assets/std/core.zio");
         let wrapped = format!("(do\n{stdlib}\n)");
         let s = test_read(&wrapped).unwrap();
         eval_in_context(&s, &ctx).unwrap();
@@ -980,7 +1000,7 @@ mod tests {
     #[test]
     fn test_stdlib_nth_and_last_use_function_tail_calls() {
         let ctx = make_ctx();
-        let stdlib = include_str!("../../../libs/std/core.zio");
+        let stdlib = include_str!("../assets/std/core.zio");
         let stdlib = test_read(&format!("(do\n{stdlib}\n)")).unwrap();
         eval_in_context(&stdlib, &ctx).unwrap();
 
@@ -997,11 +1017,11 @@ mod tests {
     #[test]
     fn test_macro_example_generates_variadic_logger_functions() {
         let ctx = make_ctx();
-        let stdlib = include_str!("../../../libs/std/core.zio");
+        let stdlib = include_str!("../assets/std/core.zio");
         let stdlib = test_read(&format!("(do\n{stdlib}\n)")).unwrap();
         eval_in_context(&stdlib, &ctx).unwrap();
 
-        let example = include_str!("../../../examples/macros.zio");
+        let example = include_str!("../assets/tests/macros.zio");
         let example = test_read(&format!("(do\n{example}\n)")).unwrap();
 
         assert_eq!(eval_in_context(&example, &ctx).unwrap(), Value::Nil);
@@ -1424,7 +1444,7 @@ mod tests {
     /// exercise stdlib-level functions (assoc, reduce-kv, last, empty?).
     fn run_std(program: &str) -> Result<Value, EvalError> {
         let ctx = make_ctx();
-        let stdlib = include_str!("../../../libs/std/core.zio");
+        let stdlib = include_str!("../assets/std/core.zio");
         let s = test_read(&format!("(do\n{stdlib}\n{program}\n)")).unwrap();
         eval_in_context(&s, &ctx)
     }

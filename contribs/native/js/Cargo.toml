@@ -1,0 +1,20 @@
+[package]
+name = "zio-js"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+description = "Native embedded JavaScript engine binding for Zio (QuickJS family)."
+keywords = ["language", "javascript", "engine", "bindings"]
+
+[lib]
+name = "zio_js"
+path = "src/lib.rs"
+
+[dependencies]
+# The language bindings live here so the CLI can install them with the
+# rest of the host surface; the engine itself does not need zio-core.
+zio-core = { workspace = true }
+rquickjs = { version = "0.11", default-features = false, features = ["bindgen", "macro"] }

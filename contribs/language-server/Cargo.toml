@@ -1,15 +1,16 @@
 [package]
 name = "zio-lsp"
 version.workspace = true
-edition = "2024"
+edition.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
 authors.workspace = true
 description = "Language server for Zio: diagnostics, symbols, navigation and completion, with no evaluation of edited source"
 readme = "../../README.md"
 
 [dependencies]
-zio-core = { path = "../../langs/core" }
+zio-core = { workspace = true }
 serde_json = "1"
 
 [[bin]]

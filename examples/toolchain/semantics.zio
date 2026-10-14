@@ -1,0 +1,46 @@
+;; L00 semantic baseline. Run: cargo run -p zio-cli -- examples/toolchain/semantics.zio
+;; This is the source-loader smoke, not proof of independent VM execution.
+;; AST / explicit compile_source + execute_module parity: toolchain_contract.rs.
+
+(defn make-adder [k] (fn [x] (+ x k)))
+(println ((make-adder 10) 5))
+(println (let* [x 2 y (+ x 3)] (* x y)))
+(println (let [x 3] `(+ ~x 1)))
+(println (< 9007199254740993 9007199254740994))
+
+;; Both let and let* bind sequentially. Only nil and false are falsey.
+(println (let [x 2 y (+ x 3)] (* x y)))
+(println [(if nil 1 0) (if false 1 0) (if 0 1 0) (if [] 1 0)])
+
+;; Lexical mutation survives calls to the same closure.
+(defn make-counter []
+  (let [n 0] (fn [] (do (set! n (+ n 1)) n))))
+(def counter (make-counter))
+(println [(counter) (counter)])
+
+;; Ordinary arguments evaluate left to right; special-form and short-circuits.
+(def order [])
+(defn mark [n] (do (set! order (vector-conj order n)) n))
+(println [(+ (mark 1) (mark 2)) order])
+(println (and false (error "must not execute")))
+
+(defn sum-tail [n acc]
+  (if (= n 0) acc (sum-tail (- n 1) (+ acc n))))
+(println (sum-tail 1000 0))
+(println (loop [n 5 acc 1] (if (= n 0) acc (recur (- n 1) (* acc n)))))
+
+(defmacro unless [test body] `(if ~test nil ~body))
+(println (unless false 42))
+(println (try (/ 1 0) (catch division-by-zero 42)))
+(println [(/ 7 2) (+ 9223372036854775806 1)])
+
+;; A module exposes only its declared exports, not inherited stdlib bindings.
+(module baseline :export [answer] (def answer 42) (def private 7))
+(require :baseline :as baseline :refer [])
+(println (get baseline :answer))
+
+;; ZOS is a library-facing object system on the same language.
+(defclass BaselineBox () ((value :initarg :value)))
+(defgeneric describe-box [box])
+(defmethod describe-box ((box BaselineBox)) (slot-value box :value))
+(println (describe-box (make-instance BaselineBox :value 42)))

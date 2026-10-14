@@ -1,18 +1,35 @@
-//! Self-hosting evidence, run as its own binary.
+//! Self-hosting contracts on the ordinary Cargo test harness stack.
 //!
-//! These checks exist as an integration test rather than a unit test for
-//! one reason: `EvalContext` is deliberately `!Send` — a context owns
-//! mutable registries and must not cross a thread — so the work cannot be
-//! moved onto a thread with a bigger stack. A test harness thread gets
-//! 2 MiB, and compiling the compiler recursively needs more than that.
-//!
-//! The main thread of a test binary gets the platform's default stack,
-//! which is enough. If this ever starts overflowing, the fix is a depth
-//! bound in the compiler's form walk, not a bigger stack.
+//! Compiler construction and syntax decoding must not require a larger stack
+//! or a separate execution surface just to pass the staged compiler checks.
 
+use std::sync::Arc;
 use zio_core::bootstrap::{self, ModuleRoots};
 use zio_core::bytecode;
 use zio_core::value::Value;
+
+struct NoInterpretedFrontend(Arc<zio_core::span::SourceMap>);
+
+impl zio_core::observer::Observer for NoInterpretedFrontend {
+    fn on_event(&self, event: &zio_core::observer::Event) {
+        if let Some(span) = event.span {
+            let name = self.0.source_name(span.source_id);
+            assert!(
+                !matches!(
+                    name.as_str(),
+                    "<compiler>"
+                        | "compiler.zio"
+                        | "reader.zio"
+                        | "expand.zio"
+                        | "evaluator.zio"
+                        | "analyze.zio"
+                ) && !name.starts_with("<zio-interpreter/")
+                    && name != "trivial.zio",
+                "compiled frontend reentered Stage 0 AST: {event:?} in {name}"
+            );
+        }
+    }
+}
 
 fn context() -> zio_core::context::EvalContext {
     bootstrap::language_context(ModuleRoots::empty()).expect("language context")
@@ -26,17 +43,16 @@ fn the_compiler_compiles_itself_to_a_fixed_point() {
     // is stage 1's own compiler compiling the source again. Unequal
     // stages would mean every later build stands on sand.
     let build = bytecode::self_build(&context()).expect("self-build");
-    assert_eq!(build.hashes.len(), 2, "expected two compile stages");
     assert_eq!(
-        build.hashes[0], build.hashes[1],
-        "stage 1 and stage 2 differ"
+        build.normalized[0], build.normalized[1],
+        "stage 1 and stage 2 artifacts differ"
+    );
+    assert_eq!(
+        build.normalized.get(2),
+        Some(&build.normalized[1]),
+        "stage 3 must rebuild the same canonical compiler artifact"
     );
     assert!(build.equal, "self-build reported unequal stages");
-    assert!(
-        build.normalized[0].len() > 1024,
-        "normalized artifact is suspiciously small ({} bytes)",
-        build.normalized[0].len()
-    );
 }
 
 #[test]
@@ -44,32 +60,129 @@ fn the_compiled_compiler_compiles_programs() {
     // Stage 2 only matters if it can do the work. Every case here is a
     // construct the compiler has to lower, so a failure names the form
     // that regressed rather than a general "compilation broke".
+    let bootstrap_ctx = context();
+    let stage1 =
+        bytecode::compile_source(&bootstrap_ctx, "compiler.zio", bytecode::compiler_source())
+            .expect("stage 1");
     let ctx = context();
-    let source = include_str!("../../compiler/compiler.zio");
-    let stage1 = bytecode::compile_source(&ctx, "compiler.zio", source).expect("stage 1");
-    bytecode::install_compiled_for_test(&ctx, &stage1).expect("install stage 1");
+    let portable = bytecode::deserialize_module(&bytecode::serialize_module(&stage1).unwrap())
+        .expect("portable compiler");
+    bytecode::install_compiled_compiler(&ctx, &portable).expect("install fresh stage 1");
+    ctx.attach_observer(Arc::new(NoInterpretedFrontend(ctx.source_map.clone())));
 
-    for (label, program) in [
-        ("defn", "(defn sq [x] (* x x))"),
-        ("let*", "(let* [a 1 b 2] (+ a b))"),
+    for (label, program, expected) in [
+        ("defn", "(defn sq [x] (* x x)) (sq 7)", Value::Integer(49)),
+        ("let*", "(let* [a 1 b 2] (+ a b))", Value::Integer(3)),
         (
             "loop/recur",
             "(loop [n 0 acc 1] (if (< n 5) (recur (+ n 1) (* acc 2)) acc))",
+            Value::Integer(32),
         ),
-        ("closure", "(defn mk [k] (fn [x] (+ x k)))"),
-        ("vector", "#(1 2 3)"),
-        ("map", "{:a 1 :b 2}"),
-        ("quote", "'(1 2)"),
-        // A `cond` clause is a list: `(cond (test expr) ... (else expr))`.
-        // A bare `test expr` pair is not a clause, and both engines
-        // refuse it — the check is here to keep the two in agreement,
-        // not to bless a new syntax.
-        ("cond", "(cond (true 1) (else 2))"),
-        ("and/or", "(and true false)"),
+        (
+            "closure",
+            "(defn mk [k] (fn [x] (+ x k))) ((mk 10) 5)",
+            Value::Integer(15),
+        ),
+        (
+            "vector",
+            "#(1 2 3)",
+            Value::Vector(im::vector![
+                Value::Integer(1),
+                Value::Integer(2),
+                Value::Integer(3)
+            ]),
+        ),
+        (
+            "map",
+            "{:a 1 :b 2}",
+            Value::Map(
+                im::hashmap! {Value::Keyword("a".into()) => Value::Integer(1), Value::Keyword("b".into()) => Value::Integer(2)},
+            ),
+        ),
+        (
+            "quote",
+            "'(1 2)",
+            Value::List(im::vector![Value::Integer(1), Value::Integer(2)]),
+        ),
+        ("cond", "(cond (true 1) (else 2))", Value::Integer(1)),
+        ("and/or", "(and true false)", Value::Boolean(false)),
+        (
+            "procedural macro",
+            "(defmacro add-one [x] (list '+ x 1)) (add-one 41)",
+            Value::Integer(42),
+        ),
+        (
+            "syntax-rules",
+            "(defmacro sum-two (syntax-rules () ((_ x y) (+ x y)))) (sum-two 20 22)",
+            Value::Integer(42),
+        ),
     ] {
+        let module = bytecode::compile_source(&ctx, "trivial.zio", program)
+            .unwrap_or_else(|error| panic!("compiled compiler failed on {label}: {error}"));
+        let actual = bytecode::execute_module(&ctx, &module)
+            .unwrap_or_else(|error| panic!("compiled program failed on {label}: {error}"));
+        assert_eq!(actual, expected, "{label}");
+    }
+    let source = "(def label \"中\")\n(defn broken []\n  (/ 1 0))\n(broken)";
+    let ast_ctx = context();
+    let ast_error = bootstrap::eval_source(&ast_ctx, "locations.zio", source).unwrap_err();
+    let module = bytecode::compile_source(&ctx, "locations.zio", source).unwrap();
+    let runtime = context();
+    let portable =
+        bytecode::deserialize_module(&bytecode::serialize_module(&module).unwrap()).unwrap();
+    let vm_error = bytecode::execute_module(&runtime, &portable).unwrap_err();
+    let zio_core::error::EvalError::DivisionByZero { span: ast_span } = ast_error else {
+        panic!("expected AST division error");
+    };
+    let zio_core::error::EvalError::DivisionByZero { span: vm_span } = vm_error else {
+        panic!("expected VM division error");
+    };
+    let ast_span = ast_span.span.unwrap();
+    let vm_span = vm_span.span.unwrap();
+    assert_eq!(
+        (ast_span.start, ast_span.end, ast_span.line, ast_span.col),
+        (vm_span.start, vm_span.end, vm_span.line, vm_span.col)
+    );
+    assert_eq!(
+        runtime.source_map.get(vm_span.source_id).unwrap().source,
+        source
+    );
+
+    // A copied function with trusted spans is not the registered callback.
+    let Value::Function(callback) = ctx.env.get("zi-e-step").unwrap() else {
+        panic!("missing frontend step");
+    };
+    ctx.env.set(
+        "forged-frontend".into(),
+        Value::Function(Arc::new((*callback).clone())),
+    );
+    let rejected = bootstrap::eval_source(
+        &ctx,
+        "boundary.zio",
+        "(interpreter/protect forged-frontend [] nil)",
+    )
+    .unwrap_err();
+    assert!(matches!(
+        rejected,
+        zio_core::error::EvalError::InvalidForm(..)
+    ));
+
+    // An incomplete artifact must not borrow its missing helper from Stage 0.
+    let mut incomplete: serde_json::Value =
+        serde_json::from_str(&bytecode::serialize_module(&stage1).unwrap()).unwrap();
+    for function in incomplete["functions"].as_array_mut().unwrap() {
+        for instruction in function["code"].as_array_mut().unwrap() {
+            if instruction["op"] == "define" && instruction["arg"] == "zc-capture-plan" {
+                instruction["arg"] = serde_json::json!("omitted-capture-plan");
+            }
+        }
+    }
+    let incomplete = bytecode::deserialize_module(&incomplete.to_string()).unwrap();
+    let fresh = context();
+    if bytecode::install_compiled_compiler(&fresh, &incomplete).is_ok() {
         assert!(
-            bytecode::compile_source(&ctx, "trivial.zio", program).is_ok(),
-            "compiled compiler failed on {label}"
+            bytecode::compile_source(&fresh, "missing.zio", "(fn [x] x)").is_err(),
+            "missing compiled helper fell back to the interpreted frontend"
         );
     }
 }
@@ -96,7 +209,7 @@ fn compiled_and_interpreted_agree_on_behavior() {
     )
     .expect("execute");
 
-    let interpreted = bootstrap::eval_source(&ctx, "prog.zio", program).expect("interpret");
+    let interpreted = bootstrap::eval_source(&context(), "prog.zio", program).expect("interpret");
     assert_eq!(
         expected, interpreted,
         "compiled and interpreted forms disagree"
@@ -109,4 +222,27 @@ fn compiled_and_interpreted_agree_on_behavior() {
     let get = |key: &str| map.get(&Value::Keyword(key.into())).cloned();
     assert_eq!(get("sum"), Some(Value::Integer(10)));
     assert_eq!(get("closure"), Some(Value::Integer(15)));
+}
+
+#[test]
+fn malformed_portable_compiler_inputs_are_rejected() {
+    let ctx = context();
+    let module = bytecode::compile_source(&ctx, "literal.zio", "42").unwrap();
+    let wire: serde_json::Value =
+        serde_json::from_str(&bytecode::serialize_module(&module).unwrap()).unwrap();
+    for corruption in ["version", "instruction", "constant"] {
+        let mut invalid = wire.clone();
+        match corruption {
+            "version" => invalid["version"] = serde_json::json!(999),
+            "instruction" => {
+                invalid["functions"][0]["code"][0]["op"] = serde_json::json!("invalid-op")
+            }
+            "constant" => invalid["constants"][0]["kind"] = serde_json::json!("invalid-kind"),
+            _ => unreachable!(),
+        }
+        assert!(
+            bytecode::deserialize_module(&invalid.to_string()).is_err(),
+            "{corruption}"
+        );
+    }
 }

@@ -1,0 +1,19 @@
+[package]
+name = "zio-wasi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+description = "WASI-only Zio application runtime: WASI imports only, payload compiled in per application."
+keywords = ["language", "wasi", "wasm", "runtime"]
+
+[[bin]]
+name = "zio-wasi"
+path = "src/main.rs"
+
+[dependencies]
+# No `wasm` feature: that one pulls js-sys and globalThis, which have no
+# meaning under WASI. Everything the WASI target needs is in the core.
+zio-core = { workspace = true, default-features = false }

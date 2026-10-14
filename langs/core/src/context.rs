@@ -6,6 +6,7 @@ use crate::error::EvalError;
 use crate::module::{Module, ModuleTable};
 use crate::sexp::Sexp;
 use crate::special::TailResult;
+use crate::value::Value;
 
 /// Minimal evaluation capability — eval and environment access.
 /// Embedding scenarios that don't need modules or ZOS only need this trait.
@@ -88,7 +89,28 @@ pub trait ModuleRegistry {
 ///
 /// ADR-005 split: embedders can implement `EvalRuntime` alone when modules
 /// are not needed; CLI and ZOS scenarios implement all three traits.
-pub trait EvalEngine: EvalRuntime + ModuleRegistry {}
+pub trait EvalEngine: EvalRuntime + ModuleRegistry {
+    /// Allow an execution surface to retain its semantics when a native
+    /// higher-order function invokes a reader, evaluator, or loader callback.
+    /// Ordinary engines leave the native implementation unchanged.
+    fn intercept_native(
+        &self,
+        _function: &crate::value::NativeFn,
+        _args: &im::Vector<Value>,
+    ) -> Option<Result<Value, EvalError>> {
+        None
+    }
+
+    /// Preserve the execution surface when native higher-order code expands
+    /// a macro value rather than invoking it as an ordinary function.
+    fn intercept_macro(
+        &self,
+        _mac: &Arc<crate::value::Macro>,
+        _args: &im::Vector<Value>,
+    ) -> Option<Result<Value, EvalError>> {
+        None
+    }
+}
 
 /// Type for the injectable module loader function.
 pub type ModuleLoader = dyn Fn(&[String], &str, &Arc<Env>) -> Result<Module, EvalError>;

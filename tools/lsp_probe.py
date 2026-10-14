@@ -138,6 +138,30 @@ check("diagnostics published", diagnostics_seen)
 check("document was not executed", not os.path.exists(canary),
       "canary file exists" if os.path.exists(canary) else "")
 
+# Formatting: the document above is not formatted (double space after
+# `defn`, CRLF line endings), so the server answers one whole-document
+# edit whose text is the formatter's output. An edit back for the same
+# bytes would prove nothing.
+send({"jsonrpc": "2.0", "id": 6, "method": "textDocument/formatting",
+      "params": {"textDocument": {"uri": uri}, "options": {"tabSize": 2, "insertSpaces": True}}})
+
+for _ in range(40):
+    msg = read()
+    if msg is None:
+        break
+    if msg.get("id") == 6:
+        answers[6] = msg.get("result")
+        break
+edits = answers.get(6) or []
+check("formatting produced an edit", len(edits) == 1,
+      f"{len(edits)} edits")
+formatted = (edits[0].get("newText") if edits else "") or ""
+check("formatted text is canonical", "(defn 计算 [x] (* x 2))" in formatted,
+      repr(formatted.splitlines()[:1]))
+check("formatting spans the whole document",
+      bool(edits) and edits[0]["range"]["start"] == {"line": 0, "character": 0},
+      json.dumps(edits[0]["range"]) if edits else "no edit")
+
 send({"jsonrpc": "2.0", "id": 5, "method": "shutdown", "params": None})
 shutdown_ok = False
 for _ in range(40):
