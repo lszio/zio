@@ -144,6 +144,21 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo test -p zio-cli --test lib_contract
 
+  npm-packages:
+    name: npm packages
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      # What npm publishes is the package's own root, not the repository
+      # layout it was written in. This is the check that would have caught
+      # @lszio/zio@0.2.0 requiring ../package.json: that resolves to the
+      # engine package next door here, and to nothing once published, so
+      # the CLI exited on its first invocation.
+      - run: node --test npm/zio/package-contract.test.mjs
+
   language-server:
     name: language server
     runs-on: ubuntu-latest

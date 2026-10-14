@@ -1,6 +1,6 @@
 {
   "name": "@lszio/zio-core",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Zio language engine compiled to WebAssembly — the same core the native CLI and self-hosting compiler run on",
   "license": "MIT",
   "repository": {

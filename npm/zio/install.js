@@ -18,7 +18,12 @@ const path = require("path");
 const { spawnSync } = require("child_process");
 
 const REPO = "lszio/zio";
-const VERSION = require("../package.json").version;
+// The version this package installs is its own version. It has to be
+// read from the package root, not from a parent directory: npm publishes
+// the files listed in `files` rooted at the package, so `../package.json`
+// exists in the repository (it is the engine package next door) and
+// resolves to nothing at all once published.
+const VERSION = require("./package.json").version;
 const BASE = `https://github.com/${REPO}/releases/download/v${VERSION}`;
 
 const TARGETS = {
