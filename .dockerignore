@@ -1,19 +1,23 @@
-# Context hygiene: the image builds zio-cli from source; everything the
-# workspace does not parse is ballast.
+# Context hygiene, not a per-image filter: one context serves three
+# images — Dockerfile.zio (zio-cli), Dockerfile (the Astro site plus
+# docs/book/blog/examples) and Dockerfile.groiz (the Grove runtime, which
+# copies apps/, tools/ and examples/manifest.tsv). A pattern here that
+# excludes something one of them COPYs makes that image unbuildable, with
+# "not found" pointing at the Dockerfile rather than at this file.
+#
+# So only ballast is listed: build output, caches, VCS metadata and the
+# local machine state that must never reach an image.
 .git
 .gnux
-.github
 .idea
 .vscode
-target
+.claude
+.agents
+.github
 dist
+**/target
 **/node_modules
 **/__pycache__
 .venv
-apps
-docs
-npm
-*.md
-Dockerfile.zio
-.dockerignore
-.gitmodules
+apps/site/.astro
+*.pt
