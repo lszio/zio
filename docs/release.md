@@ -136,10 +136,13 @@ would make the isolation profile advisory.
 
 ## Crates
 
-`cargo publish` needs a `CARGO_REGISTRY_TOKEN` repository secret. The
-`crates` job is `continue-on-error`, because a package already published
-at this version is a skip rather than a failure, and a token without
-publish scope should not stop the GitHub release from happening.
+`cargo publish` needs a `CRATES_TOKEN` repository secret with publish
+scope. The `crates` job is strict: a package that fails to publish stops
+that job rather than warning, because a release that silently omitted a
+Rust library would claim a surface it did not deliver. It does not stop
+the rest — `github-release` needs `plan`, `verify` and `native`, so the
+archives and the GitHub release still appear, and the red job is what
+says which crate is missing.
 
 ## Publish surfaces
 
@@ -147,7 +150,7 @@ publish scope should not stop the GitHub release from happening.
 |---|---|---|
 | Executables | Five-platform archives (`bin/zio`, `bin/zio-lsp`, `bin/groiz` on POSIX) with checksums and `manifest.json` | `native` |
 | Executable container | `ghcr.io/lszio/zio` with `zio` on PATH | `docker` |
-| Rust execution library | [`zio-core`](https://crates.io/crates/zio-core), `zio-js`, `zio-host`, `zio-lsp`, `zio-wasi`, `zio-cli` on crates.io; the `wasm` feature builds the browser engine | `crates` (needs `CARGO_REGISTRY_TOKEN`) |
+| Rust execution library | [`zio-core`](https://crates.io/crates/zio-core), `zio-js`, `zio-host`, `zio-lsp`, `zio-wasi`, `zio-cli` on crates.io; the `wasm` feature builds the browser engine | `crates` (needs `CRATES_TOKEN`) |
 | npm CLI | `@lszio/zio` — downloads the release archive matching the installed version, checksums it, runs `zio` | `npm-cli` (needs `NPM_TOKEN`) |
 | npm engine | `@lszio/zio-core` — the same engine as WebAssembly; `ZioSession` locates and loads the Zio runtime in browsers and Node | `npm` (needs `NPM_TOKEN`) |
 | Single-file apps | `zio build INPUT --target native -o APP` | produced by users |

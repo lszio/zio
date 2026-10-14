@@ -187,7 +187,7 @@ jobs:
             --package zio-lsp
             --package zio-wasi
             --package zio-cli
-            --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
+            --token ${{ secrets.CRATES_TOKEN }}
 
   npm:
     name: publish npm wasm package
@@ -203,7 +203,7 @@ jobs:
           targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
       - name: Install wasm-bindgen
-        run: cargo install wasm-bindgen-cli --version 0.2 --locked
+        run: cargo install wasm-bindgen-cli --version 0.2.126 --locked
       - name: Build the browser engine
         run: ./tools/build-wasm.sh
       - name: Stage the package
@@ -321,7 +321,7 @@ jobs:
         with:
           targets: wasm32-unknown-unknown
       - name: Install wasm-bindgen
-        run: cargo install wasm-bindgen-cli --version 0.2 --locked
+        run: cargo install wasm-bindgen-cli --version 0.2.126 --locked
       - run: ./tools/build-wasm.sh
       - name: Stage everything
         run: |

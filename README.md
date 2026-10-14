@@ -107,7 +107,7 @@ submodule 挂载于 `apps/grove`（克隆用 `--recurse-submodules`）；构建�
 [`@lszio/zio-core`](https://www.npmjs.com/package/@lszio/zio-core)（WASM 引擎）、
 推送 Docker 镜像 `ghcr.io/lszio/zio`（含 `zio` 可执行文件），
 并附带校验和、WASM 产物与 `manifest.json` 组件清单创建 GitHub Release。
-`NPM_TOKEN` 与 `CARGO_REGISTRY_TOKEN` 需配置为仓库 secret。
+`NPM_TOKEN` 与 `CRATES_TOKEN` 需配置为仓库 secret。
 
 `zio` 是语言统一入口：REPL、脚本运行、受限执行、`compile`、`image`、
 `build`、`self-build`、`fmt` 格式化与 `lsp` 语言服务都在同一个二进制里；
