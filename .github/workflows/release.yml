@@ -126,11 +126,16 @@ jobs:
           set -euo pipefail
           cd dist
           case "${{ matrix.os }}" in
-            windows*) zip -r "${{ matrix.archive }}.zip" "${{ matrix.archive }}" ;;
-            *) tar -czf "${{ matrix.archive }}.tar.gz" "${{ matrix.archive }}" ;;
+            windows*) archive="${{ matrix.archive }}.zip"; zip -r "$archive" "${{ matrix.archive }}" ;;
+            *) archive="${{ matrix.archive }}.tar.gz"; tar -czf "$archive" "${{ matrix.archive }}" ;;
           esac
-          sha256sum "${{ matrix.archive }}".* > "${{ matrix.archive }}.sha256" \
-            || shasum -a 256 "${{ matrix.archive }}".* > "${{ matrix.archive }}.sha256"
+          # The checksum file is named after the archive it covers, so the
+          # name a client builds is the name that exists. The npm CLI
+          # fetches `<archive>.sha256`; a short `zio-linux-x86_64.sha256`
+          # beside a `zio-linux-x86_64.tar.gz` is the same bytes under a
+          # name nobody asks for, and 0.2.0 shipped exactly that.
+          sha256sum "$archive" > "$archive.sha256" \
+            || shasum -a 256 "$archive" > "$archive.sha256"
           ls -la
 
       - uses: actions/upload-artifact@v4
