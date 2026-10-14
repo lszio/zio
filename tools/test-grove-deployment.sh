@@ -39,8 +39,11 @@ check() {
   [[ "$actual" == "$expected" ]] || { printf 'FAIL %s: expected %s, got %s\n' "$label" "$expected" "$actual" >&2; exit 1; }
 }
 
-check "site intro page" 200 "http://127.0.0.1:$site_port/grove/"
 check "site wasm" 200 "http://127.0.0.1:$site_port/wasm/zio_core_bg.wasm"
+# No Groiz intro page ships in this image any more (it lives in
+# lszio/groiz), so the bare product path must redirect to the app the
+# service serves rather than 404.
+check "grove entry redirect" 301 "http://127.0.0.1:$site_port/grove/"
 check "grove control plane" 200 "http://127.0.0.1:$site_port/grove/app/"
 # Dots in the tail must not trip the .md/.zio/.tsv regex into a site
 # filesystem lookup: these must be answered by the proxies (^~ prefixes).
