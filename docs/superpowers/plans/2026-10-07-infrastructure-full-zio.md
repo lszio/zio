@@ -1,10 +1,15 @@
 # Infrastructure and Full Zio Implementation Plan
 
+> Historical plan (2026-10-07). The Groiz application scope below moved to
+the independent project [lszio/groiz](https://github.com/lszio/groiz) and is no
+longer carried in this repository; paths and commands below are historical, not
+current layout.
+
 > **For agentic workers:** Use subagent-driven-development for independent ownership slices. Parent owns integration, shared manifests, CLI/package installation, final smoke/tests/docs and cutover. Every child skips build/lint/tests/formatters mid-flight; integrated verification runs after edits settle.
 
-**Goal:** Complete general language infrastructure, self-host the Zio compiler, and replace Grove and reusable library business implementations with Zio, including the browser controller.
+**Goal:** Complete general language infrastructure, self-host the Zio compiler, and replace reusable library business implementations with Zio; the application work originally scoped here lives in its own repository.
 
-**Architecture:** Follow [approved design](../specs/2026-10-07-infrastructure-full-zio-design.md). Keep minimal native language/runtime and generic platform/tensor mechanisms; no Grove operation hidden behind a native binding. Preserve old stored history and existing consumer-visible contracts; delete old business only after replacement paths execute.
+**Architecture:** Follow [approved design](../specs/2026-10-07-infrastructure-full-zio-design.md). Keep minimal native language/runtime and generic platform/tensor mechanisms; no application operation hidden behind a native binding. Preserve old stored history and existing consumer-visible contracts; delete old business only after replacement paths execute.
 
 **Tech Stack:** Existing Rust/Zio/Astro/WASM/SQLite/PyTorch dependencies; portable instruction runtime, Zio compiler/libraries/application, Tree-sitter grammar and stdio language service. No speculative registry, JIT, alternative compiler or UI framework.
 
@@ -13,13 +18,13 @@
 - Foundation owner: core reader/error/span/syntax/JSON/bootstrap/module/loading/WASM and affected contracts. Do not edit evaluator/value/context without agreed handoff.
 - Compiler/runtime owner: `langs/compiler/**`, new core bytecode/runtime modules, evaluator/value/ZOS integration and compiler contracts. Own `value.rs` and `eval.rs`; coordinate module registry/context changes with foundation owner. Public bytecode APIs are fixed by design §1.
 - Native storage owner: new `contribs/native/host/src/storage.rs`, supporting storage/codec files and behavior contracts; use design §3 primitive names. No shared manifest/root installer edits.
-- Native transport owner: new `contribs/native/host/src/transport.rs`, process/HTTP/framing/isolation helpers and behavior contracts; no Grove records/routes or manifest/root installer edits.
+- Native transport owner: new `contribs/native/host/src/transport.rs`, process/HTTP/framing/isolation helpers and behavior contracts; no application records/routes or manifest/root installer edits.
 - Tensor owner: generic backend under `contribs/tensor/**`, native host `tensor.rs`, and narrow operation contract. No task/teacher/recipe/objective/reward policy in Python.
 - Numerical/CLI/standard library owner: `libs/numa/**`, `libs/rill/**`, `libs/std/**` except `core.zio` shared with compiler only by agreement. Remove stubs/load-time prints and correct observable behavior.
 - Loom/learning owner: `libs/loom/**`, `libs/learning/**`; port session/budget/tool/teacher/ACP and real recipe policy, reuse existing symbolic/feedback/population/memory/model functions.
-- Grove persistence owner: `apps/grove/{contracts,codec,store,artifacts,events,lineage,feedback,governance,evaluation,approval,retention}.zio` and migration behavior contracts. Publish explicit Zio exports to orchestration owner.
-- Grove orchestration owner: `apps/grove/{checkpoint,composition,ensemble,memory,coordinator,runner,inference,demo,main,http,views}.zio` and behavior contracts. Parent handles package wrapper/CLI installed integration. No old native calls permitted.
-- Browser owner: `apps/grove/web/**` and Grove browser Zio controller; generic bridge only in JS. Source/controller are served by Zio HTTP entry, not Astro.
+- Application persistence owner (in the Groiz repository): `{contracts,codec,store,artifacts,events,lineage,feedback,governance,evaluation,approval,retention}.zio` and migration behavior contracts. Publish explicit Zio exports to orchestration owner.
+- Application orchestration owner (in the Groiz repository): `{checkpoint,composition,ensemble,memory,coordinator,runner,inference,demo,main,http,views}.zio` and behavior contracts. Parent handles package wrapper/CLI installed integration. No old native calls permitted.
+- Browser owner: `web/**` and the browser Zio controller (Groiz repository); generic bridge only in JS. Source/controller are served by Zio HTTP entry, not Astro.
 - Editor owner: `contribs/tree-sitter-zio/**`, `contribs/language-server/**`, `contribs/editors/**`; source analysis never executes user code. No need for a heavy editor frontend.
 - Parent: `Cargo.toml`, package manifests, new host `src/lib.rs`, `langs/core/src/lib.rs` module declarations, `langs/cli/**`, package/install tools, final docs/status/site integration and deletion of obsolete native crates/callers.
 
@@ -52,14 +57,14 @@ Verification after integration: native compiler smoke compiling and executing cl
 - [ ] Expose exactly the generic primitives from design §3 with opaque resources, scoped authority and explicit errors. Reuse rusqlite/serde_json/sha2/libc/ureq/tokio where required.
 - [ ] Prove parameterized transactions rollback actual writes and callbacks do not deadlock. Verify binary atomic durability and historical digest inputs.
 - [ ] Implement bounded HTTP and process lifecycle/polling, exact frame identity and real isolated filesystem root; cancellation kills/reaps, no unsafe namespace fallback.
-- [ ] Implement generic tensor operation backend, autodiff/Adam/seeded sampling/safe state export/import. No Grove recipe/task policy remains there.
+- [ ] Implement generic tensor operation backend, autodiff/Adam/seeded sampling/safe state export/import. No application recipe/task policy remains there.
 - [ ] Install resources only with explicit CLI/application capability grants; compiler/LSP/browser sessions do not inherit application secrets/database/publisher.
 
 Verification after integration: actual SQLite failure/rollback and competing CAS; actual framed process and malformed/oversized/error/cancel behavior; actual isolated canary/symlink/network refusal; controlled real HTTP exchange; actual CPU tensor gradients and optimizer/RNG roundtrip.
 
 ## Task 4: Complete reusable Zio libraries
 
-- [ ] Implement Rill parser/subcommand/help/dispatch and consume it from Grove; language CLI handles only generic launch/toolchain flags.
+- [ ] Implement Rill parser/subcommand/help/dispatch and consume it from the application; language CLI handles only generic launch/toolchain flags.
 - [ ] Correct Numa scale/shape/finite contracts and implement tensor-facing numerical algorithms used by learning.
 - [ ] Replace exposed standard-library query placeholder with an executable supported query contract; no fake results or demo-as-implementation.
 - [ ] Move Loom session/tool sequencing, shared admission/settlement/unknown-cost, cancellation, teacher validation and ACP client/server protocol logic to Zio. Native side is generic transport/secret custody.
@@ -68,7 +73,7 @@ Verification after integration: actual SQLite failure/rollback and competing CAS
 
 Verification after integration: real library CLI programs; controlled teacher/model and ACP wire exchange with tool correlation/cancel; shared budget refusal and unknown-cost accounting; each current objective family computes real gradients and heldout behavior, not just returns declarations.
 
-## Task 5: Grove records, persistence and human authority in Zio
+## Task 5: Application records, persistence and human authority in Zio
 
 - [ ] Port exact historical codecs/schema/records and load existing populated stores without rewriting immutable object bytes/history.
 - [ ] Port signals/conflict resolution/frozen datasets/licences/recipes/artifacts/events/provenance and durable receipts in Zio transactions.
@@ -79,12 +84,12 @@ Verification after integration: real library CLI programs; controlled teacher/mo
 
 Verification after integration: old populated DB and exact digests; malformed schema/foreign evidence/stale version/missing repeats/retracted source refusals; actual user approval publishes once and replay stays same version; transaction crash/replay and retention no-default-deletion behavior.
 
-## Task 6: Grove full orchestration, surfaces and browser controller
+## Task 6: Application orchestration, surfaces and browser controller
 
 - [ ] Port queue/state/owner epoch/leases/billing/recovery to one Zio owner loop and explicit generic process concurrency.
 - [ ] Port real checkpoint/pause/resume/fork, optimizer/RNG continuity, semantic-space composition, frozen/shared parameters, ensembles and memory/abstraction.
 - [ ] Run inference/training with generic tensor backend; persist output snapshot and source graph, real progress and checkpoints, and observed spend.
-- [ ] Port all existing CLI commands and exact HTTP routes/errors/receipts to Zio. No route handler may invoke a legacy Grove Rust operation.
+- [ ] Port all existing CLI commands and exact HTTP routes/errors/receipts to Zio. No route handler may invoke a legacy application Rust operation.
 - [ ] Port task synthesis, event state, forms, comparisons/review/approval to a Zio/WASM browser controller; JS only delivers generic events/fetch/DOM/drawing.
 - [ ] Preserve accessible labels/error states and explicit human approval. Render real traces, loss and immutable versions; static docs are not product verification.
 
@@ -96,14 +101,14 @@ Verification after integration: actual service CLI/HTTP/Web; two concurrent work
 - [ ] Implement real stdio LSP lifecycle/versioned documents/UTF-16 diagnostics/symbols/definition/references/hover/completion/semantic highlighting without user-source execution.
 - [ ] Add editor wiring that launches the server and uses Zio language/highlighting; exercise actual protocol, not only config loading.
 - [ ] Implement local manifest/lock and distribution assembly including compiled compiler, libraries, app, backend/resources/browser assets.
-- [ ] Run installed language tools and Grove from a fresh directory, with checkout inaccessible; module/worker/web paths must not depend on compile CWD or Cargo manifest ancestry.
+- [ ] Run installed language tools and the application from a fresh directory, with checkout inaccessible; module/worker/web paths must not depend on compile CWD or Cargo manifest ancestry.
 
 Verification after integration: Tree-sitter generate/parse corpus; real initialize/didOpen/didChange/definition/references/shutdown/exit exchange with emoji/CJK/CRLF and side-effect source remaining unexecuted; installed CLI/app lifecycle outside checkout.
 
 ## Task 8: Clean cutover and final acceptance
 
 - [ ] Migrate affected callers/contracts to real new paths; remove wiring/source-text/incidental wording tests rather than repin them.
-- [ ] Delete old `apps/grove/native/{app,learning}` business crates and Python task/recipe/training policy only after replacements execute; retain only genuinely generic extracted mechanisms.
+- [ ] Delete the old native business crates (Groiz repository) and Python task/recipe/training policy only after replacements execute; retain only genuinely generic extracted mechanisms.
 - [ ] Update workspace/dependencies, current architecture/features/book/site/README/install instructions; replace historical current-status claims with exact exercised evidence.
 - [ ] Run the integrated workspace behavior suite once after parallel edits settle, then reproduce and fix actual failures at their shared cause.
 - [ ] Rebuild shipped WASM and Astro, exercise actual desktop/mobile language and product surfaces, inspect screenshots and source-aware error recovery.

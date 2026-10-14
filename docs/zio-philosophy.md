@@ -21,9 +21,10 @@ Experimental ZOS 子集，以及 `langs/core/src/bytecode.rs` 的字节码运行
 的自举对照测试。源码存在不等于本轮实跑验收，也不等于完整目标语义已经自举。
 
 四层目录保持 `langs/`、`libs/`、`contribs/`、`apps/`：语言与工具链在
-`langs/`，Zio 库在 `libs/`，可信宿主与外部引擎适配在 `contribs/`，消费它们的
-应用在 `apps/`。Numa 持计算，Rill 持 CLI 组合，Loom 持 harness 组合；
-短名不等于已注册包 ID。Groiz 是独立应用，不是语言完整发行的必需组成。
+`langs/`，Zio 库在 `libs/`，可信宿主与外部引擎适配在 `contribs/`，站点在
+`apps/site/`。Numa 持计算，Rill 持 CLI 组合，Loom 持 harness 组合；
+短名不等于已注册包 ID。Groiz 是独立项目（[lszio/groiz](https://github.com/lszio/groiz)），
+不在本仓库，也不是语言完整发行的必需组成。
 目录与现状见[架构](zio-architecture.md)，历史切换证据见
 [目录计划](superpowers/plans/2026-10-07-language-first-layout.md)。
 
@@ -45,8 +46,8 @@ Zio 语言 = AST / bytecode 执行基础 + 核心 Experimental ZOS 子集
          + 显式 Zio 元循环 reader / evaluator / expand + 自举分析 / 编译器目标
          + 运行时镜像、bin / WASM 导出与完整开发发行目标
 官方 Zio 库 = Numa（计算） / Rill（CLI 组合） / Loom（Agent harness）
-独立应用 = Groiz（消费语言与库，治理学习、评价、检查点与发布）
-依赖方向 = 库与 Groiz → 语言；语言核心不反向依赖库或 Groiz
+独立应用 = Groiz（独立项目，消费语言与库）
+依赖方向 = 库与应用 → 语言；语言核心不反向依赖库或应用
 ```
 
 
@@ -150,7 +151,7 @@ Zio 的核心特性构成一个自洽的整体，不是其他语言特性的组�
 
 | 能力 | 起点与落点 | 状态 |
 |---|---|---|
-| Numa：数值数组/矩阵/向量与后端接口 | 复用 `libs/numa/vector.zio`、`apps/grove/workers/torch/` 的计算边界；连续 typed array 与公共计算接口按需求扩展，不持训练或发布治理 | 当前组件 Experimental；Numa Planned |
+| Numa：数值数组/矩阵/向量与后端接口 | 复用 `libs/numa/vector.zio` 的计算边界；连续 typed array 与公共计算接口按需求扩展，不持训练或发布治理 | 当前组件 Experimental；Numa Planned |
 | Rill：CLI 应用组织 | `libs/rill/cli.zio` 已有参数、子命令与帮助解析组件；终端 I/O、退出状态和独立发行按实际合同验收 | 现有组件；独立发行 Planned，本轮未实跑 |
 | Loom 与 Groiz | Loom 持通用 harness 组合；Groiz 持应用策略、学习与发布治理，不进入语言发行必需依赖 | 现有组件与目标分开，见特性矩阵 |
 | Datalog / Entity / Protocol / 集合 | 保留已有数据表达与占位模块；领域执行不因能加载文件而成立 | 各项状态见特性矩阵 |
@@ -228,13 +229,13 @@ ZOS（Zio Object System）是 Zio 的统一运行时对象模型。它不是传�
 ## 6 架构分层
 
 ```text
-当前：zio-cli / loom native adapter / grove-app
+当前：zio-cli / loom native adapter / zio-lsp
                   ↓
-      Groiz 内部宿主 + CPU 后端 / Zio 标准库与领域组件
+      Zio 标准库与领域组件（libs/：std、numa、rill、loom、learning、interop）
                   ↓
       zio-core：AST eval/apply、宏、核心值、Experimental ZOS 子集
 
-目标：独立 Groiz 应用、其他 CLI / 嵌入 / 工具链入口
+目标：独立 Groiz 应用（独立仓库）、其他 CLI / 嵌入 / 工具链入口
                   ↓
       计算 / CLI 组织 / harness（模型、工具、ACP）公共基础设施
                   ↓

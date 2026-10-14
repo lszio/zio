@@ -1,6 +1,6 @@
 # Zio VM、应用场景与落地页设计规格
 
-> Historical document: paths, commands and delivery claims below describe their original date. The 2026-10-07 language-first cutover supersedes directory and library ownership targets; see [current architecture](../../zio-architecture.md) and [approved layout plan](../plans/2026-10-07-language-first-layout.md). Rust Grove business migration remains outstanding.
+> Historical document: paths, commands and delivery claims below describe their original date. The 2026-10-07 language-first cutover supersedes directory and library ownership targets; see [current architecture](../../zio-architecture.md) and [approved layout plan](../plans/2026-10-07-language-first-layout.md). The Groiz application is an independent project, not part of this repository.
 
 **日期：** 2026-08-10
 
@@ -10,15 +10,16 @@
 
 > **2026-10-05 基线更新**：核心保留 ZOS；Zio 展开/分析/编译器及最小
 > 后端用于工具链自举，Rust 保留运行时/宿主/性能原语。新开工顺序见
-> [统一实现计划](../plans/2026-10-05-zio-grove-convergence.md)和 [ADR-019](../../adrs.md#adr-019-grove-独立应用与同像性逻辑演化)。
-> 本文完整 ZIR/VM 性能方案、四个应用与周数是历史目标，不自动成为 Grove
+> [语言与工具链计划](../plans/2026-10-11-zio-language-toolchain.md)和 [ADR-019](../../adrs.md#adr-019-groiz-独立应用与同像性逻辑演化)。
+> 本文完整 ZIR/VM 性能方案、四个应用与周数是历史目标，不自动成为应用主线
 > G1 的前置条件，不另起一套编译器。站点已改为 Astro，语言切换未实现；
 > 静态 landing 与模拟学习不等于 `app/web/` 的真实 agent 审查产品。
 >
 > **2026-10-05 命名同步**：Numa（计算）、Rill（CLI 组合）、Loom（Agent
 > harness）是按需安装、独立版本发布的官方库，不是 Zio/ZOS 或工具链
-> 内置特性。Grove 是消费语言与三库的独立应用，持学习目标、实验、反馈、
-> 检查点、独立评价、人工批准、逻辑演化与 Web；核心无反向依赖。
+> 内置特性。Groiz 是独立项目（[lszio/groiz](https://github.com/lszio/groiz)），不在本仓库；
+> 它消费语言与三库，持学习目标、实验、反馈、检查点、独立评价、人工批准、
+> 逻辑演化与 Web；核心无反向依赖。
 > 当前 `zio-ai`/`ai/` 是 Loom 的起点，`zio-cli`/`cli/` 是未来消费 Rill
 > 的可执行宿主；下文保留历史路径、包名、命令及尚未实现的方案，不重命名源码。
 > 三库新增能力仍 Planned，正式短名不指定注册包 ID；未来规范目录和逻辑
@@ -416,13 +417,12 @@ DSL 使用 S-expression 声明：
 
 ### 12.1 技术边界
 
-> **实现说明（2026-10-05）**：本节的“手写 HTML + 零构建依赖”方案已被 Astro 静态构建替换，理由是子页面与共享布局需要复用，而手写复制三份导航/页脚不可维护。视觉与交互契约（Terminal 风格、真实 WASM REPL、移动端布局、reduced-motion）保持不变。站点从**域名根路径**提供（`/` 落地页、`/grove`、`/agent` 真实路由，无 `/site` 前缀）。
+> **实现说明（2026-10-05）**：本节的“手写 HTML + 零构建依赖”方案已被 Astro 静态构建替换，理由是子页面与共享布局需要复用，而手写复制三份导航/页脚不可维护。视觉与交互契约（Terminal 风格、真实 WASM REPL、移动端布局、reduced-motion）保持不变。站点从**域名根路径**提供（`/` 落地页、`/agent` 真实路由，无 `/site` 前缀）。
 > 实际结构：`site/src/pages/*.astro`（落地页、Agent 页）、`site/src/layouts/Base.astro`（共享布局）、`site/content/**/*.mdx`（子页面内容源，经内容集合编译）、`site/public/wasm/`（提交的 WASM 引擎）、`site/src/styles/global.css`。构建产物仍是纯静态文件，可发布到任意静态服务器。语言切换未实现，页面保持中文。
 
 ```text
 site/src/pages/index.astro        落地页（真实 WASM REPL）
 site/src/pages/agent/index.astro  Agent & LLM 子页（实时 Q-learning）
-site/content/grove/index.mdx      grove 子页（外部 MDX）
 site/src/lib/engine.ts            WASM 引擎加载（唯一入口）
 site/public/wasm/                 提交的引擎产物，由 tools/build-wasm.sh 重建
 ```

@@ -243,7 +243,7 @@ mod tests {
 fn virtual_paths_are_canonicalized_independently_of_host_os() {
     let io = BufferIoHost::new();
     assert_eq!(
-        io.canonicalize_path("/zio/apps/grove/../site/./index.zio")
+        io.canonicalize_path("/zio/apps/demo/../site/./index.zio")
             .unwrap(),
         "/zio/apps/site/index.zio"
     );

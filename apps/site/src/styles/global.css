@@ -757,36 +757,6 @@ footer {
 .prose th { background: var(--bg-card); color: var(--text-main); font-weight: 600; }
 .prose td { color: var(--text-muted); }
 
-/* ── Grove subpage blocks ── */
-.grove-metrics { margin-bottom: 48px; }
-.stat-number-text { font-size: 2.25rem; }
-
-.demo-cards {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 24px;
-  margin-bottom: 24px;
-}
-.demo-cards > * { min-width: 0; }
-.demo-cards h3 { font-size: 1.1rem; margin-bottom: 14px; }
-
-.demo-cmd {
-  background: var(--bg-terminal);
-  border: 1px solid var(--border-color);
-  border-radius: 8px;
-  padding: 10px 12px;
-  font-family: var(--font-mono);
-  font-size: 0.72rem;
-  color: var(--accent-green);
-  overflow-x: auto;
-  margin: 0 0 14px;
-  white-space: pre;
-}
-
-@media (max-width: 980px) {
-  .demo-cards { grid-template-columns: 1fr; }
-}
-
 /* ── Library reference (extracted from ;; doc: comments) ── */
 .symbol-chip {
   display: inline-block;

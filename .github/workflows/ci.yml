@@ -23,8 +23,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive
 
       - name: Install toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -34,27 +32,10 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Build
-        run: |
-          cargo build --workspace --all-targets
-          cargo build --manifest-path apps/grove/Cargo.toml --workspace --all-targets
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      # Workspace isolation contracts exercise the real CPU worker and require
-      # its gitignored virtual environment in a clean checkout.
-      - name: Set up CPU worker runtime
-        run: |
-          python -m venv .venv
-          .venv/bin/python -m pip install \
-            --index-url https://download.pytorch.org/whl/cpu \
-            -r apps/grove/workers/torch/requirements.txt
+        run: cargo build --workspace --all-targets
 
       - name: Test
-        run: |
-          cargo test --workspace
-          cargo test --manifest-path apps/grove/Cargo.toml --workspace
+        run: cargo test --workspace
 
       # A test that says the compiler compiles itself has to actually
       # run; it is not a smoke test to be skipped for speed.
@@ -62,9 +43,7 @@ jobs:
         run: cargo test -p zio-core --test self_hosting
 
       - name: Formatting
-        run: |
-          cargo fmt --all -- --check
-          cargo fmt --manifest-path apps/grove/Cargo.toml --all -- --check
+        run: cargo fmt --all -- --check
 
       # `-D warnings` is the bar for anything that indicates a defect.
       # The list below is style and idiom only. Each is named so a new
@@ -81,11 +60,6 @@ jobs:
       #     Fixing them individually is churn in files this repository
       #     is still migrating, and the rewrite hides the line that a
       #     later review actually needs to read.
-      #
-      # The legacy Grove crates are excluded from the lint target: they
-      # are being replaced by the Zio implementation and are deleted at
-      # cutover, so a lint there describes code whose lifetime is
-      # already over. They are still built and tested above.
       - name: Clippy
         run: |
           cargo clippy --workspace --all-targets -- -D warnings \
@@ -184,28 +158,3 @@ jobs:
       # run. The canary check is the point of it.
       - name: Protocol session
         run: python3 tools/lsp_probe.py target/debug/zio-lsp
-
-  grove-service:
-    name: grove service
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: recursive
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - name: CPU worker runtime
-        run: |
-          python -m venv .venv
-          .venv/bin/python -m pip install \
-            --index-url https://download.pytorch.org/whl/cpu \
-            -r apps/grove/workers/torch/requirements.txt
-      - name: Grove HTTP contract
-        run: bash tools/test-grove-zio-http.sh
-      - name: Browser controller contract
-        run: bash -c 'cd apps/grove && ../../target/debug/zio-cli web/browser-contract.zio'
-      - name: Unified deployment
-        run: bash tools/test-grove-deployment.sh

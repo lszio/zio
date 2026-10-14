@@ -9,7 +9,6 @@
 #   GET  environment.one           {environmentId} -> environment with a compose[] list (name -> composeId lookup;
 #                                  compose.one only accepts a composeId and 404s on a name, VERIFIED 2026-10-09)
 #   POST compose.update            {composeId,sourceType:"github",githubId,owner,repository,branch,composePath,autoDeploy}
-#   POST compose.saveEnvironment   {composeId,env:"K=V\n..."}
 #   POST compose.deploy            {composeId}
 #   GET  domain.byComposeId        {composeId} -> list with domainId
 #   POST domain.delete             {domainId}          (domain.deleteByComposeId DOES NOT EXIST: 404 NOT_FOUND)
@@ -37,7 +36,7 @@ env_id="${DOKPLOY_ENVIRONMENT_ID:?DOKPLOY_ENVIRONMENT_ID is required (environmen
 github_id="${DOKPLOY_GITHUB_ID:?DOKPLOY_GITHUB_ID is required (GitHub App provider id)}"
 repo_owner="${GITHUB_REPO_OWNER:-lszio}"
 repo_name="${GITHUB_REPO_NAME:-zio}"
-compose_file="${PREVIEW_COMPOSE_FILE:-docker-compose.preview.yml}"
+compose_file="${PREVIEW_COMPOSE_FILE:-docker-compose.dokploy.yml}"
 project="${PREVIEW_PROJECT:?PREVIEW_PROJECT is required, e.g. zio-pr-123}"
 domain="${PREVIEW_DOMAIN:?PREVIEW_DOMAIN is required, e.g. zio-pr-123.lszio.space}"
 pr_number="${PR_NUMBER:?PR_NUMBER is required}"
@@ -95,11 +94,6 @@ case "${1:?usage: preview-stack.sh [--dry-run] up|delete}" in
       printf 'created stack %s (%s)\n' "$project" "$compose_id"
     fi
     post compose.update "{\"composeId\":\"$compose_id\",\"sourceType\":\"github\",\"githubId\":\"$github_id\",\"owner\":\"$repo_owner\",\"repository\":\"$repo_name\",\"branch\":\"pull/$pr_number/head\",\"composePath\":\"$compose_file\",\"autoDeploy\":true}" >/dev/null
-    preview_env=""
-    for v in "${!GROVE_PREVIEW_TOKEN_@}"; do
-      preview_env+="${v}=${!v}"$'\n'
-    done
-    post compose.saveEnvironment "{\"composeId\":\"$compose_id\",\"env\":$(jq -rn --arg v "$preview_env" '$v|tojson')}" >/dev/null
     post compose.deploy "{\"composeId\":\"$compose_id\",\"title\":\"pr-$pr_number\",\"description\":\"preview for PR #$pr_number\"}" >/dev/null
     # Replace any stale domain pointing at this stack, then create the current one.
     if ! $dry_run; then

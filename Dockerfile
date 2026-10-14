@@ -1,6 +1,5 @@
 # ── build the Astro site ────────────────────────────────────────
 # The site is static: Astro emits apps/site/dist, served by nginx.
-# Language documentation and playground are separate from the Grove application.
 # `public/wasm` is copied verbatim, so tools/build-wasm.sh must run before this
 # image is built — a stale wasm means the page runs an old engine.
 FROM oven/bun:1 AS site-build

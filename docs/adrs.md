@@ -1,6 +1,6 @@
 # Zio 架构决策记录（ADRs）
 
-> 2026-10-07：以下 ADR 保留历史决策与证据；其中独立 Rust 库/旧目录目标由[当前架构](zio-architecture.md)及[批准目录计划](superpowers/plans/2026-10-07-language-first-layout.md)取代。库目标为 Zio，现有 Rust Groiz 业务仍待迁移；历史验收数字不代表本轮重新实跑。
+> 2026-10-07：以下 ADR 保留历史决策与证据；其中独立 Rust 库/旧目录目标由[当前架构](zio-architecture.md)及[批准目录计划](superpowers/plans/2026-10-07-language-first-layout.md)取代。库目标为 Zio；Groiz 是独立项目（[lszio/groiz](https://github.com/lszio/groiz)），不在本仓库。历史验收数字不代表本轮重新实跑。
 
 > 轻量级架构决策日志。每个 ADR 记录一个关键决策的背景、决策、理由、代价、备选方案。
 >
@@ -790,23 +790,23 @@ ADR-012 将并发原语诚实化为同步占位，并把"真并发"推迟为独�
 
 ---
 
-## ADR-017: grove 宿主边界与反馈政策 —— Zio 持策略，Rust 持合同
+## ADR-017: Groiz 宿主边界与反馈政策 —— Zio 持策略，Rust 持合同
 
 **状态**: 🟢 已实现 W00–W17（P1–P4 全部交付并实测）；P2–P4 的边界仍是本决策的约束
 
-> 历史 W00–W17 组件与 demo 交付记录，不表示开放任务或新的 agent 产品主线完成。Groiz 的独立应用定位由 ADR-019 更新；本决策的制品、授权和反馈边界继续有效，实际依赖以 workspace manifest 为准。
+> 历史 W00–W17 组件与 demo 交付记录，不表示开放任务或新的 agent 产品主线完成。Groiz 的独立应用定位由 ADR-019 更新；本决策的制品、授权和反馈边界继续有效，实际依赖以 workspace manifest 为准。宿主 crate 与其工作包记录现属独立项目 Groiz，不在本仓库。
 
 ### 背景
 
 ADR-016 把学习能力放在 Zio（策略/表示）与 `loom`（宿主协议）里，且
-core 不引入任何领域字段。grove 要在此之上加入持久化、权限、预算与
+core 不引入任何领域字段。Groiz 要在此之上加入持久化、权限、预算与
 真实张量训练，直接扩 ADR-016 会让它同时承担"库策略"和"产品宿主"
 两种职责，违反它自己的"核心最小"代价条目。
 
 ### 决策
 
-1. **新增 `grove` crate（`apps/grove/native/learning/`）作为可信宿主**，依赖方向单向：
-   `core` ← `loom` ← `grove` ← （未来的 `grove-app`）。core 仍不认识
+1. **新增可信宿主 crate（历史名 `grove`，现属独立项目 Groiz，不在本仓库）**，依赖方向单向：
+   `core` ← `loom` ← `grove` ← `grove-app`。core 仍不认识
    学习概念；`grove::install` 以外部 attach 注册 native binding，未装配
    能力返回 `capability-denied:`（沿用 ADR-016 的前缀约定）。
 2. **不可变内容先于引用提交**。制品按内容摘要寻址，写入顺序是
@@ -845,11 +845,10 @@ core 不引入任何领域字段。grove 要在此之上加入持久化、权限
 ### 交付与衡量
 
 P1 证据：`cargo test -p grove`（store 22 + feedback 12）、
-`cargo test -p loom --features http --test teacher_contract`（16）、
-`apps/grove/workers/torch/tests/test_training.py`（8）、本地教师真实训练并经
-Rust 宿主查询。W00–W17 全部证据见
-[grove 交付计划](superpowers/plans/2026-10-02-self-learning.md) 第 12 节
-与 [特性矩阵](feature-matrix.md)。
+`cargo test -p loom --features http --test teacher_contract`（16），
+以及本地教师真实训练并经 Rust 宿主查询。宿主侧制品与 W00–W17 全部记录
+随宿主 crate 迁往独立项目 Groiz，不在本仓库；语言仓库保留的对应能力见
+[特性矩阵](feature-matrix.md)。
 
 ---
 
@@ -914,11 +913,13 @@ W13 要求模块可组合，W16 要求多专家可集成。两者都面对同一
 
 ### 交付与衡量
 
-`apps/grove/native/learning/tests/composition_contract.rs`（9）、`ensemble_contract.rs`（12）、
-`grove-app` 的 `ui_contract`（5）与 `learning_e2e`（6），
-`cargo test --workspace --all-features` 364 通过，
-`python -m unittest discover -s apps/grove/workers/torch/tests` 72 通过，
-`grove demo --case modular` 真实演化并组合两个模块、拒绝异构空间、
+以下为独立项目 Groiz 的历史实测（宿主侧合同 composition 9、ensemble 12、
+`grove-app` 的 `ui_contract` 5 与 `learning_e2e` 6、torch 侧 72，以及
+`grove demo --case modular` 的真实演化与组合；均在宿主 crate 迁出本仓库前运行，
+未在本仓库复现）：
+
+`cargo test --workspace --all-features` 364 通过；
+`demo --case modular` 真实演化并组合两个模块、拒绝异构空间、
 联合训练至 1.000 并以整体分数发布。
 
 ---
@@ -927,7 +928,7 @@ W13 要求模块可组合，W16 要求多专家可集成。两者都面对同一
 
 **状态**: ✅ 已采纳（2026-10-05）；新产品主线为 Planned，不代表运行时已实现
 
-**执行入口**：[统一实现计划](superpowers/plans/2026-10-05-zio-grove-convergence.md)。
+**执行入口**：该产品主线的实施计划与工作包随独立项目 Groiz 迁出本仓库。
 T/C/I/H/G 是新的工作包，不重命名历史 L/W；实施前完成符号影响分析，
 提交前检查变更范围。计划与文档同步不代表对应运行时能力已交付。
 
@@ -980,8 +981,8 @@ T/C/I/H/G 是新的工作包，不重命名历史 L/W；实施前完成符号影
    训练消费、候选生成和正式发布是不同事实。
 8. **ACP 先客户端后服务端**。Agent Client Protocol 为双向目标；
    Loom 客户端连接外部 agent，Groiz 教师适配器将回答/示范/程序提议转为
-   有来源、许可的信号；之后由 Groiz 装配 Loom 服务端，目标入口为
-   `grove acp serve`，不默认内置到语言 CLI。两方向分别验收，共享会话/权限，
+   有来源、许可的信号；之后由 Groiz（独立项目）装配 Loom 服务端，服务端入口
+   归其自身仓库，不默认内置到语言 CLI。两方向分别验收，共享会话/权限，
    教师不持发布权限，ACP 不进入语言核心。
 
 ### 理由与代价
@@ -999,8 +1000,7 @@ T/C/I/H/G 是新的工作包，不重命名历史 L/W；实施前完成符号影
 
 ### 验收与当前差距
 
-验收基线为[整体设计第 10 节](self-learning-architecture.md#10-新产品主线与历史交付)
-的 G1–G3：真实 Zio agent → 真实模型生成与执行 → 站点证据与候选差异 →
+验收基线为新产品主线的 G1–G3：真实 Zio agent → 真实模型生成与执行 → 站点证据与候选差异 →
 独立评价 → 人工批准升级。现有 CPU demo、检查点与存储合同继续复用。
 Web train/resume 尚未接执行队列，冻结约束尚未贯穿优化器/提交，反馈消费证明、
 持久进度及同像性逻辑审查待实现。历史 W00–W17 不为这些新能力提供完成证明。

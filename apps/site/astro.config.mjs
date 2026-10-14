@@ -6,9 +6,10 @@ import repositoryLinks from './src/lib/repository-links.mjs';
 import { fileURLToPath } from 'node:url';
 import { getBuildInfo } from './src/lib/build-info.mjs';
 
-// Served from the domain root: / is the landing page, /grove and /agent are
-// real routes. `base` stays '/' — setting it to '/site' (the old layout) emits
-// every asset and link under that prefix, so /grove alone 404s.
+// Served from the domain root: / is the landing page; /agent, /intro, /docs,
+// /libraries, /reference and /playground are the real routes. `base` stays '/'
+// — setting it to '/site' (the old layout) emits every asset and link under
+// that prefix, so the routes alone 404.
 export default defineConfig({
   site: 'https://zio.lszio.space',
   base: '/',
