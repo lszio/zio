@@ -101,19 +101,31 @@ submodule 挂载于 `apps/grove`（克隆用 `--recurse-submodules`）；构建�
 打标签、GitHub Actions 发布流水线与 crates.io 发布流程。
 `push v*` 标签触发 `.github/workflows/release.yml`：先校验标签与 workspace
 版本一致，再跑完整测试（含 submodule 固定的 Groiz 合同）与自举契约，通过后
-构建五个平台目标、发布四个 crate、发布 npm 包
+构建五个平台目标、发布六个 crate、发布两个 npm 包
+[`@lszio/zio`](https://www.npmjs.com/package/@lszio/zio)（CLI：按版本下载
+对应平台归档并运行）与
 [`@lszio/zio-core`](https://www.npmjs.com/package/@lszio/zio-core)（WASM 引擎）、
 推送 Docker 镜像 `ghcr.io/lszio/zio`（含 `zio` 可执行文件），
-并附带校验和与 WASM 产物创建 GitHub Release。`NPM_TOKEN` 需配置为仓库 secret。
+并附带校验和、WASM 产物与 `manifest.json` 组件清单创建 GitHub Release。
+`NPM_TOKEN` 与 `CARGO_REGISTRY_TOKEN` 需配置为仓库 secret。
+
+`zio` 是语言统一入口：REPL、脚本运行、受限执行、`compile`、`image`、
+`build`、`self-build`、`fmt` 格式化与 `lsp` 语言服务都在同一个二进制里；
+`zio lsp` 启动与包内同版本的 `zio-lsp`，编辑器也可直接启动 `zio-lsp`。
 
 发布面一览：
 
-- **可执行文件**：五平台归档（`tools/install.sh` 装配，`bin/zio`、`bin/groiz`）、
-  Docker 镜像 `ghcr.io/lszio/zio`，以及 `zio build --target native` 的单文件应用。
+- **可执行文件**：五平台归档（`tools/install.sh` 装配，`bin/zio`、`bin/zio-lsp`、
+  `bin/groiz`、`bin/zio-env.sh`／`bin/zio-env.ps1`）、Docker 镜像
+  `ghcr.io/lszio/zio`，以及 `zio build --target native` 的单文件应用。
+  `ZIO_TARGET` 决定归档构建与安装的目标三元组；每个归档带
+  `manifest.json`（版本、commit、组件校验和）。
 - **Rust 执行库**：[`zio-core`](https://crates.io/crates/zio-core) crate——嵌入
   宿主执行或编译 Zio 代码（`wasm` feature 构建浏览器引擎）；`zio-host`
-  通用传输/宿主机制随附发布。
-- **npm 包**：`@lszio/zio-core`——同一引擎的 WASM 构建，浏览器或 Node 中
+  通用传输/宿主机制、`zio-js` 原生 JS 引擎绑定、`zio-lsp` 语言服务、
+  `zio-wasi` WASI 运行时与 `zio-cli` 语言入口随同版本发布。
+- **npm 包**：`@lszio/zio`——CLI 包装，按版本下载匹配的平台归档并运行；
+  `@lszio/zio-core`——同一引擎的 WASM 构建，浏览器或 Node 中
   定位并加载 Zio 运行时（`ZioSession`），与原生 CLI 行为一致。
 
 ## 落地页
@@ -132,7 +144,7 @@ bun run build      # 产出 apps/site/dist
   [`;; doc:` 注释](docs/libdoc-convention.md)自动生成——源码注释是唯一文档来源。
 - 文档：`/docs/`、`/book/`、`/blog/` 从仓库 Markdown 构建；Groiz 介绍在独立的 `/grove/` 路由，应用源码在 `apps/grove/`。
 - 引擎：`apps/site/public/wasm/` 是提交的 WASM 产物。改过 `langs/core/src/` 或
-  `libs/std/core.zio` 后先跑 `./tools/build-wasm.sh`，再构建站点，避免运行旧引擎。
+  `langs/core/assets/std/core.zio` 后先跑 `./tools/build-wasm.sh`，再构建站点，避免运行旧引擎。
 - 路径前缀来自 `astro.config.mjs` 的 `base`；WASM 加载沿用 `src/lib/engine.ts` 的
   `BASE_URL` 拼接，避免相对资源路径随页面层级变化。
 - 镜像：`Dockerfile` 是「bun 构建 → nginx 托管」两阶段，`docker-compose.dokploy.yml`

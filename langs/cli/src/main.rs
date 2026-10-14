@@ -697,6 +697,16 @@ fn main() {
         }
         return;
     }
+    if args.first().is_some_and(|arg| arg == "fmt") {
+        if let Err(error) = commands::run_fmt(&args[1..]) {
+            eprintln!("Error: {error}");
+            std::process::exit(1);
+        }
+        return;
+    }
+    if args.first().is_some_and(|arg| arg == "lsp") {
+        std::process::exit(commands::run_lsp(&args[1..]));
+    }
     if args.first().is_some_and(|arg| arg == "image") {
         if let Err(error) = commands::run_image(&args[1..]) {
             eprintln!("Error: {error}");

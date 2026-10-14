@@ -22,15 +22,15 @@ use crate::value::{Function, Macro, NativeFn, Value};
 const SOURCES: [(&str, &str); 3] = [
     (
         "<zio-interpreter/reader>",
-        include_str!("../../interpreter/reader.zio"),
+        include_str!("../assets/interpreter/reader.zio"),
     ),
     (
         "<zio-interpreter/expand>",
-        include_str!("../../interpreter/expand.zio"),
+        include_str!("../assets/interpreter/expand.zio"),
     ),
     (
         "<zio-interpreter/evaluator>",
-        include_str!("../../interpreter/evaluator.zio"),
+        include_str!("../assets/interpreter/evaluator.zio"),
     ),
 ];
 

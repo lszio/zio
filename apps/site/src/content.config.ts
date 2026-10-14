@@ -35,7 +35,14 @@ const blog = defineCollection({
 // Zio sources (libs/). One entry per file; the source comment is the only
 // place documentation lives.
 const api = defineCollection({
-  loader: zioLibDocs(fileURLToPath(new URL('../../../libs/', import.meta.url))),
+  loader: zioLibDocs([
+    { dir: fileURLToPath(new URL('../../../libs/', import.meta.url)), prefix: '' },
+    // The stdlib source is embedded in zio-core; keep its reference pages.
+    {
+      dir: fileURLToPath(new URL('../../../langs/core/assets/std/', import.meta.url)),
+      prefix: 'std/',
+    },
+  ]),
   schema: z.object({
     title: z.string(),
     file: z.string(),

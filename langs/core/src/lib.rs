@@ -12,6 +12,7 @@ pub mod context;
 pub mod env;
 pub mod error;
 pub mod eval;
+pub mod fmt;
 pub mod image;
 pub mod interpreter;
 pub mod io;
@@ -27,5 +28,5 @@ pub mod wasm;
 pub mod zos;
 /// Return the embedded core standard library source.
 pub fn stdlib_source() -> &'static str {
-    include_str!("../../../libs/std/core.zio")
+    include_str!("../assets/std/core.zio")
 }

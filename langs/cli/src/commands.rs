@@ -382,3 +382,141 @@ impl IoHost for GrantIoHost {
             .is_dir())
     }
 }
+
+// ── zio fmt ───────────────────────────────────────────────────────
+
+const FMT_USAGE: &str = "Usage: zio fmt [--write] [--check] [FILE]...\n\
+       \x20        --write   write the formatted source back to each file\n\
+       \x20        --check   report files that are not formatted, exit 1 if any\n\
+       \x20        with no FILE, read the source from stdin and write it to stdout\n";
+
+/// Format Zio source, one file or stdin, and report what changed.
+///
+/// The default is stdout, because a formatter is a tool whose author
+/// runs it on files under version control: rewriting the tree by
+/// default would turn a typo into a diff nobody asked for. `--write`
+/// and `--check` are the two explicit directions.
+pub fn run_fmt(argv: &[String]) -> Result<(), EvalError> {
+    let mut write = false;
+    let mut check = false;
+    let mut files: Vec<String> = Vec::new();
+    let mut index = 0;
+    while index < argv.len() {
+        match argv[index].as_str() {
+            "--write" | "-w" => write = true,
+            "--check" => check = true,
+            "--help" | "-h" => {
+                print!("{FMT_USAGE}");
+                return Ok(());
+            }
+            other if other.starts_with('-') && other != "-" => {
+                return Err(EvalError::invalid_form(format!(
+                    "fmt: unknown option {other}"
+                )));
+            }
+            other => files.push(other.to_string()),
+        }
+        index += 1;
+    }
+    if write && check {
+        return Err(EvalError::invalid_form(
+            "fmt: --write and --check are different directions; pick one",
+        ));
+    }
+
+    if files.is_empty() {
+        let mut source = String::new();
+        std::io::Read::read_to_string(&mut std::io::stdin(), &mut source)
+            .map_err(|e| EvalError::custom(format!("fmt: cannot read stdin: {e}")))?;
+        let formatted = zio_core::fmt::format_source(&source)?;
+        if check {
+            if formatted != source {
+                println!("stdin is not formatted");
+                std::process::exit(1);
+            }
+            return Ok(());
+        }
+        print!("{formatted}");
+        return Ok(());
+    }
+
+    let mut unformatted = Vec::new();
+    for file in &files {
+        let source = std::fs::read_to_string(file)
+            .map_err(|e| EvalError::custom(format!("fmt: cannot read {file}: {e}")))?;
+        let formatted = zio_core::fmt::format_source(&source)?;
+        if check {
+            if formatted != source {
+                unformatted.push(file.clone());
+            }
+            continue;
+        }
+        if write {
+            if formatted != source {
+                std::fs::write(file, &formatted)
+                    .map_err(|e| EvalError::custom(format!("fmt: cannot write {file}: {e}")))?;
+                println!("formatted {file}");
+            }
+        } else {
+            print!("{formatted}");
+        }
+    }
+    if check && !unformatted.is_empty() {
+        for file in &unformatted {
+            println!("would reformat {file}");
+        }
+        std::process::exit(1);
+    }
+    Ok(())
+}
+
+// ── zio lsp ───────────────────────────────────────────────────────
+
+const LSP_USAGE: &str = "Usage: zio lsp\n\
+       \x20        start the language server that ships beside this binary (--stdio)\n";
+
+/// Start the language server that belongs to this `zio`.
+///
+/// The language entry point is one binary a user installs, so the
+/// language server is reached through it: `zio lsp` runs the `zio-lsp`
+/// installed next to it, with the arguments passed through. Editors may
+/// still start `zio-lsp` directly — both paths run the same server.
+pub fn run_lsp(argv: &[String]) -> i32 {
+    if argv.iter().any(|arg| arg == "--help" || arg == "-h") {
+        print!("{LSP_USAGE}");
+        return 0;
+    }
+    let current = std::env::current_exe()
+        .map_err(|error| EvalError::custom(format!("lsp: cannot locate this binary: {error}")))
+        .and_then(|exe| {
+            let dir = exe.parent().ok_or_else(|| {
+                EvalError::custom("lsp: this binary has no directory to look beside")
+            })?;
+            let suffix = if cfg!(windows) { ".exe" } else { "" };
+            let sibling = dir.join(format!("zio-lsp{suffix}"));
+            if sibling.is_file() {
+                Ok(sibling)
+            } else {
+                // Without a sibling, let the platform resolve it: an
+                // install that puts both binaries on PATH still works.
+                Ok(std::path::PathBuf::from(format!("zio-lsp{suffix}")))
+            }
+        });
+    let server = match current {
+        Ok(server) => server,
+        Err(error) => {
+            eprintln!("Error: {error}");
+            return 1;
+        }
+    };
+    match std::process::Command::new(&server).args(argv).status() {
+        Ok(status) => status.code().unwrap_or(1),
+        Err(error) => {
+            eprintln!(
+                "Error: cannot start the language server at {}: {error}",
+                server.display()
+            );
+            1
+        }
+    }
+}

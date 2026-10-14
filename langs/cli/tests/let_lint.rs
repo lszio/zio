@@ -120,15 +120,19 @@ fn walk(rel: &str, expr: &Sexp, out: &mut Vec<String>) {
     }
 }
 
-fn lint_file(rel: &str) -> Vec<String> {
+fn lint_file(rel: &str) -> Option<Vec<String>> {
     let path = workspace_root().join(rel);
+    // A published crate ships without the checkout this lint scans.
+    if !path.is_file() {
+        return None;
+    }
     let source = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {rel}: {e}"));
     let mut out = Vec::new();
     for form in reader::reader::read_program(&source).unwrap_or_else(|e| panic!("parse {rel}: {e}"))
     {
         walk(rel, &form, &mut out);
     }
-    out
+    Some(out)
 }
 
 #[test]
@@ -146,9 +150,9 @@ fn zio_sources_have_no_parallel_let_misuse() {
         "examples/macros.zio",
         "examples/datalog-concept.zio",
         "examples/zos-concept.zio",
-        "libs/std/core.zio",
+        "langs/core/assets/std/core.zio",
     ] {
-        violations.extend(lint_file(rel));
+        violations.extend(lint_file(rel).unwrap_or_default());
     }
     assert!(
         violations.is_empty(),

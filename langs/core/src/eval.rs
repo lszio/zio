@@ -972,7 +972,7 @@ mod tests {
         // defstruct creates constructor + accessors via stdlib macro.
         // Load the full stdlib wrapped in (do ...) like the CLI does.
         let ctx = make_ctx();
-        let stdlib = include_str!("../../../libs/std/core.zio");
+        let stdlib = include_str!("../assets/std/core.zio");
         let wrapped = format!("(do\n{stdlib}\n)");
         let s = test_read(&wrapped).unwrap();
         eval_in_context(&s, &ctx).unwrap();
@@ -1000,7 +1000,7 @@ mod tests {
     #[test]
     fn test_stdlib_nth_and_last_use_function_tail_calls() {
         let ctx = make_ctx();
-        let stdlib = include_str!("../../../libs/std/core.zio");
+        let stdlib = include_str!("../assets/std/core.zio");
         let stdlib = test_read(&format!("(do\n{stdlib}\n)")).unwrap();
         eval_in_context(&stdlib, &ctx).unwrap();
 
@@ -1017,11 +1017,11 @@ mod tests {
     #[test]
     fn test_macro_example_generates_variadic_logger_functions() {
         let ctx = make_ctx();
-        let stdlib = include_str!("../../../libs/std/core.zio");
+        let stdlib = include_str!("../assets/std/core.zio");
         let stdlib = test_read(&format!("(do\n{stdlib}\n)")).unwrap();
         eval_in_context(&stdlib, &ctx).unwrap();
 
-        let example = include_str!("../../../examples/macros.zio");
+        let example = include_str!("../assets/tests/macros.zio");
         let example = test_read(&format!("(do\n{example}\n)")).unwrap();
 
         assert_eq!(eval_in_context(&example, &ctx).unwrap(), Value::Nil);
@@ -1444,7 +1444,7 @@ mod tests {
     /// exercise stdlib-level functions (assoc, reduce-kv, last, empty?).
     fn run_std(program: &str) -> Result<Value, EvalError> {
         let ctx = make_ctx();
-        let stdlib = include_str!("../../../libs/std/core.zio");
+        let stdlib = include_str!("../assets/std/core.zio");
         let s = test_read(&format!("(do\n{stdlib}\n{program}\n)")).unwrap();
         eval_in_context(&s, &ctx)
     }

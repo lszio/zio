@@ -8,7 +8,7 @@
 
 - **现有公开语义**：下文描述当前 reader、AST 求值器、标准库及宿主边界；例子中的“预期”是语义说明，未注明实跑的例子不代表本轮已执行。
 - **三执行面合同**：`langs/core/tests/toolchain_contract.rs` 使用 fresh context 对照 AST、显式编译／VM 与 Zio 元循环；编译期宏副作用仍按各入口的阶段合同分别验证，不能强行混成同一时点。
-- **Zio 元循环执行面**：`langs/interpreter/` 中的 reader、evaluator、expand 用 Zio 实现；默认执行器不变，显式入口见下文。Rust 仍引导安装这些实现并提供值、环境、对象、宿主及编译产物执行机制。
+- **Zio 元循环执行面**：`langs/core/assets/interpreter/` 中的 reader、evaluator、expand 用 Zio 实现；默认执行器不变，显式入口见下文。Rust 仍引导安装这些实现并提供值、环境、对象、宿主及编译产物执行机制。
 - **规划**：镜像、独立应用导出、WASI、原生 JS／Rust 引擎及 inline／原始外语块见[语言工具链设计](superpowers/specs/2026-10-11-zio-language-toolchain-design.md)与[实施计划](superpowers/plans/2026-10-11-zio-language-toolchain.md)，不是当前语法。
 
 实施及实跑状态以[特性矩阵](feature-matrix.md)和实施计划的证据记录为准。本文不预填新合同通过，不作性能推断。
@@ -32,8 +32,8 @@ cargo run -p zio-cli -- self-build --verify
 bash tools/smoke-self-build.sh
 ```
 
-前端由 `langs/interpreter/{reader,expand,evaluator}.zio` 与
-`langs/compiler/{analyze,compiler}.zio` 组成：读取目标源码、宏展开、词法绑定、
+前端由 `langs/core/assets/interpreter/{reader,expand,evaluator}.zio` 与
+`langs/core/assets/compiler/{analyze,compiler}.zio` 组成：读取目标源码、宏展开、词法绑定、
 尾位置与 capture/global 选择由 Zio 表达。Rust 保留引导解析、值/环境/错误投影、
 指令执行、wire 校验和 float bits，不把目标源码交回 Rust reader 或 expander。
 

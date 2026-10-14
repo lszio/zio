@@ -34,7 +34,7 @@ bun run build
 bun run preview
 ```
 
-站点使用已提交的 WASM 引擎。修改 `langs/core/src/` 或 `libs/std/core.zio` 后，在仓库根目录重新生成引擎，然后构建站点，不能只更新页面而继续运行旧引擎：
+站点使用已提交的 WASM 引擎。修改 `langs/core/src/` 或 `langs/core/assets/std/core.zio` 后，在仓库根目录重新生成引擎，然后构建站点，不能只更新页面而继续运行旧引擎：
 
 ```sh
 rustup target add wasm32-unknown-unknown

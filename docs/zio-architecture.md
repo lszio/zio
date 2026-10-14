@@ -18,7 +18,7 @@ Rust 是引导与机制层，承载 Reader、值/内存、执行后端、可信�
 
 | 层 | 当前物理位置 | 职责与状态 |
 |---|---|---|
-| 语言 | `langs/core/`、`langs/cli/`、`langs/compiler/` | Reader、AST evaluator、宏、Experimental ZOS、字节码运行时、Zio 编译器与普通 CLI；直接平铺，不设 `langs/zio` |
+| 语言 | `langs/core/`、`langs/cli/`、`langs/core/assets/compiler/` | Reader、AST evaluator、宏、Experimental ZOS、字节码运行时、Zio 编译器与普通 CLI；直接平铺，不设 `langs/zio` |
 | 标准库 | `libs/std/` | Zio `core.zio`、persistent、entity、protocol、pipeline、datalog；状态分别以特性矩阵为准 |
 | 领域库 | `libs/numa/`、`libs/loom/`、`libs/learning/` | Zio vector、agent/proposer、learn/memory 与学习子模块；不因目录迁移而新增功能或发布包 |
 | 基础设施 | `contribs/native/loom/` | 已有通用 Rust 模型/工具合同、预算、传输与教师适配；Rust crate 名仍为 `loom`，不是 `libs/loom/` 的 Zio 库 |
@@ -50,8 +50,8 @@ flowchart TD
 2026-10-07 首轮切换移动了源树、库文件与消费路径，取消旧根目录入口，
 没有兼容别名、symlink 或空占位目录。它不改变下面的能力验收口径：
 
-- Rust 引导实现仍在 `langs/core/`；当前已有 bytecode 运行时和 `langs/compiler/compiler.zio`，
-  `langs/interpreter/` 提供 Zio reader／元循环 evaluator／expand；L02 已验收完整 Zio 前端三代便携字节码固定点，镜像及优化 ZIR/JIT 仍属规划。
+- Rust 引导实现仍在 `langs/core/`；当前已有 bytecode 运行时和 `langs/core/assets/compiler/compiler.zio`，
+  `langs/core/assets/interpreter/` 提供 Zio reader／元循环 evaluator／expand；L02 已验收完整 Zio 前端三代便携字节码固定点，镜像及优化 ZIR/JIT 仍属规划。
 - `.zio` 库已归入 `libs/`；Datalog 已有合取查询子集，规则、聚合等完整能力仍按特性矩阵区分，不能用目录迁移替代功能验收。
 - Groiz 的 `apps/grove/main.zio` 按宿主授权组合 `libs/loom/agent.zio`；`apps/grove/selection.zio`
   已接管候选筛选，CLI 与 HTTP 共用一条 typed adapter，原 Rust `Candidate`/`non_dominated` 已删除。
@@ -83,7 +83,7 @@ flowchart TD
 ```text
 langs/cli/ (zio-cli：REPL、脚本、模块根配置)
 └── langs/core/ (zio-core：Reader、AST eval/apply、bytecode、ZOS、WASM 入口)
-langs/compiler/compiler.zio (Zio 编译器，消费运行时机制)
+langs/core/assets/compiler/compiler.zio (Zio 编译器，消费运行时机制)
 contribs/{language-server,tree-sitter-zio,editors}/ (语言工具与编辑器适配)
 
 apps/grove/native/app/ (grove-app，binary grove)
@@ -115,10 +115,10 @@ Groiz 是 `apps/grove/` 独立应用，不是语言 playground；其业务逐步
 |---|---|---|
 | AST 求值与语言引导 | `langs/core/`、`langs/cli/` | 默认执行器保持不变；L00–L02 原生/便携 VM/WASM 合同实跑，不新增性能或其他平台结论 |
 | 字节码执行与模块制品 | `langs/core/src/bytecode.rs` | 有 opcode、闭包、模块与序列化机制；模块制品不等于运行时镜像 |
-| Zio 编译器 | `langs/compiler/{analyze,compiler}.zio` | Zio 表达绑定/捕获/global 选择、尾位置、展开与代码生成；Rust 保留 VM/wire/值与投影机制 |
+| Zio 编译器 | `langs/core/assets/compiler/{analyze,compiler}.zio` | Zio 表达绑定/捕获/global 选择、尾位置、展开与代码生成；Rust 保留 VM/wire/值与投影机制 |
 | 自举对照测试与 CLI | `langs/core/tests/self_hosting.rs`、`tools/smoke-self-build.sh` | L02：fresh context 安装整个前端，Stage 1/2/3 文件字节相同，编译执行 sum=10、closure=15；缺失 helper 不回退 Stage0 |
 | LSP 与语法资源 | `contribs/language-server/`、`contribs/tree-sitter-zio/`、`contribs/editors/` | 已有代码/资源；完整功能、安装与发行仍需验收 |
-| 元循环求值器 | `langs/interpreter/`、`langs/core/src/interpreter.rs` | 显式第三执行面：Zio reader/eval/apply/expand；同一实现纳入 L02 编译前端，Rust 引导与宿主机制保留 |
+| 元循环求值器 | `langs/core/assets/interpreter/`、`langs/core/src/interpreter.rs` | 显式第三执行面：Zio reader/eval/apply/expand；同一实现纳入 L02 编译前端，Rust 引导与宿主机制保留 |
 | 运行时镜像、bin/WASM 导出、完整开发发行 | 新规格与主计划 | M00/M01 已验收图格式与静止镜像保存/恢复；镜像 CLI（M02）、导出与发行仍属规划 |
 
 第一条主线以现有 AST、bytecode、Zio 编译器为引导基础，固定语言语义与

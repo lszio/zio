@@ -165,7 +165,16 @@ fn declared_closure(modules: &BTreeMap<String, String>) -> Result<(), EvalError>
 }
 
 pub fn run_build(argv: &[String]) -> Result<(), EvalError> {
-    let args = parse_build(argv)?;
+    let args = match parse_build(argv) {
+        Ok(args) => args,
+        Err(error) => {
+            // The usage line travels with the failure: a build that
+            // refuses a flag that only its usage text documents is a
+            // build that leaves the caller guessing.
+            eprint!("{BUILD_USAGE}");
+            return Err(error);
+        }
+    };
     if args.target != "native" && args.target != "browser" && args.target != "wasm-wasi" {
         return Err(EvalError::invalid_form(format!(
             "build: unsupported target {:?}; expected native, browser or wasm-wasi",

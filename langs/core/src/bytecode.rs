@@ -2,7 +2,7 @@
 //!
 //! This module is the only thing the rest of the evaluator calls into when a
 //! function value carries `compiled: Some(closure)`. The compiler living in
-//! `langs/compiler/compiler.zio` lowers Zio source into the constant pool and
+//! `langs/core/assets/compiler/compiler.zio` lowers Zio source into the constant pool and
 //! opcode table this VM understands; `bootstrap_compiler` installs the
 //! interpreted frontend bundle (reader, expand, evaluator, analyze,
 //! compiler), `run_source`/`execute_module` run installed programs, and
@@ -255,14 +255,26 @@ impl SourceProvenance {
 /// part as ordinary Zio source; every later stage executes the same
 /// content as one compiled artifact.
 const COMPILER_PARTS: [(&str, &str); 5] = [
-    ("reader.zio", include_str!("../../interpreter/reader.zio")),
-    ("expand.zio", include_str!("../../interpreter/expand.zio")),
+    (
+        "reader.zio",
+        include_str!("../assets/interpreter/reader.zio"),
+    ),
+    (
+        "expand.zio",
+        include_str!("../assets/interpreter/expand.zio"),
+    ),
     (
         "evaluator.zio",
-        include_str!("../../interpreter/evaluator.zio"),
+        include_str!("../assets/interpreter/evaluator.zio"),
     ),
-    ("analyze.zio", include_str!("../../compiler/analyze.zio")),
-    ("compiler.zio", include_str!("../../compiler/compiler.zio")),
+    (
+        "analyze.zio",
+        include_str!("../assets/compiler/analyze.zio"),
+    ),
+    (
+        "compiler.zio",
+        include_str!("../assets/compiler/compiler.zio"),
+    ),
 ];
 
 /// The single deterministic bundle text: the five parts concatenated on
@@ -371,7 +383,7 @@ pub enum BindingSource {
     Global(String),
 }
 
-/// One VM instruction. Opcodes mirror what `langs/compiler/compiler.zio`
+/// One VM instruction. Opcodes mirror what `langs/core/assets/compiler/compiler.zio`
 /// emits; operands are typed so the VM dispatch is a tight match.
 #[derive(Debug, Clone)]
 pub enum Instruction {
@@ -440,7 +452,7 @@ pub enum Constant {
 // ─── Bootstrap entry points ─────────────────────────────────────────────
 
 /// Native host hooks the Zio compiler expects. Every name here is referenced
-/// from `langs/compiler/compiler.zio`. Names are kept under the `compiler/`
+/// from `langs/core/assets/compiler/compiler.zio`. Names are kept under the `compiler/`
 /// namespace to match the source.
 pub fn register(ctx: &EvalContext) {
     // The install hooks need the context's environment so they can install

@@ -40,6 +40,11 @@ impl Default for Caps {
 
 static CAPS: OnceLock<Caps> = OnceLock::new();
 
+// The entry point an installing host uses to raise or lower the
+// transport's read limits. Nothing installs it today, so the transport
+// runs on `Caps::default()`; the setter exists rather than an inlined
+// default so a host that needs different limits has one place to go.
+#[allow(dead_code)]
 pub(crate) fn configure(caps: Caps) {
     let _ = CAPS.set(caps);
 }

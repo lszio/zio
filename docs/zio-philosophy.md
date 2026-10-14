@@ -17,7 +17,7 @@ Zio 是一门以同像性（homoiconicity）为基石的通用 Lisp 语言。代
 
 当前可检查的实现基础包括 Rust Reader、AST eval/apply、宏、标准库与
 Experimental ZOS 子集，以及 `langs/core/src/bytecode.rs` 的字节码运行时、
-`langs/compiler/compiler.zio` 的 Zio 编译器和 `langs/core/tests/self_hosting.rs`
+`langs/core/assets/compiler/compiler.zio` 的 Zio 编译器和 `langs/core/tests/self_hosting.rs`
 的自举对照测试。源码存在不等于本轮实跑验收，也不等于完整目标语义已经自举。
 
 四层目录保持 `langs/`、`libs/`、`contribs/`、`apps/`：语言与工具链在

@@ -1021,7 +1021,7 @@ FFI 表面此前有两种不一致的形态：wasm 侧 `js/eval` 把 JS 结果 D
 1. **链式调用不进运行时**。不引入方法链 sugar、不改动 eval/apply。链式由
    bootstrap 线程宏 `->`（首参插入）与 `->>`（尾参插入）承担，适配一切值：
    ZOS 对象（`(-> obj (gf a) (gf b))`）、map、JS 句柄、普通函数。宏在
-   `libs/std/core.zio`，展开期构造，零运行时新语义。
+   `langs/core/assets/std/core.zio`，展开期构造，零运行时新语义。
 2. **FFI 值是一等对象，不是字符串**。wasm 侧 JS 结果映射规则：null/undefined
    → nil，boolean/number/string → 对应原始值（整值浮点归 Integer），其余
    一律包装为不透明 `#<js-object>` ZOS 对象（原子分配 identity）。句柄可用

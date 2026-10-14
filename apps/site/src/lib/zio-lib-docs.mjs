@@ -117,14 +117,19 @@ function walkZio(dir, out = []) {
 
 /**
  * Content-layer loader: parse doc comments out of the repo's Zio libraries
- * (libs/) and expose one collection entry per file, rendered as markdown.
+ * and expose one collection entry per file, rendered as markdown.
+ *
+ * `roots` is a list of `{ dir, prefix }` pairs: a prefix keeps ids stable
+ * when a library lives outside `libs/` — the embedded stdlib source ships
+ * inside the zio-core crate as its canonical home.
  */
-export function zioLibDocs(libsDir) {
+export function zioLibDocs(roots) {
   return {
     name: 'zio-lib-docs',
     load: async ({ store, renderMarkdown, generateDigest }) => {
-      for (const path of walkZio(libsDir)) {
-        const rel = relative(libsDir, path);
+      for (const { dir, prefix } of roots) {
+      for (const path of walkZio(dir)) {
+        const rel = prefix + relative(dir, path);
         const parsed = parseZioDoc(readFileSync(path, 'utf8'));
         const id = rel.replace(/\.zio$/, '').replace(/\//g, '-');
         const symbols = parsed.sections.flatMap((s) =>
@@ -160,6 +165,7 @@ export function zioLibDocs(libsDir) {
           rendered,
           digest: generateDigest(body),
         });
+      }
       }
     },
   };
