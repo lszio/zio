@@ -9,7 +9,36 @@ use crate::context::EvalEngine;
 use crate::env::Env;
 use crate::error::EvalError;
 use crate::special::TailResult;
-use crate::value::{NativeFn, Value, is_truthy};
+use crate::value::{NativeFn, NativeMetadata, Value, is_truthy};
+
+// ── Registration metadata (query service, ZIO-004) ─────────────────
+// Static metadata is bound to the NativeFn identity at its registration
+// site; the doc text follows `docs/libdoc-convention.md`, first line
+// `(name args) — summary`.
+
+static MAP_META: NativeMetadata = NativeMetadata {
+    params: &["f", "coll"],
+    rest: None,
+    doc: "(map f coll) — apply f to each element of a list or vector and return a list holding the results, in order. Example: (map inc [1 2 3]) => (2 3 4).",
+};
+
+static FILTER_META: NativeMetadata = NativeMetadata {
+    params: &["pred", "coll"],
+    rest: None,
+    doc: "(filter pred coll) — return a list of the elements of a list or vector for which pred is truthy, preserving order. Example: (filter even? [1 2 3 4]) => (2 4).",
+};
+
+static REDUCE_META: NativeMetadata = NativeMetadata {
+    params: &["f", "init", "coll"],
+    rest: None,
+    doc: "(reduce f init coll) — fold f over a list or vector, starting from init: (f ... (f (f init x1) x2) ...). Example: (reduce + 0 [1 2 3]) => 6.",
+};
+
+static APPLY_META: NativeMetadata = NativeMetadata {
+    params: &["f"],
+    rest: None,
+    doc: "(apply f [args]) — call f with each element of the list or vector as an argument; with a single argument f is called with no arguments. Example: (apply + [1 2 3]) => 6.",
+};
 
 // ── Conj / Into / Unique ───────────────────────────────────────────
 
@@ -526,19 +555,19 @@ pub fn register(env: &Arc<Env>) {
     // Sequence operations
     env.set(
         "map".into(),
-        Value::NativeFunction(NativeFn::new("map", map_fn)),
+        Value::NativeFunction(NativeFn::new("map", map_fn).with_metadata(&MAP_META)),
     );
     env.set(
         "filter".into(),
-        Value::NativeFunction(NativeFn::new("filter", filter_fn)),
+        Value::NativeFunction(NativeFn::new("filter", filter_fn).with_metadata(&FILTER_META)),
     );
     env.set(
         "reduce".into(),
-        Value::NativeFunction(NativeFn::new("reduce", reduce_fn)),
+        Value::NativeFunction(NativeFn::new("reduce", reduce_fn).with_metadata(&REDUCE_META)),
     );
     env.set(
         "apply".into(),
-        Value::NativeFunction(NativeFn::new("apply", apply_fn)),
+        Value::NativeFunction(NativeFn::new("apply", apply_fn).with_metadata(&APPLY_META)),
     );
     env.set(
         "get".into(),

@@ -12,6 +12,8 @@ pub mod json;
 pub mod macroexpand;
 pub mod numeric;
 pub mod predicates;
+pub mod query;
+mod query_metadata;
 pub mod strings;
 pub mod zos_access;
 
@@ -31,6 +33,10 @@ pub fn setup_env(env: &Arc<Env>) {
     buffer::register(env);
     concurrency::register(env);
     json::register(env);
+
+    // Structured query service (ZIO-004): read-only bindings that describe
+    // root-visible names, special forms, loaded modules, and capabilities.
+    query::register(env);
 
     // Error signaling (implemented with the condition-system form handler)
     env.set(

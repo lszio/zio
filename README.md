@@ -55,6 +55,7 @@ cd zio
 cargo run -p zio-cli
 cargo run -p zio-cli -- examples/toolchain/semantics.zio
 cargo run -p zio-cli -- examples/toolchain/meta-eval.zio
+cargo run -p zio-cli -- examples/toolchain/query.zio
 ```
 
 ```text
@@ -85,10 +86,10 @@ source /tmp/zio/bin/zio-env.sh    # PATH 与 ZIO_PATH
 /tmp/zio/bin/zio program.zio      # 语言
 ```
 
-当前原生发行树与浏览器 WASM 分开构建。规划中的应用 bin 首轮是
-bytecode + runtime 打包，不是机器码 AOT；应用 bin/WASM 不携带
-LSP 等开发工具，动态能力按真实依赖保留。WASM 浏览器与 WASI 目标分别验收。
-外部语言引擎尚不能宣称已全套捆绑。Groiz 是独立项目
+当前原生发行树与浏览器 WASM 分开构建。应用导出已实现为 source/bytecode/镜像
+payload + runtime 打包，不是机器码 AOT；应用 bin/WASM 不携带 LSP 等开发工具，
+动态能力按真实依赖保留。native JS（J00）已接入 CLI，跨宿主/执行面一致性及完整
+发行仍待验收；历史与本次证据见[特性矩阵](docs/feature-matrix.md)。Groiz 是独立项目
 [lszio/groiz](https://github.com/lszio/groiz)，不在本仓库，语言仓库不承载其业务与落地页。
 
 [`docs/release.md`](docs/release.md) 记录现有发行方式、目标边界、
@@ -122,7 +123,7 @@ LSP 等开发工具，动态能力按真实依赖保留。WASM 浏览器与 WASI
   `zio-wasi` WASI 运行时与 `zio-cli` 语言入口随同版本发布。
 - **npm 包**：`@lszio/zio`——CLI 包装，按版本下载匹配的平台归档并运行；
   `@lszio/zio-core`——同一引擎的 WASM 构建，浏览器或 Node 中
-  定位并加载 Zio 运行时（`ZioSession`），与原生 CLI 行为一致。
+  定位并加载 Zio 运行时（`ZioSession`）；与 native 的 JS 宿主及执行面一致性仍须逐项验收。
 
 ## 落地页
 
@@ -150,8 +151,8 @@ bun run build      # 产出 apps/site/dist
 
 [`examples/manifest.tsv`](examples/manifest.tsv) 中列出的所有文件都可由
 CLI 运行，并受可执行示例合同测试保护。`datalog-concept.zio` 只演示查询
-数据是可读取的 Zio 值，并不执行 Datalog 查询；Datalog evaluator 仍是
-[Planned](docs/feature-matrix.md)。`#{...}` set literal 现已可用（map-backed
+数据是可读取的 Zio 值，并不执行 Datalog 查询；独立的 `libs/std/datalog.zio`
+查询子集为 [Experimental](docs/feature-matrix.md)，规则/聚合仍待实现。`#{...}` set literal 现已可用（map-backed
 `set`，由 bootstrap 提供），quasiquote（`` ` `` / `~` / `~@`）为
 Experimental，状态见[特性矩阵](docs/feature-matrix.md)。
 
@@ -167,7 +168,15 @@ Experimental，状态见[特性矩阵](docs/feature-matrix.md)。
 | [语言与工具链设计](docs/superpowers/specs/2026-10-11-zio-language-toolchain-design.md) | 通用 Lisp、自举、运行时镜像、外部引擎与完整发行目标（规划） |
 | [语言与工具链计划](docs/superpowers/plans/2026-10-11-zio-language-toolchain.md) | 分阶段实施与验收；不是本轮已交付能力 |
 | [docs/eval-pipeline.md](docs/eval-pipeline.md) | Eval 循环、TCO、宏、编译器管线 |
-| [docs/roadmap.md](docs/roadmap.md) | 分 Phase 路线图、交付标准、依赖分析、应用蓝图 |
+| [Zio 后续任务清单](docs/zio-task-list.md) | 聚焦语言、AI 使用闭环、长期运行、工具库与发行的优先级、依赖和验收 |
+| [docs/roadmap.md](docs/roadmap.md) | 当前任务入口与历史 Phase、交付标准、应用蓝图 |
+| [语言与生态评审](docs/language-ecosystem-review.md) | 当前设计、实现边界、语义风险与文档冲突（2026-10-15） |
+| [关键设计决策](docs/language-design-decisions.md) | 30 项设计抉择、思维导图、备选与迁移验收（讨论草案） |
+| [完整生态路线图](docs/ecosystem-roadmap.md) | 编译器、执行器、项目工具、包与库、发行的阶段门槛（建议草案） |
+| [AI 交互设计](docs/ai-language-interaction.md) | help/结构化查询已实现；condition/restart、语言执行 harness 与解释器 MCP 服务仍为规划 |
+| [编译器、VM 与 GC 入门](blog/05-compiler-vm-gc.md) | 从闭包到内存回收与暂停执行的基础解释 |
+| [持续自我进化设计](docs/continuous-evolution-design.md) | Groiz 源码对照、持久运行、代码/模型/脚手架演化与采用闭环（草案） |
+| [Groiz 群体协作设计](docs/collective-intelligence-design.md) | 多个自主实例的联结、分工、讨论、预算与成果交换（草案） |
 | [docs/synthesis-plan.md](docs/synthesis-plan.md) | 程序合成模块计划：学习型提议（LLM 主线，遗传/RL/NN 扩展位）× eval 裁判 × 语言化记忆（含论文与汇报规划） |
 | [docs/adrs.md](docs/adrs.md) | 架构决策记录（ADR-001 ~ ADR-018） |
 | [docs/glossary.md](docs/glossary.md) | 术语参考 |

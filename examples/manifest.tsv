@@ -9,3 +9,4 @@ pipeline-demo.zio|runnable|=== Pipeline DSL ===
 toolchain/semantics.zio|runnable|[3 9223372036854775807]
 toolchain/meta-eval.zio|runnable|[3 9223372036854775807]
 interop/js.zio|runnable|js interop done
+toolchain/query.zio|runnable|PASS query metadata

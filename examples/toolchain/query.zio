@@ -1,0 +1,30 @@
+;; Query metadata without executing the described function or its examples.
+;; Run: cargo run -p zio-cli -- examples/toolchain/query.zio
+
+(def query-example-calls 0)
+;; doc: (query-double x) — double a number.
+;; doc:
+;; doc:   (query-double 21)
+(defn query-double [x]
+  (set! query-example-calls (+ query-example-calls 1))
+  (* x 2))
+
+(help 'query-double)
+(def description (describe-symbol 'query-double))
+(println "kind:" (get description :kind))
+(println "params:" (get description :params))
+(println "source:" (get description :source))
+(println "examples:" (get description :examples))
+(if (= query-example-calls 0)
+  (println "query did not execute target")
+  (error "query executed target"))
+
+(println "search:" (get (apropos "double a number") :items))
+(println "native map:" (get (describe-symbol 'map) :doc))
+(println "missing:" (get (describe-symbol 'not-defined) :status))
+(println "unloaded module:" (get (module-exports :not.loaded) :status))
+(println "remote restart:" (get (language-capabilities) :remote-restart))
+(println "explicit call:" (query-double 21))
+(if (= query-example-calls 1)
+  (println "PASS query metadata")
+  (error "unexpected target invocation count"))

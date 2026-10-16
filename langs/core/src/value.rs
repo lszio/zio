@@ -19,6 +19,22 @@ pub struct Function {
     pub compiled: Option<Arc<crate::bytecode::Closure>>,
 }
 
+/// Static metadata bound to a native function at its registration site
+/// (query service, ZIO-004). Carried by `NativeFn` identity, never by
+/// name lookup: an unannotated native stays explicitly unknown and never
+/// borrows a same-name binding's data. The doc text follows
+/// `docs/libdoc-convention.md` (`(name args) — summary` first line).
+#[derive(Debug)]
+pub struct NativeMetadata {
+    /// Fixed parameter names, in call order. `[]` is a zero-arity native
+    /// that is *known* to take no fixed arguments.
+    pub params: &'static [&'static str],
+    /// Rest parameter name, if the native takes a trailing rest.
+    pub rest: Option<&'static str>,
+    /// Human-readable documentation text.
+    pub doc: &'static str,
+}
+
 /// Native (Rust-implemented) function.
 /// The closure receives the args and a reference to the eval engine,
 /// which is needed by higher-order native functions like map/filter/reduce.
@@ -27,6 +43,9 @@ pub struct NativeFn {
     id: usize,
     name: String,
     func: Arc<dyn Fn(Vector<Value>, &dyn EvalEngine) -> Result<Value, EvalError>>,
+    /// Registration-site metadata; absent means "unknown", never a
+    /// zero-arity claim. Cloned/copied with the `NativeFn` itself.
+    metadata: Option<&'static NativeMetadata>,
 }
 
 impl std::fmt::Debug for NativeFn {
@@ -50,7 +69,22 @@ impl NativeFn {
             id,
             name: name.into(),
             func: Arc::new(f),
+            metadata: None,
         }
+    }
+
+    /// Attach static registration metadata. Additive: identity, equality,
+    /// and call semantics are unaffected.
+    pub fn with_metadata(mut self, metadata: &'static NativeMetadata) -> Self {
+        self.metadata = Some(metadata);
+        self
+    }
+
+    /// Registration-site metadata, if the native was annotated. `None`
+    /// means the query layer must report the signature/docs as unknown
+    /// (never as zero-arity).
+    pub fn metadata(&self) -> Option<&'static NativeMetadata> {
+        self.metadata
     }
 
     pub fn call(&self, args: Vector<Value>, engine: &dyn EvalEngine) -> Result<Value, EvalError> {
