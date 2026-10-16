@@ -387,6 +387,7 @@ fn error_parts(error: &EvalError) -> (ErrorPayload, Option<Span>) {
         MacroError(_, span) => (ErrorPayload::Macro, span),
         RecurNotTail { span } => (ErrorPayload::RecurNotTail, span),
         RecurWithoutLoop { span } => (ErrorPayload::RecurWithoutLoop, span),
+        Cancelled { span, .. } => (ErrorPayload::Custom, span), // harness-only: no structured variant here
         Custom(_, span) => (ErrorPayload::Custom, span),
     };
     (payload, context.span)

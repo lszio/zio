@@ -145,6 +145,13 @@ pub enum EvalError {
     RecurWithoutLoop {
         span: SpanContext,
     },
+    /// The run was cancelled (harness contract §9): a `cancel` request was
+    /// delivered before or during the run. Distinct from a program error:
+    /// the program did not do anything wrong, and a retry is legitimate.
+    Cancelled {
+        fuel_spent: u64,
+        span: SpanContext,
+    },
     Custom(String, SpanContext),
 }
 
@@ -219,6 +226,14 @@ impl std::fmt::Display for EvalError {
             RecurWithoutLoop { span: ctx } => {
                 write!(f, "recur without loop frame{}", ctx.location())
             }
+            Cancelled {
+                fuel_spent,
+                span: ctx,
+            } => write!(
+                f,
+                "run cancelled after {fuel_spent} evaluation steps{}",
+                ctx.location()
+            ),
             Custom(msg, ctx) => write!(f, "{msg}{}", ctx.location()),
         }
     }
@@ -328,6 +343,15 @@ impl EvalError {
         }
     }
 
+    /// A cancel request was delivered for this run (harness contract §9).
+    /// `fuel_spent` records how much of the budget the run consumed.
+    pub fn cancelled(fuel_spent: u64) -> Self {
+        EvalError::Cancelled {
+            fuel_spent,
+            span: SpanContext::DUMMY,
+        }
+    }
+
     /// Attach a source location to this error.
     pub fn with_span(self, span: Span) -> Self {
         let ctx = SpanContext { span: Some(span) };
@@ -365,6 +389,10 @@ impl EvalError {
             Self::MacroError(s, _) => Self::MacroError(s, ctx),
             Self::RecurNotTail { .. } => Self::RecurNotTail { span: ctx },
             Self::RecurWithoutLoop { .. } => Self::RecurWithoutLoop { span: ctx },
+            Self::Cancelled { fuel_spent, .. } => Self::Cancelled {
+                fuel_spent,
+                span: ctx,
+            },
             Self::Custom(s, _) => Self::Custom(s, ctx),
         }
     }
@@ -392,7 +420,8 @@ impl EvalError {
             | Self::TypeError { span, .. }
             | Self::DivisionByZero { span }
             | Self::RecurNotTail { span }
-            | Self::RecurWithoutLoop { span } => span,
+            | Self::RecurWithoutLoop { span }
+            | Self::Cancelled { span, .. } => span,
         };
         if context.span.is_none() {
             self.with_opt_span(span)
