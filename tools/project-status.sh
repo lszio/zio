@@ -40,6 +40,7 @@ check_matrix_evidence() {
     case "$target" in
       http://*|https://*|\#*) continue ;;
     esac
+    target="${target%%#*}"
     if [ ! -e "$docs_dir/$target" ]; then
       printf 'feature-matrix evidence missing: docs/%s\n' "$target" >&2
       status=1

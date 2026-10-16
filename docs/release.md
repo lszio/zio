@@ -2,11 +2,16 @@
 
 Zio is a semantically independent general-purpose Lisp. Rust supplies the
 bootstrap implementation, runtime mechanisms and trusted host. The current
-release produces two separate artifacts: a native distribution built by
-`tools/install.sh`, and the browser engine built by `tools/build-wasm.sh`.
-Both come from the same tagged commit; the tag is checked against the workspace
-version before anything is built. These are the existing release paths, not
-yet the unified complete developer distribution described below.
+release produces a native distribution built by `tools/install.sh` (two Linux
+archives, x86_64 and aarch64), a browser engine built by `tools/build-wasm.sh`
+(published as the `@lszio/zio-core` npm package and attached to the GitHub
+release), six crates, the `@lszio/zio` npm CLI wrapper that downloads the
+matching native archive, and a Docker image. All of it comes from the same
+tagged commit; the tag is checked against the workspace version before
+anything is built. These are the existing release paths, not yet the unified
+complete developer distribution described below. Capability status is
+authoritative in [feature-matrix.md](feature-matrix.md); this page only
+describes how releases are produced.
 
 ## Complete distribution target (planned)
 
@@ -14,28 +19,44 @@ The [language and toolchain design](superpowers/specs/2026-10-11-zio-language-to
 and [implementation plan](superpowers/plans/2026-10-11-zio-language-toolchain.md)
 define two separate goals: a Zio metacircular evaluator and self-hosting
 compiler; and runtime image save/restore with application bin/WASM export.
-The repository already has a bytecode VM, a Zio compiler and self-hosting
-contracts, LSP and tree-sitter resources. Their existence is not evidence that
-the complete bootstrap or image lifecycle has been delivered.
+The repository has a bytecode runtime, a first-stage self-hosted compiler
+(L02 verified: `zio self-build --verify`), runtime image save/restore
+(M00–M02 verified: `zio image save/inspect/run`), application export
+(A00–A02: `zio build --target native|browser|wasm-wasi`), LSP and tree-sitter
+resources — at the levels [feature-matrix.md](feature-matrix.md) records.
+None of that is evidence that the complete one-install developer distribution
+(D00/D01), a Rust-free bootstrap, or optimizing ZIR/JIT has been delivered;
+those remain targets. The M00–M02, L02 and A00–A02 statuses are historical
+acceptance recorded in the feature matrix, not re-run for this document.
 
 The planned complete developer package includes the interpreter, compiler,
 LSP, syntax resources, WASM and documentation in one release. External
 interpreted and compiled languages integrate through engine libraries;
 `inline` denotes foreign-code entry, not necessarily immediate `eval`.
-It does not promise evaluation of arbitrary Rust source, or mean that external
-engines are already bundled. Any new CLI/API in the design is a proposal, not
-an available release command.
+Native JavaScript is already bundled this way (J00: a QuickJS realm via the
+`zio-js` crate, installed in the CLI's script context as `js/*`), but there is
+no evaluation of arbitrary Rust source, no `inline`/raw-block tooling, and no
+bundled Rust engine yet. Some CLI/API proposals in the design are now
+available commands (`zio image save/inspect/run`, `zio compile`, `zio build`,
+`zio self-build`, `zio fmt`, `zio lsp`); the rest remain proposals, not
+commands a user can run.
 
 Minimal application artifacts are a different product:
 
-- The initial bin export means bytecode plus its runtime, not machine-code AOT.
+- Application export carries code as a JSON payload — source text, a portable
+  module, or a restored image — appended to the runtime binary (native), or
+  embedded in one HTML file (browser). It is not machine-code AOT: optimizing
+  ZIR and JIT are planned.
 - Application bin/WASM artifacts do not carry LSP or other development tools.
   Dynamic evaluation, modules and foreign engines must be retained according
   to actual application dependencies; they cannot be removed merely because
   the application was compiled.
 - Browser WASM and WASI are distinct targets with distinct host capabilities.
-  The existing JavaScript bridge is WASM-only, and dotted JavaScript resolution
-  is interpreter-only; the native CLI does not supply JavaScript.
+  JavaScript is available on both native and browser paths, but the surfaces
+  differ: the native CLI binds an embedded QuickJS realm (J00) with explicit
+  `js/*` operations, while the browser engine resolves dotted `js/…` symbols
+  against the page and is interpreter-only. Cross-host parity for the compiled
+  execution surface (J01) remains a separate target.
 - Images must preserve object sharing, cycles and closures. External resources
   require explicit reconstruction or saving must be rejected; restoring an
   image must obtain fresh host grants rather than restoring authority.
@@ -85,7 +106,7 @@ Pushing the tag triggers `.github/workflows/release.yml`:
 | `npm` | Publishes `@lszio/zio-core`, the WASM engine |
 | `npm-cli` | Publishes `@lszio/zio`, the CLI wrapper that downloads the matching platform archive |
 | `docker` | Pushes `ghcr.io/lszio/zio` |
-| `github-release` | Attaches the archives, checksums, manifest and the WASM payload |
+| `github-release` | Attaches the archives, checksums and the WASM payload (`manifest.json` travels inside each archive, not as a separate asset) |
 
 Every job is gated on `verify`, so a broken test run publishes nothing.
 `workflow_dispatch` with `dry_run: true` runs everything except the
@@ -123,10 +144,13 @@ not find on any other platform.
 ## The native archive
 
 ```
-bin/zio            the language: REPL, script, bounded candidate runner, app launcher
+bin/zio            the language: REPL, script runner, bounded candidate runner
+                   (--emit-framed), application launcher (--app),
+                   image save/inspect/run, compile, build and self-build
 bin/zio-lsp        the language server (zio lsp starts this too)
 bin/zio-env.sh     PATH and ZIO_PATH for the installed tree
-bin/zio-env.ps1    the same, for PowerShell (Windows targets)
+bin/zio-env.ps1    the same, for PowerShell; staged only when built for a
+                   Windows triple, which the release matrix never does
 share/zio/         stdlib, libraries, toolchain sources, grammar, docs, examples
 share/zio/std/     the stdlib source (embedded in the binary at build time)
 share/zio/langs/   the metacircular interpreter and compiler sources
@@ -134,7 +158,7 @@ share/zio/grammar  Tree-sitter grammar and queries
 share/zio/docs     documentation
 share/zio/examples runnable and documentary examples
 share/tensor/      the tensor backend resource
-manifest.json      version, commit, target, and a checksum per component
+manifest.json      version, commit, target, profile, and a checksum per component
 ```
 
 ## Crates
@@ -151,12 +175,12 @@ says which crate is missing.
 
 | Surface | Artifact | Job |
 |---|---|---|
-| Executables | Five-platform archives (`bin/zio`, `bin/zio-lsp` on POSIX) with checksums and `manifest.json` | `native` |
+| Executables | Two Linux archives, x86_64 and aarch64 (`bin/zio`, `bin/zio-lsp`, `bin/zio-env.sh`, `share/zio/…`, `share/tensor/`, `manifest.json`), with checksums | `native` |
 | Executable container | `ghcr.io/lszio/zio` with `zio` on PATH | `docker` |
 | Rust execution library | [`zio-core`](https://crates.io/crates/zio-core), `zio-js`, `zio-host`, `zio-lsp`, `zio-wasi`, `zio-cli` on crates.io; the `wasm` feature builds the browser engine | `crates` (needs `CRATES_TOKEN`) |
-| npm CLI | `@lszio/zio` — downloads the release archive matching the installed version, checksums it, runs `zio` | `npm-cli` (needs `NPM_TOKEN`) |
-| npm engine | `@lszio/zio-core` — the same engine as WebAssembly; `ZioSession` locates and loads the Zio runtime in browsers and Node | `npm` (needs `NPM_TOKEN`) |
-| Single-file apps | `zio build INPUT --target native -o APP` | produced by users |
+| npm CLI | `@lszio/zio` — on first run downloads the release archive matching the installed version, verifies it against the published checksum, unpacks and runs `zio` | `npm-cli` (needs `NPM_TOKEN`) |
+| npm engine | `@lszio/zio-core` — the four wasm-bindgen files (`zio_core.js`, `zio_core.d.ts`, `zio_core_bg.wasm`, `zio_core_bg.wasm.d.ts`), separate from the native archives; `ZioSession` locates and loads the Zio runtime in browsers and Node | `npm` (needs `NPM_TOKEN`) |
+| Single-file apps | `zio build INPUT --target native|browser|wasm-wasi -o APP` | produced by users |
 
 The npm job publishes only after `verify`; the version is synced from the
 tag at staging time. `NPM_TOKEN` must exist as a repository secret or

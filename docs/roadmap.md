@@ -1,5 +1,12 @@
 # Zio 路线图 — v0.2 → v1.0
 
+> 2026-10-16 聚焦 Zio 的后续工作见[任务清单](zio-task-list.md)：优先打通查询、编译执行与 restart，补齐长会话可靠性，再推进工具、库与发行。该清单汇总优先级和验收；已采纳工具链工作包继续维护实现细项及历史证据。
+
+> 2026-10-15 新增[语言与生态评审](language-ecosystem-review.md)、
+> [关键设计决策及思维导图](language-design-decisions.md)和[完整生态路线图草案](ecosystem-roadmap.md)。
+> 草案梳理语义、运行时、项目工具、包与库、稳定发行的依赖和验收，尚未替代已采纳的工具链规格与工作包。
+> [AI 交互主线](ai-language-interaction.md)的 help/结构化查询已完成 ZIO-003/004 合同与首批实现；condition/restart、执行 harness 和解释器 MCP 仍按后续任务推进，状态与本次证据见[特性矩阵](feature-matrix.md)。
+
 > 2026-10-11 当前主线：语义独立的通用 Lisp、元循环/自举与运行时镜像，
 > 最终以全套开发发行和可裁剪应用产物交付。
 >
@@ -12,9 +19,9 @@
 ## 概要
 
 **当前基础**：已有 Rust Reader/AST evaluator、Experimental ZOS、字节码运行时、
-Zio 编译器、自举对照测试、LSP 与 Tree-sitter/编辑器资源。可检查来源见
-[架构 §3.3](zio-architecture.md#33-工具链当前来源与规划验收)；存在源码不等于本轮验收，
-也不等于镜像或完整发行已经交付；L01 元循环与 L02 首轮便携编译器自举已验收，状态与实跑证据见主计划和语言参考。
+Zio 元循环与首轮自举、运行时镜像、应用导出、native JS、LSP 与 Tree-sitter/编辑器资源。
+历史验收、本次实跑及剩余缺口统一见[特性矩阵](feature-matrix.md)；
+源码存在不等于跨宿主一致性、长会话或完整发行已经验收。
 
 **目标**：Zio 语义不依附 Rust trait；Rust 提供引导与机制，Zio 表达 reader、
 eval/apply、展开、分析与编译。开发发行一次配齐解释器、编译器、LSP、语法/编辑器资源、
@@ -55,8 +62,8 @@ WASM 与文档；最小应用产物不强制带开发工具或未用引擎。
 应用产物；native bin、WASM-browser、WASM-WASI 是应用产物子类型。
 首轮 bin 是 bytecode/初始镜像 + runtime 打包，不是机器码 AOT；完整开发发行与最小
 应用产物分开。`inline` 是外语代码入口，不必然 eval；解释执行或编译制品由引擎
-库合同决定。当前 JS bridge 为 WASM-only，`js` dotted resolver 为 interpreter-only，
-native CLI 无 JS，不把它们当作通用外语引擎已交付。
+库合同决定。native CLI 已提供 QuickJS（J00）；浏览器 dotted resolver 是另一宿主入口，
+J01 跨宿主/编译路径一致性、Rust 引擎和 inline 仍待实现，不能宣称通用引擎全套交付。
 
 依赖方向：先固定语义与运行机制，A/B 可按共同合同分别推进；镜像恢复须有
 明确的代码/模块绑定和资源能力合同；导出消费稳定制品与恢复入口；完整发行再

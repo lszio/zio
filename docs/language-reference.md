@@ -91,6 +91,35 @@ footer；`--target browser` 产出单个 HTML（glue URL + 内联 base64 payload
 zio --lib-dir . examples/interop/js.zio
 ```
 
+## 查询与帮助（ZIO-003/004）
+
+```lisp
+(help 'identity)                   ; 经当前 IoHost 输出帮助，返回 nil
+(describe-symbol 'identity)        ; 结构化描述，不执行 identity
+(apropos "unchanged" 0 20)          ; 名字或已有文档搜索，结果按名字排序
+(module-exports :demo.math)         ; 只查已加载模块的 owned exports
+(language-capabilities)            ; 当前 runtime/目标；remote-restart 为 false
+```
+
+`describe-symbol` 接收符号/字符串；keyword 明确查询模块命名空间。
+描述包含 schema/runtime 版本、状态、种类、参数/rest、文档状态、源码修订/UTF-8
+字节范围和已有示例；查无符号返回 `:status :not-found`，未加载模块返回
+`:status :not-loaded`，不会隐式 `require`。函数、宏、native、特殊形式与模块共用结构。
+`apropos` 返回 `{:items [...] :offset ... :next-offset ...}`；offset 非负，
+limit 为 1..100，默认0/20。环境发生变化后从 offset=0 重新查询。
+
+未知签名为 nil，不是零参数 `[]`；未标注 native 的 `:documentation` 为 `:unknown`，
+可靠来源没有注释时为 `:missing`。没有模块版本/效果/授权声明时相应字段是 nil，
+**不表示无需权限或无副作用**。native 的可选参数约束保留在其文档中；
+`:params` 列固定必需参数，`:rest` 不是对未声明可选参数的猜测。
+源码注释沿用[既有约定](libdoc-convention.md)，alias 保留原 callable 的源码修订；
+缺少 span 的生成代码、布尔/nil body 或旧制品不按同名文件猜文档。
+查询只查根环境；不执行目标、getter/printer、宏或示例，不加载模块。
+
+实现：`langs/core/src/builtins/query*.rs`；合同：`langs/core/tests/query_contract.rs`。
+实际 CLI/REPL 示例：`cargo run -p zio-cli -- examples/toolchain/query.zio`。
+完整结果结构与边界见[查询合同](ai-language-interaction.md#4-查询合同-v1zio-003)。
+
 ## 表达式与值
 
 程序是零个或多个表达式；顶层依次求值，结果为最后一个值，空程序返回 `nil`。`;` 开始行注释。非空列表 `(head arg...)` 是调用、特殊形式或宏调用；空调用列表 `()` 求值为 `nil`，但引用的空列表 `'()` 是列表值，不等同于 `nil`。

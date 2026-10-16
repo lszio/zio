@@ -2618,6 +2618,36 @@ enum WireConstant {
 }
 
 impl ModuleArtifact {
+    /// Original source text embedded in this artifact, if any. Passive:
+    /// never triggers span decoding (which would run the installed Zi
+    /// reader), so the query service can read docs/positions from the
+    /// artifact's own revision without executing code.
+    pub(crate) fn source_text(&self) -> Option<&str> {
+        self.source.as_ref().map(|source| source.text.as_str())
+    }
+
+    /// The SourceMap identity this artifact's source was registered under
+    /// without decoding spans (e.g. pre-seeded by a compilation guard),
+    /// when that registration belongs to the live map `source_map`. The
+    /// exact `Weak` pointer match, never the filename's newest revision:
+    /// a later redefinition of the same name must not borrow a newer
+    /// source. Absent for wire-restored artifacts whose provenance never
+    /// ran `bind`, or when the artifact was bound under a different map.
+    pub(crate) fn source_revision(
+        &self,
+        source_map: &Arc<crate::span::SourceMap>,
+    ) -> Option<usize> {
+        self.source
+            .as_ref()?
+            .registrations
+            .borrow()
+            .iter()
+            .find(|(map, _)| {
+                map.strong_count() != 0 && std::ptr::eq(map.as_ptr(), Arc::as_ptr(source_map))
+            })
+            .map(|(_, id)| id.0)
+    }
+
     /// Canonical wire JSON for this artifact — the one format the image
     /// encoder references instead of copying instructions.
     pub(crate) fn to_wire_json(&self) -> Result<String, EvalError> {
