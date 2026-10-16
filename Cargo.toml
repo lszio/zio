@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["langs/core", "langs/cli", "langs/wasi", "contribs/native/js", "contribs/native/host", "contribs/native/loom", "contribs/language-server"]
+members = ["langs/core", "langs/cli", "langs/wasi", "langs/mcp", "contribs/native/js", "contribs/native/host", "contribs/native/loom", "contribs/language-server"]
 
 [workspace.package]
 version = "0.2.1"

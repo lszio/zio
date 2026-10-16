@@ -1826,6 +1826,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "zio-mcp"
+version = "0.2.1"
+dependencies = [
+ "parking_lot",
+ "serde",
+ "serde_json",
+ "zio-core",
+]
+
+[[package]]
 name = "zio-wasi"
 version = "0.2.1"
 dependencies = [
