@@ -1,17 +1,24 @@
-//! ZIO execution harness — minimal scaffold (ZIO-008 Slice 1).
+//! ZIO execution harness (ZIO-008).
 //! See docs/superpowers/specs/2026-10-16-zio-execution-harness-contract.md.
 //!
-//! Slice 1 delivers the typed session surface: session/run identity, the
-//! capability set (declared, not enforced), compile/eval envelopes, and the
-//! cancel flag. Fuel budgeting, output capture, capability enforcement, and
-//! image restore land in later slices.
+//! Slice 1 delivered the typed session surface: session/run identity, the
+//! capability set, compile/eval envelopes, and the cancel flag. Slice 2
+//! lands the real `eval` — output capture through [`BudgetedIoHost`],
+//! capability gates through [`CapabilityEnforcingIoHost`], and the
+//! fuel + wall-clock budgets — plus `run_image` (contract §14) and the
+//! typed `CapabilityDenied`/`TimedOut` errors. Process-group kill
+//! isolation on non-cancellable calls and observer `events[]` wiring
+//! remain for Slice 3.
 
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
-use crate::context::EvalRuntime;
+use parking_lot::Mutex;
+
 use crate::error::EvalError;
+use crate::io::{BufferIoHost, IoHost};
 use crate::span::Span;
 use crate::value::Value;
 
@@ -26,8 +33,9 @@ pub struct RunId(pub u64);
 
 /// Capability bits the launcher grants to a session (contract §4).
 ///
-/// Slice 1 declares the type and the launcher-facing surface; the harness
-/// itself never grants capabilities and does not enforce them yet.
+/// The set is fixed at session construction; the harness never grants a
+/// bit itself. Slice 1 declared the surface; Slice 2 enforces it through
+/// [`CapabilityEnforcingIoHost`].
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct CapabilitySet {
     bits: u64,
@@ -87,10 +95,25 @@ pub struct Diagnostic {
     pub span: Option<Span>,
 }
 
+/// Harness-level event on a run envelope (contract §6/§7). Observer
+/// wiring of the evaluator event stream is a Slice 3 item; Slice 2 emits
+/// the `OutputTruncated` warning from the budget wrapper.
 #[derive(Debug, Clone)]
 pub struct ObserverEvent {
     pub kind: String,
     pub span: Option<Span>,
+}
+
+/// Budgets the launcher attaches to a session (contract §8). Every item
+/// is opt-in: `None` means "use the default" or "do not check".
+#[derive(Clone, Debug, Default)]
+pub struct Budgets {
+    /// Fuel cap in evaluator nodes. `None` = use the eval default.
+    pub fuel: Option<u64>,
+    /// Wall-clock cap. `None` = unbounded (do not check).
+    pub max_duration: Option<Duration>,
+    /// Per-stream output cap. `None` = unbounded.
+    pub max_output_bytes: Option<usize>,
 }
 
 /// Session configuration.
@@ -98,6 +121,21 @@ pub struct ObserverEvent {
 pub struct SessionDefaults {
     /// Fuel cap. None = use eval's step_limit default.
     pub fuel: Option<u64>,
+    /// Wall-clock cap for a run. `None` = unbounded (do not check).
+    pub max_duration: Option<Duration>,
+    /// Per-stream output cap (contract §7). `None` = unbounded.
+    pub max_output_bytes: Option<usize>,
+}
+
+impl SessionDefaults {
+    /// Construct with explicit budgets.
+    pub fn with_budgets(budgets: Budgets) -> Self {
+        Self {
+            fuel: budgets.fuel,
+            max_duration: budgets.max_duration,
+            max_output_bytes: budgets.max_output_bytes,
+        }
+    }
 }
 
 /// Session state (contract §2).
@@ -108,8 +146,7 @@ pub struct SessionDefaults {
 pub struct Session {
     pub id: SessionId,
     capabilities: CapabilitySet,
-    /// Budget defaults held per contract §2; fuel wiring lands in Slice 2.
-    _defaults: SessionDefaults,
+    defaults: SessionDefaults,
     cancel_flag: Arc<AtomicBool>,
     poisoned: bool,
     /// Module registry (Slice 1: empty; reserved for later).
@@ -124,7 +161,7 @@ impl Session {
         Self {
             id: SessionId(NEXT.fetch_add(1, Ordering::Relaxed)),
             capabilities,
-            _defaults: defaults,
+            defaults,
             cancel_flag: Arc::new(AtomicBool::new(false)),
             poisoned: false,
             _modules: Mutex::new(Vec::new()),
@@ -137,8 +174,9 @@ impl Session {
     pub fn is_poisoned(&self) -> bool {
         self.poisoned
     }
-    /// The flag the observer will poll at fuel checkpoints in a later
-    /// slice. Slice 1 only checks it at run boundaries.
+    /// The flag a concurrent caller can set to cancel the in-flight run.
+    /// The evaluator's fuel checkpoints poll this in a later slice; the
+    /// run boundary checks it now (contract §9).
     pub fn cancel_token(&self) -> Arc<AtomicBool> {
         self.cancel_flag.clone()
     }
@@ -165,21 +203,172 @@ impl Session {
         }
     }
 
-    /// Evaluate source in a fresh context, returning the last value
-    /// (contract §6). Output capture is a later slice: `output` stays
-    /// empty and the CLI still prints directly.
+    /// Evaluate source in a fresh `language_context`, returning the last
+    /// value (contract §6). `print`/`println` are captured into
+    /// `RunResult::output` and capped at `max_output_bytes` (contract
+    /// §7); exceeding the cap surfaces an `OutputTruncated` event, never
+    /// a run failure. The fuel ceiling and wall-clock limit are checked
+    /// at this run's boundary (contract §8; mid-run interrupt wiring is
+    /// a Slice 3 item).
     pub fn eval(&self, name: &str, source: &str) -> RunResult {
-        self.run_with(name, source, |ctx, name, src| {
-            crate::bootstrap::eval_source(ctx, name, src)
-        })
+        let run_id = RunId::new();
+        let start = Instant::now();
+        // Consume a pending cancel at the boundary: a run that has not
+        // started is cancelled cleanly (contract §9, matrix row 1).
+        if self.cancel_flag.swap(false, Ordering::SeqCst) {
+            return RunResult::err(run_id, EvalError::cancelled(0));
+        }
+
+        // Substrate, budget wrapper, capability gate — the gate is
+        // outermost so a denied call never touches the capture, and the
+        // budget wraps the substrate so every print is accounted.
+        let inner: Arc<dyn IoHost> = Arc::new(BufferIoHost::new());
+        let budgeted = BudgetedIoHost::new(inner, self.defaults.max_output_bytes);
+        let probe = budgeted.clone();
+        let gated = CapabilityEnforcingIoHost::new(Arc::new(budgeted), self.capabilities.clone());
+        let io: Arc<dyn IoHost> = Arc::new(gated);
+
+        let ctx = match crate::bootstrap::language_context_with_io(
+            crate::bootstrap::ModuleRoots::empty(),
+            io,
+        ) {
+            Ok(c) => c,
+            Err(e) => return RunResult::err(run_id, e),
+        };
+        if let Some(fuel) = self.defaults.fuel {
+            ctx.set_step_ceiling(fuel);
+        }
+
+        let result = crate::bootstrap::eval_source(&ctx, name, source);
+        let fuel_spent = ctx.steps_spent();
+        let elapsed = start.elapsed();
+
+        // Outcome priority: a cancel that landed mid-run wins, then the
+        // wall-clock budget, then the program's own result.
+        if self.cancel_flag.swap(false, Ordering::SeqCst) {
+            return RunResult::err(run_id, EvalError::cancelled(fuel_spent));
+        }
+        if let Some(limit) = self.defaults.max_duration {
+            if elapsed > limit {
+                return RunResult::err(run_id, EvalError::timed_out(elapsed, fuel_spent));
+            }
+        }
+
+        let output = probe.into_output_lines();
+        let mut events = Vec::new();
+        if probe.truncated() {
+            events.push(ObserverEvent {
+                kind: "OutputTruncated".into(),
+                span: None,
+            });
+        }
+        match result {
+            Ok(value) => RunResult {
+                value: Some(value),
+                error: None,
+                output,
+                events,
+                fuel_spent,
+                run_id,
+            },
+            Err(error) => RunResult {
+                value: None,
+                error: Some(error),
+                output,
+                events,
+                fuel_spent,
+                run_id,
+            },
+        }
     }
 
-    /// Run a `.zio-image` (contract §14). Image restore lands in Slice 2.
-    pub fn run_image(&self, _image_path: &Path) -> RunResult {
-        RunResult::err(
-            RunId::new(),
-            EvalError::custom("image run not yet implemented (ZIO-008 Slice 1)"),
-        )
+    /// Run a `.zio-image` (contract §14): parse the wire image, restore
+    /// it into a fresh context whose only authority is the session's
+    /// granted capabilities, bind each root by name, and eval the first
+    /// root as the entry point.
+    pub fn run_image(&self, image_path: &Path) -> RunResult {
+        let run_id = RunId::new();
+        let bytes = match std::fs::read(image_path) {
+            Ok(b) => b,
+            Err(e) => {
+                return RunResult::err(run_id, EvalError::io_failure(format!(
+                    "cannot read {}: {e}",
+                    image_path.display()
+                )));
+            }
+        };
+        let text = match String::from_utf8(bytes) {
+            Ok(t) => t,
+            Err(_) => {
+                return RunResult::err(run_id, EvalError::invalid_form("image is not UTF-8"));
+            }
+        };
+        let image = match crate::image::wire::Image::parse(&text) {
+            Ok(i) => i,
+            Err(e) => return RunResult::err(run_id, EvalError::load_error(e.to_string())),
+        };
+
+        // Restore does not inherit authority: the fresh context gets the
+        // session's grants and nothing else (contract §4/§14).
+        let inner: Arc<dyn IoHost> = Arc::new(BufferIoHost::new());
+        let gated = CapabilityEnforcingIoHost::new(inner, self.capabilities.clone());
+        let io: Arc<dyn IoHost> = Arc::new(gated);
+        let ctx = match crate::bootstrap::language_context_with_io(
+            crate::bootstrap::ModuleRoots::empty(),
+            io,
+        ) {
+            Ok(c) => c,
+            Err(e) => return RunResult::err(run_id, e),
+        };
+        if let Some(fuel) = self.defaults.fuel {
+            ctx.set_step_ceiling(fuel);
+        }
+
+        let roots = match crate::image::restore::restore_image(
+            &ctx,
+            &image,
+            &crate::image::ImageLimits::default(),
+        ) {
+            Ok(r) => r,
+            Err(e) => return RunResult::err(run_id, EvalError::load_error(e.to_string())),
+        };
+
+        // Bind each root by name; eval the first root as the entry
+        // (root-names contract, same as the CLI image runner).
+        for (i, value) in roots.iter().enumerate() {
+            let name = image
+                .root_names
+                .get(i)
+                .cloned()
+                .unwrap_or_else(|| format!("root-{i}"));
+            ctx.env.set(name, value.clone());
+        }
+        let entry = image
+            .root_names
+            .first()
+            .cloned()
+            .unwrap_or_else(|| "root-0".into());
+        let result =
+            crate::bootstrap::eval_source(&ctx, image_path.to_string_lossy().as_ref(), &entry);
+        let fuel_spent = ctx.steps_spent();
+        match result {
+            Ok(value) => RunResult {
+                value: Some(value),
+                error: None,
+                output: Vec::new(),
+                events: Vec::new(),
+                fuel_spent,
+                run_id,
+            },
+            Err(error) => RunResult {
+                value: None,
+                error: Some(error),
+                output: Vec::new(),
+                events: Vec::new(),
+                fuel_spent,
+                run_id,
+            },
+        }
     }
 
     /// Cancel a pending run. Consumed by the next `eval` boundary.
@@ -191,52 +380,6 @@ impl Session {
     pub fn close(self) {
         // Slice 1 holds no resources beyond self-drop.
         drop(self);
-    }
-
-    fn run_with(
-        &self,
-        name: &str,
-        source: &str,
-        runner: impl FnOnce(&crate::context::EvalContext, &str, &str) -> Result<Value, EvalError>,
-    ) -> RunResult {
-        let run_id = RunId::new();
-        // Consume a pending cancel at the boundary: a run that has not
-        // started is cancelled cleanly (contract §9, matrix row 1).
-        if self.cancel_flag.swap(false, Ordering::SeqCst) {
-            return RunResult::err(run_id, EvalError::cancelled(0));
-        }
-
-        let ctx = match crate::bootstrap::language_context(crate::bootstrap::ModuleRoots::empty()) {
-            Ok(c) => c,
-            Err(e) => return RunResult::err(run_id, e),
-        };
-        let result = runner(&ctx, name, source);
-        let fuel_spent = ctx.observation().fuel_spent();
-        let output = Vec::new();
-
-        let cancel_requested = self.cancel_flag.swap(false, Ordering::SeqCst);
-        if cancel_requested {
-            return RunResult::err(run_id, EvalError::cancelled(fuel_spent));
-        }
-
-        match result {
-            Ok(value) => RunResult {
-                value: Some(value),
-                error: None,
-                output,
-                events: Vec::new(),
-                fuel_spent,
-                run_id,
-            },
-            Err(error) => RunResult {
-                value: None,
-                error: Some(error),
-                output,
-                events: Vec::new(),
-                fuel_spent,
-                run_id,
-            },
-        }
     }
 }
 
@@ -270,6 +413,192 @@ impl RunResult {
             fuel_spent: 0,
             run_id,
         }
+    }
+}
+
+/// IoHost that captures `print`/`println` output into an in-memory
+/// buffer with an optional byte cap (contract §7). Truncation is reported
+/// as the `OutputTruncated` event at the run boundary — not as a run
+/// failure; other methods delegate to the substrate host. Holding the
+/// buffer behind an `Arc` lets the caller drain it after this host has
+/// been moved into the wrapper stack.
+#[derive(Clone)]
+pub struct BudgetedIoHost {
+    inner: Arc<dyn IoHost>,
+    cap: Option<usize>,
+    capture: Arc<Mutex<Capture>>,
+}
+
+#[derive(Default)]
+struct Capture {
+    bytes: usize,
+    truncated: bool,
+    lines: Vec<String>,
+    pending: String,
+}
+
+impl BudgetedIoHost {
+    pub fn new(inner: Arc<dyn IoHost>, cap: Option<usize>) -> Self {
+        BudgetedIoHost {
+            inner,
+            cap,
+            capture: Arc::new(Mutex::new(Capture::default())),
+        }
+    }
+
+    /// Drain the captured output lines into the result envelope. A final
+    /// `print` without a newline is flushed as its own line.
+    pub fn into_output_lines(&self) -> Vec<String> {
+        let mut capture = self.capture.lock();
+        let pending = std::mem::take(&mut capture.pending);
+        if !pending.is_empty() {
+            capture.lines.push(pending);
+        }
+        std::mem::take(&mut capture.lines)
+    }
+
+    /// The byte cap was reached: output after the truncation point was
+    /// dropped. Distinct from a budget-exhaustion failure (contract §7).
+    pub fn truncated(&self) -> bool {
+        self.capture.lock().truncated
+    }
+
+    /// Record one message, keeping at most the cap's worth of bytes.
+    /// Truncation is at message granularity: the message that would
+    /// cross the cap is dropped whole and the stream is marked
+    /// truncated, so the retained bytes never exceed the cap and no
+    /// mid-UTF-8 splitting is needed.
+    fn record(&self, msg: &str) {
+        let mut capture = self.capture.lock();
+        if capture.truncated {
+            return;
+        }
+        let Some(budget) = self.cap else {
+            capture.bytes += msg.len();
+            capture.pending.push_str(msg);
+            return;
+        };
+        if capture.bytes + msg.len() > budget {
+            capture.truncated = true;
+            return;
+        }
+        capture.bytes += msg.len();
+        capture.pending.push_str(msg);
+    }
+}
+
+impl IoHost for BudgetedIoHost {
+    fn print(&self, msg: &str) -> Result<(), EvalError> {
+        self.record(msg);
+        Ok(())
+    }
+
+    fn println(&self, msg: &str) -> Result<(), EvalError> {
+        self.record(msg);
+        let mut capture = self.capture.lock();
+        let pending = std::mem::take(&mut capture.pending);
+        capture.lines.push(pending);
+        Ok(())
+    }
+
+    fn read_line(&self) -> Result<String, EvalError> {
+        self.inner.read_line()
+    }
+
+    fn current_dir(&self) -> Result<String, EvalError> {
+        self.inner.current_dir()
+    }
+
+    fn read_file(&self, path: &str) -> Result<String, EvalError> {
+        self.inner.read_file(path)
+    }
+
+    fn write_file(&self, path: &str, data: &str) -> Result<(), EvalError> {
+        self.inner.write_file(path, data)
+    }
+
+    fn file_exists(&self, path: &str) -> Result<bool, EvalError> {
+        self.inner.file_exists(path)
+    }
+
+    fn canonicalize_path(&self, path: &str) -> Result<String, EvalError> {
+        self.inner.canonicalize_path(path)
+    }
+
+    fn is_directory(&self, path: &str) -> Result<bool, EvalError> {
+        self.inner.is_directory(path)
+    }
+}
+
+/// IoHost that gates file operations on the session's `CapabilitySet`
+/// (contract §12). A call to a gated method without the bit returns a
+/// typed `EvalError::CapabilityDenied` and never touches the inner host.
+///
+/// The substrate enforces what the `IoHost` surface can express. The
+/// remaining bits (`Network`, `ProcessSpawn`, `JsEngine`) gate calls
+/// that are not `IoHost` methods — loom/JS engines check the same bit at
+/// their own registration boundary — so for those the gate is honored at
+/// the type level: a capability the launcher did not grant is never
+/// wired into the context these hosts feed.
+pub struct CapabilityEnforcingIoHost {
+    inner: Arc<dyn IoHost>,
+    capabilities: CapabilitySet,
+}
+
+impl CapabilityEnforcingIoHost {
+    pub fn new(inner: Arc<dyn IoHost>, capabilities: CapabilitySet) -> Self {
+        CapabilityEnforcingIoHost {
+            inner,
+            capabilities,
+        }
+    }
+}
+
+impl IoHost for CapabilityEnforcingIoHost {
+    fn print(&self, msg: &str) -> Result<(), EvalError> {
+        self.inner.print(msg)
+    }
+
+    fn println(&self, msg: &str) -> Result<(), EvalError> {
+        self.inner.println(msg)
+    }
+
+    fn read_line(&self) -> Result<String, EvalError> {
+        self.inner.read_line()
+    }
+
+    fn current_dir(&self) -> Result<String, EvalError> {
+        self.inner.current_dir()
+    }
+
+    /// Gated by `Capability::FileRead` (contract §12).
+    fn read_file(&self, path: &str) -> Result<String, EvalError> {
+        if !self.capabilities.contains(Capability::FileRead) {
+            return Err(EvalError::capability_denied("FileRead"));
+        }
+        self.inner.read_file(path)
+    }
+
+    /// Gated by `Capability::FileWrite` (contract §12).
+    fn write_file(&self, path: &str, data: &str) -> Result<(), EvalError> {
+        if !self.capabilities.contains(Capability::FileWrite) {
+            return Err(EvalError::capability_denied("FileWrite"));
+        }
+        self.inner.write_file(path, data)
+    }
+
+    // Lookup calls that carry no authority pass through: the substrate
+    // host decides what it can answer (contract §12).
+    fn file_exists(&self, path: &str) -> Result<bool, EvalError> {
+        self.inner.file_exists(path)
+    }
+
+    fn canonicalize_path(&self, path: &str) -> Result<String, EvalError> {
+        self.inner.canonicalize_path(path)
+    }
+
+    fn is_directory(&self, path: &str) -> Result<bool, EvalError> {
+        self.inner.is_directory(path)
     }
 }
 
