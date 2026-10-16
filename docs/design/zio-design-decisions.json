@@ -1,0 +1,229 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "Zio 关键设计决策｜评审草案",
+    "locale": "zh-CN",
+    "quality_profile": "showcase",
+    "viewBox": [
+      1200,
+      660
+    ]
+  },
+  "components": [
+    {
+      "id": "zio",
+      "type": "backend",
+      "label": "Zio 通用 Lisp",
+      "sublabel": "同像性 · 可查询 · 可恢复",
+      "pos": [
+        40,
+        270
+      ],
+      "size": [
+        230,
+        80
+      ]
+    },
+    {
+      "id": "semantics",
+      "type": "backend",
+      "label": "语言语义",
+      "sublabel": "先统一合同，再扩展语法",
+      "pos": [
+        410,
+        60
+      ],
+      "size": [
+        220,
+        80
+      ]
+    },
+    {
+      "id": "runtime",
+      "type": "backend",
+      "label": "编译与执行",
+      "sublabel": "共用值、模块与宿主边界",
+      "pos": [
+        410,
+        240
+      ],
+      "size": [
+        220,
+        80
+      ]
+    },
+    {
+      "id": "ecosystem",
+      "type": "frontend",
+      "label": "开发与生态",
+      "sublabel": "从安装到发布的完整循环",
+      "pos": [
+        410,
+        420
+      ],
+      "size": [
+        220,
+        80
+      ]
+    },
+    {
+      "id": "binding",
+      "type": "external",
+      "label": "D02–D06 · 名称与宏",
+      "sublabel": "建议显式导入、严格赋值、阶段分离",
+      "pos": [
+        840,
+        15
+      ],
+      "size": [
+        320,
+        80
+      ]
+    },
+    {
+      "id": "values",
+      "type": "external",
+      "label": "D01 / D07–D09 · 数据模型",
+      "sublabel": "等价、对象与 condition/restart",
+      "pos": [
+        840,
+        105
+      ],
+      "size": [
+        320,
+        80
+      ]
+    },
+    {
+      "id": "heap",
+      "type": "external",
+      "label": "D10–D11 · 内存与并发",
+      "sublabel": "建议可追踪堆、隔离 VM 与消息协议",
+      "pos": [
+        840,
+        195
+      ],
+      "size": [
+        320,
+        80
+      ]
+    },
+    {
+      "id": "artifacts",
+      "type": "external",
+      "label": "D12–D14 · 编译与制品",
+      "sublabel": "保留自举、版本化制品与显式授权",
+      "pos": [
+        840,
+        285
+      ],
+      "size": [
+        320,
+        80
+      ]
+    },
+    {
+      "id": "packages",
+      "type": "external",
+      "label": "D15–D16 · 包与工具",
+      "sublabel": "建议锁文件、统一分析及调试位置",
+      "pos": [
+        840,
+        375
+      ],
+      "size": [
+        320,
+        80
+      ]
+    },
+    {
+      "id": "libraries",
+      "type": "external",
+      "label": "D17–D18 · 库与演化",
+      "sublabel": "建议标准库分层、兼容政策及 RFC",
+      "pos": [
+        840,
+        465
+      ],
+      "size": [
+        320,
+        80
+      ]
+    },
+    {
+      "id": "ai",
+      "type": "frontend",
+      "label": "AI 交互、演化与协作",
+      "sublabel": "方向确认 · 接口与实现待评审",
+      "pos": [
+        410,
+        555
+      ],
+      "size": [
+        220,
+        80
+      ]
+    },
+    {
+      "id": "agent-loop",
+      "type": "external",
+      "label": "D19–D30 · AI 与群体协作",
+      "sublabel": "查询、演化、实例分工与有界讨论",
+      "pos": [
+        840,
+        555
+      ],
+      "size": [
+        320,
+        80
+      ]
+    }
+  ],
+  "connections": [
+    {
+      "from": "zio",
+      "to": "semantics"
+    },
+    {
+      "from": "zio",
+      "to": "runtime"
+    },
+    {
+      "from": "zio",
+      "to": "ecosystem"
+    },
+    {
+      "from": "semantics",
+      "to": "binding"
+    },
+    {
+      "from": "semantics",
+      "to": "values"
+    },
+    {
+      "from": "runtime",
+      "to": "heap"
+    },
+    {
+      "from": "runtime",
+      "to": "artifacts"
+    },
+    {
+      "from": "ecosystem",
+      "to": "packages"
+    },
+    {
+      "from": "ecosystem",
+      "to": "libraries"
+    },
+    {
+      "from": "zio",
+      "to": "ai"
+    },
+    {
+      "from": "ai",
+      "to": "agent-loop"
+    }
+  ]
+}
