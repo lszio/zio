@@ -258,11 +258,7 @@ impl std::fmt::Display for EvalError {
             CapabilityDenied {
                 capability,
                 span: ctx,
-            } => write!(
-                f,
-                "capability denied: {capability}{}",
-                ctx.location()
-            ),
+            } => write!(f, "capability denied: {capability}{}", ctx.location()),
             TimedOut {
                 elapsed_ms,
                 fuel_spent,
@@ -418,10 +414,7 @@ impl EvalError {
     /// An I/O failure at the host boundary (e.g. reading an image file).
     /// The message carries the detail; the type is generic `Custom`.
     pub fn io_failure(msg: impl Into<String>) -> Self {
-        EvalError::Custom(
-            format!("io failure: {}", msg.into()),
-            SpanContext::DUMMY,
-        )
+        EvalError::Custom(format!("io failure: {}", msg.into()), SpanContext::DUMMY)
     }
 
     /// Attach a source location to this error.
@@ -469,7 +462,11 @@ impl EvalError {
                 capability,
                 span: ctx,
             },
-            Self::TimedOut { elapsed_ms, fuel_spent, .. } => Self::TimedOut {
+            Self::TimedOut {
+                elapsed_ms,
+                fuel_spent,
+                ..
+            } => Self::TimedOut {
                 elapsed_ms,
                 fuel_spent,
                 span: ctx,

@@ -126,7 +126,11 @@ use zio_core::harness::Budgets;
 fn output_capture_collects_printed_lines() {
     let s = session();
     let result = s.eval("capture", r#"(println "hello")"#);
-    assert!(result.error.is_none(), "unexpected error: {:?}", result.error);
+    assert!(
+        result.error.is_none(),
+        "unexpected error: {:?}",
+        result.error
+    );
     let joined = result.output.join("\n");
     assert!(
         joined.contains("hello"),
@@ -163,11 +167,18 @@ fn fuel_exhaustion_does_not_poison_session() {
         max_output_bytes: None,
     });
     let s = Session::new(CapabilitySet::empty(), defaults);
-    let bad = s.eval("recurse", "(defn loop-forever () (loop-forever)) (loop-forever)");
+    let bad = s.eval(
+        "recurse",
+        "(defn loop-forever () (loop-forever)) (loop-forever)",
+    );
     assert!(bad.error.is_some(), "low fuel should error");
     assert!(!s.is_poisoned(), "fuel exhaustion is not a poison event");
     let ok = s.eval("after-fuel", "(+ 1 2)");
-    assert!(ok.error.is_none(), "session must keep running: {:?}", ok.error);
+    assert!(
+        ok.error.is_none(),
+        "session must keep running: {:?}",
+        ok.error
+    );
     assert_eq!(ok.value, Some(Value::Integer(3)));
 }
 
@@ -179,7 +190,10 @@ fn max_duration_triggers_timed_out() {
         max_output_bytes: None,
     });
     let s = Session::new(CapabilitySet::empty(), defaults);
-    let result = s.eval("burn", "(defn loop-forever () (loop-forever)) (loop-forever)");
+    let result = s.eval(
+        "burn",
+        "(defn loop-forever () (loop-forever)) (loop-forever)",
+    );
     // The wall-clock check happens at the run boundary. The eval may
     // already have returned a fuel-style error (acceptable) or a
     // TimedOut (also acceptable). The contract is that some error is
@@ -230,14 +244,17 @@ fn run_image_not_found_returns_clear_error() {
     let result = s.run_image(std::path::Path::new("/nonexistent/path.zio-image"));
     assert!(result.error.is_some(), "missing image must report an error");
     assert!(result.value.is_none());
-    assert!(!s.is_poisoned(), "a failed load must not poison the session");
+    assert!(
+        !s.is_poisoned(),
+        "a failed load must not poison the session"
+    );
 }
 
 #[test]
 fn run_image_round_trips_a_root_value() {
-    use zio_core::image::{save, ImageLimits};
-    use zio_core::io::StdIoHost;
     use zio_core::bootstrap;
+    use zio_core::image::{ImageLimits, save};
+    use zio_core::io::StdIoHost;
 
     // Save a tiny image with one root in a throwaway temp path.
     let ctx1 = bootstrap::language_context_with_io(

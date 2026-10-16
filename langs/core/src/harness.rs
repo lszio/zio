@@ -11,8 +11,8 @@
 //! remain for Slice 3.
 
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use parking_lot::Mutex;
@@ -248,12 +248,9 @@ impl Session {
         if self.cancel_flag.swap(false, Ordering::SeqCst) {
             return RunResult::err(run_id, EvalError::cancelled(fuel_spent));
         }
-        if let Some(limit) = self.defaults.max_duration {
-            if elapsed > limit {
-                return RunResult::err(run_id, EvalError::timed_out(elapsed, fuel_spent));
-            }
+        if matches!(self.defaults.max_duration, Some(limit) if elapsed > limit) {
+            return RunResult::err(run_id, EvalError::timed_out(elapsed, fuel_spent));
         }
-
         let output = probe.into_output_lines();
         let mut events = Vec::new();
         if probe.truncated() {
@@ -291,10 +288,10 @@ impl Session {
         let bytes = match std::fs::read(image_path) {
             Ok(b) => b,
             Err(e) => {
-                return RunResult::err(run_id, EvalError::io_failure(format!(
-                    "cannot read {}: {e}",
-                    image_path.display()
-                )));
+                return RunResult::err(
+                    run_id,
+                    EvalError::io_failure(format!("cannot read {}: {e}", image_path.display())),
+                );
             }
         };
         let text = match String::from_utf8(bytes) {
