@@ -1,4 +1,5 @@
 use crate::span::Span;
+use std::time::Duration;
 use thiserror::Error;
 
 #[derive(Error, Debug, Clone, PartialEq, Eq)]
@@ -145,6 +146,33 @@ pub enum EvalError {
     RecurWithoutLoop {
         span: SpanContext,
     },
+    /// The run was cancelled (harness contract §9): a `cancel` request was
+    /// delivered before or during the run. Distinct from a program error:
+    /// the program did not do anything wrong, and a retry is legitimate.
+    Cancelled {
+        fuel_spent: u64,
+        span: SpanContext,
+    },
+    /// A capability-gated host call was refused (harness contract
+    /// §10/§12). The launcher did not grant the capability, so the call
+    /// never reached the host. `capability` names the missing bit
+    /// ("FileRead", "Network", …). Typed, not a generic failure.
+    CapabilityDenied {
+        capability: String,
+        span: SpanContext,
+    },
+    /// The run exceeded its wall-clock budget (harness contract §8).
+    /// The budget check is at the run boundary in Slice 2, so the
+    /// measurement is approximate, never nanosecond-precise.
+    TimedOut {
+        elapsed_ms: u64,
+        fuel_spent: u64,
+        span: SpanContext,
+    },
+    /// A `.zio-image` could not be parsed or restored (harness contract
+    /// §14). The image is malformed, from another runtime version, or
+    /// demands a native registration the target context lacks.
+    LoadError(String, SpanContext),
     Custom(String, SpanContext),
 }
 
@@ -219,6 +247,28 @@ impl std::fmt::Display for EvalError {
             RecurWithoutLoop { span: ctx } => {
                 write!(f, "recur without loop frame{}", ctx.location())
             }
+            Cancelled {
+                fuel_spent,
+                span: ctx,
+            } => write!(
+                f,
+                "run cancelled after {fuel_spent} evaluation steps{}",
+                ctx.location()
+            ),
+            CapabilityDenied {
+                capability,
+                span: ctx,
+            } => write!(f, "capability denied: {capability}{}", ctx.location()),
+            TimedOut {
+                elapsed_ms,
+                fuel_spent,
+                span: ctx,
+            } => write!(
+                f,
+                "run timed out after {elapsed_ms} ms ({fuel_spent} evaluation steps spent){}",
+                ctx.location()
+            ),
+            LoadError(msg, ctx) => write!(f, "image load error: {msg}{}", ctx.location()),
             Custom(msg, ctx) => write!(f, "{msg}{}", ctx.location()),
         }
     }
@@ -328,6 +378,45 @@ impl EvalError {
         }
     }
 
+    /// A cancel request was delivered for this run (harness contract §9).
+    /// `fuel_spent` records how much of the budget the run consumed.
+    pub fn cancelled(fuel_spent: u64) -> Self {
+        EvalError::Cancelled {
+            fuel_spent,
+            span: SpanContext::DUMMY,
+        }
+    }
+
+    /// A capability-gated host call was refused (harness contract
+    /// §10/§12). `cap` names the missing bit, e.g. "FileRead".
+    pub fn capability_denied(cap: &str) -> Self {
+        EvalError::CapabilityDenied {
+            capability: cap.to_string(),
+            span: SpanContext::DUMMY,
+        }
+    }
+
+    /// The run exceeded its wall-clock budget (harness contract §8).
+    pub fn timed_out(elapsed: Duration, fuel_spent: u64) -> Self {
+        EvalError::TimedOut {
+            elapsed_ms: elapsed.as_millis() as u64,
+            fuel_spent,
+            span: SpanContext::DUMMY,
+        }
+    }
+
+    /// A `.zio-image` could not be parsed or restored (harness contract
+    /// §14).
+    pub fn load_error(msg: impl Into<String>) -> Self {
+        EvalError::LoadError(msg.into(), SpanContext::DUMMY)
+    }
+
+    /// An I/O failure at the host boundary (e.g. reading an image file).
+    /// The message carries the detail; the type is generic `Custom`.
+    pub fn io_failure(msg: impl Into<String>) -> Self {
+        EvalError::Custom(format!("io failure: {}", msg.into()), SpanContext::DUMMY)
+    }
+
     /// Attach a source location to this error.
     pub fn with_span(self, span: Span) -> Self {
         let ctx = SpanContext { span: Some(span) };
@@ -365,6 +454,24 @@ impl EvalError {
             Self::MacroError(s, _) => Self::MacroError(s, ctx),
             Self::RecurNotTail { .. } => Self::RecurNotTail { span: ctx },
             Self::RecurWithoutLoop { .. } => Self::RecurWithoutLoop { span: ctx },
+            Self::Cancelled { fuel_spent, .. } => Self::Cancelled {
+                fuel_spent,
+                span: ctx,
+            },
+            Self::CapabilityDenied { capability, .. } => Self::CapabilityDenied {
+                capability,
+                span: ctx,
+            },
+            Self::TimedOut {
+                elapsed_ms,
+                fuel_spent,
+                ..
+            } => Self::TimedOut {
+                elapsed_ms,
+                fuel_spent,
+                span: ctx,
+            },
+            Self::LoadError(s, _) => Self::LoadError(s, ctx),
             Self::Custom(s, _) => Self::Custom(s, ctx),
         }
     }
@@ -392,7 +499,11 @@ impl EvalError {
             | Self::TypeError { span, .. }
             | Self::DivisionByZero { span }
             | Self::RecurNotTail { span }
-            | Self::RecurWithoutLoop { span } => span,
+            | Self::RecurWithoutLoop { span }
+            | Self::Cancelled { span, .. }
+            | Self::CapabilityDenied { span, .. }
+            | Self::TimedOut { span, .. }
+            | Self::LoadError(_, span) => span,
         };
         if context.span.is_none() {
             self.with_opt_span(span)

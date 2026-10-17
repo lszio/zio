@@ -13,6 +13,52 @@ complete developer distribution described below. Capability status is
 authoritative in [feature-matrix.md](feature-matrix.md); this page only
 describes how releases are produced.
 
+## v0.2.2 — alpha preview release
+
+v0.2.2 is a language/toolchain **alpha preview**: the GitHub release is a
+prerelease and npm packages publish under the `alpha` dist-tag, both despite
+the plain numeric version; the Docker image is tagged with the exact version
+only. Other suffix-prerelease distributions are handled the same way. Stable
+`latest` never changes: `npm install @lszio/zio` / `@lszio/zio-core` keeps
+resolving to the last stable release. Fetch this preview with `@alpha` or
+the explicit `@0.2.2` version.
+
+Scope — what this preview claims:
+
+- Zio is a semantically independent general-purpose Lisp; Rust supplies the
+  bootstrap and trusted host.
+- **Experimental and included**: language core (reader/evaluator/compiler),
+  structured query, `zio fmt`, LSP, bytecode runtime, first-stage
+  self-hosting, runtime images, native application export, and native JS
+  (embedded QuickJS).
+- Browser WASM ships as a separate experimental artifact (`@lszio/zio-core`),
+  not inside the native archives; native distributions cover Linux x86_64
+  and aarch64.
+- **Explicitly not claimed**: Rust-free bootstrap, long-session reliability,
+  remote restart, standard MCP, full isolation, or a complete package
+  manager. `inline`/raw blocks, the Rust engine and JIT remain planned.
+
+Local release-profile acceptance (2026-10-17): a clean temporary directory
+with only the installed tree on `ZIO_PATH` passed exact integer arithmetic,
+structured help, library loading, dynamic eval, native JS, native application
+export (49/50), and a real LSP session. Installed `self-build --verify`
+produced byte-identical Stage 1/2/3 files (739890 bytes each), with known
+answers `sum=10` and `closure=15`. This supersedes the earlier debug-profile
+120-second timeout; cross-platform release artifacts still require CI and
+post-publication verification.
+
+The corrected candidate passed all 410 workspace tests, Rust formatting,
+CI-parity Clippy, npm package-layout/provenance checks and workflow validation.
+A real Chromium run observed browser-bundle console output 49/50 and persistent
+REPL evaluation yielding 42. A release-blocking infinite-eval timeout was fixed
+at the shared fuel checkpoint: a 20 ms unlimited-fuel run returns `TimedOut`
+and the same session subsequently returns 42. This does not add hard interruption
+of native calls or complete compile/image budgets.
+
+The release lockfile also updates `rustls` from 0.23.44 to 0.23.45 for
+[GHSA-2mjx-qc3c-rqvc](https://github.com/advisories/GHSA-2mjx-qc3c-rqvc),
+the TLS 1.3 handshake encryption-level validation advisory.
+
 ## Complete distribution target (planned)
 
 The [language and toolchain design](superpowers/specs/2026-10-11-zio-language-toolchain-design.md)
@@ -88,7 +134,7 @@ cd "$(mktemp -d)"
 ## Cutting a release
 
 ```bash
-# 1. The version lives in exactly one place.
+# 1. Cargo.toml is authoritative; sync Cargo.lock and npm manifests too.
 version=$(awk -F'"' '/^version/ {print $2; exit}' Cargo.toml)
 git commit -am "release: v$version"
 git tag "v$version"
@@ -109,9 +155,12 @@ Pushing the tag triggers `.github/workflows/release.yml`:
 | `github-release` | Attaches the archives, checksums and the WASM payload (`manifest.json` travels inside each archive, not as a separate asset) |
 
 Every job is gated on `verify`, so a broken test run publishes nothing.
-`workflow_dispatch` with `dry_run: true` runs everything except the
-publishing steps, which is the way to check a release without cutting
-one.
+`workflow_dispatch` with `dry_run: true` builds and packages everything —
+native archives, WASM and CLI npm staging, the Docker image and the GitHub
+release payload — but skips registry publishing: the `crates` job is skipped
+entirely in dry-run (its registry-order dependency chain is exactly what the
+dry run exists to avoid), and neither npm job publishes. It is the way to
+check every payload without cutting a release.
 
 The `crates` job is strict: an unpublished package stops that job rather
 than warning, because a silently missing Rust library is a release that

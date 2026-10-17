@@ -22,6 +22,7 @@
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant};
 
 use crate::span::Span;
 
@@ -96,8 +97,9 @@ pub trait Observer: Send + Sync {
     }
 }
 
-/// The state the evaluator carries: a sequence counter and the observer,
-/// both absent when nobody is watching.
+/// The state the evaluator carries: a sequence counter, the observer,
+/// and an optional wall-clock deadline — the first two absent when
+/// nobody is watching, the deadline when nothing budgets time.
 ///
 /// Attached through `&self` because a context is shared by every form
 /// that evaluates in it, and attaching an observer is a decision the
@@ -118,6 +120,11 @@ pub struct Observation {
     fuel: Arc<AtomicU64>,
     /// Ceiling on `fuel`. `0` = unbounded.
     fuel_ceiling: Arc<AtomicU64>,
+    /// Wall-clock deadline, `(start, duration)`. Crate hosts arm it to
+    /// bound a run's time; `None` = no deadline. `Copy`, so the
+    /// hot-path check costs one branch and no allocation or lock when
+    /// absent.
+    deadline: Option<(Instant, Duration)>,
 }
 
 impl Clone for Observation {
@@ -130,6 +137,7 @@ impl Clone for Observation {
             payloads: Arc::clone(&self.payloads),
             fuel: Arc::clone(&self.fuel),
             fuel_ceiling: Arc::clone(&self.fuel_ceiling),
+            deadline: self.deadline,
         }
     }
 }
@@ -192,14 +200,24 @@ impl Observation {
         self.fuel.store(0, Ordering::Relaxed);
     }
 
+    /// Impose a wall-clock deadline, counted from now. The fuel
+    /// checkpoint refuses work once it expires, so a runaway program is
+    /// stopped even when fuel is unbounded. Crate-private: `Session`
+    /// arms it at a run boundary; embedders that budget time go through
+    /// the harness.
+    pub(crate) fn set_deadline(&mut self, duration: Duration) {
+        self.deadline = Some((Instant::now(), duration));
+    }
+
     /// Steps spent so far.
     pub fn fuel_spent(&self) -> u64 {
         self.fuel.load(Ordering::Relaxed)
     }
 
-    /// Spend one step. `false` means the ceiling is spent: the caller
-    /// must stop. One relaxed atomic add per evaluated node — the check
-    /// is one branch on top of work the evaluator already does.
+    /// Spend one step. `false` means the charge is refused — ceiling
+    /// spent or wall-clock deadline expired: the caller must stop. One
+    /// relaxed atomic add per evaluated node — the check is one branch
+    /// on top of work the evaluator already does.
     pub fn spend_fuel(&self) -> bool {
         self.spend_fuel_by(1)
     }
@@ -207,8 +225,17 @@ impl Observation {
     /// Spend `units` steps in one charge. A compiled loop spends per
     /// instruction, and paying an atomic per instruction there would
     /// make the accounting more expensive than the work. `false` means
-    /// the ceiling is spent and the caller must stop.
+    /// the charge is refused — ceiling spent or deadline expired — and
+    /// the caller must stop.
     pub fn spend_fuel_by(&self, units: u64) -> bool {
+        // Deadline first: fuel may be unbounded, but a deadline is a
+        // promise the fuel ceiling has no opinion on. Absent: one Copy
+        // branch, nothing allocated, nothing locked.
+        if let Some((start, duration)) = self.deadline {
+            if start.elapsed() > duration {
+                return false;
+            }
+        }
         let ceiling = self.fuel_ceiling.load(Ordering::Relaxed);
         if ceiling == 0 {
             return true;

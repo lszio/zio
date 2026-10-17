@@ -1434,7 +1434,11 @@ fn error_context_mut(error: &mut EvalError) -> &mut SpanContext {
         | EvalError::TypeError { span, .. }
         | EvalError::DivisionByZero { span }
         | EvalError::RecurNotTail { span }
-        | EvalError::RecurWithoutLoop { span } => span,
+        | EvalError::RecurWithoutLoop { span }
+        | EvalError::Cancelled { span, .. }
+        | EvalError::CapabilityDenied { span, .. }
+        | EvalError::TimedOut { span, .. }
+        | EvalError::LoadError(_, span) => span,
     }
 }
 

@@ -1,0 +1,18 @@
+[package]
+name = "zio-mcp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Zio interpreter MCP basic service: stdio JSON-RPC 2.0 over the harness"
+
+[[bin]]
+name = "zio-mcp"
+path = "src/main.rs"
+
+[dependencies]
+zio-core = { workspace = true }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+parking_lot = "0.12"

@@ -1,9 +1,9 @@
 [workspace]
 resolver = "2"
-members = ["langs/core", "langs/cli", "langs/wasi", "contribs/native/js", "contribs/native/host", "contribs/native/loom", "contribs/language-server"]
+members = ["langs/core", "langs/cli", "langs/wasi", "langs/mcp", "contribs/native/js", "contribs/native/host", "contribs/native/loom", "contribs/language-server"]
 
 [workspace.package]
-version = "0.2.1"
+version = "0.2.2"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/lszio/zio"
@@ -20,9 +20,9 @@ categories = ["compilers", "development-tools"]
 # that requirement in one place; members inherit it with
 # `workspace = true`.
 [workspace.dependencies]
-zio-core = { version = "0.2.1", path = "langs/core" }
-zio-host = { version = "0.2.1", path = "contribs/native/host" }
-zio-js = { version = "0.2.1", path = "contribs/native/js" }
+zio-core = { version = "0.2.2", path = "langs/core" }
+zio-host = { version = "0.2.2", path = "contribs/native/host" }
+zio-js = { version = "0.2.2", path = "contribs/native/js" }
 
 # The published binaries: `zio` is the language entry point and `zio-lsp`
 # the language server. Everything else in the release tree is data

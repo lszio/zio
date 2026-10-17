@@ -758,7 +758,7 @@ checksum = "f9f8bd3e56ce4dfc153cf470fffbfa98c7620958b312ca5c3a4b8d5181fd13c6"
 
 [[package]]
 name = "loom"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "parking_lot",
  "serde",
@@ -1103,9 +1103,9 @@ checksum = "6b1e7f9a428571be2dc5bc0505c13fb6bf936822b894ec87abf8a08a4e51742d"
 
 [[package]]
 name = "rustls"
-version = "0.23.44"
+version = "0.23.45"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6725596c3f2c3a0aef021139e145d4eafe314a6623e4680ca83852b2c67ab2ba"
+checksum = "0d41d731c7d2f962d1ccc364cec258de3c0e93b38c2fb3ba97ac74513048d634"
 dependencies = [
  "log",
  "once_cell",
@@ -1770,7 +1770,7 @@ dependencies = [
 
 [[package]]
 name = "zio-cli"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "im",
  "zio-core",
@@ -1780,7 +1780,7 @@ dependencies = [
 
 [[package]]
 name = "zio-core"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "criterion",
  "im",
@@ -1796,7 +1796,7 @@ dependencies = [
 
 [[package]]
 name = "zio-host"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "libc",
  "parking_lot",
@@ -1811,7 +1811,7 @@ dependencies = [
 
 [[package]]
 name = "zio-js"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "rquickjs",
  "zio-core",
@@ -1819,15 +1819,25 @@ dependencies = [
 
 [[package]]
 name = "zio-lsp"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "serde_json",
  "zio-core",
 ]
 
 [[package]]
+name = "zio-mcp"
+version = "0.2.2"
+dependencies = [
+ "parking_lot",
+ "serde",
+ "serde_json",
+ "zio-core",
+]
+
+[[package]]
 name = "zio-wasi"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "zio-core",
 ]

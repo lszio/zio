@@ -5,7 +5,7 @@
 > 2026-10-15 新增[语言与生态评审](language-ecosystem-review.md)、
 > [关键设计决策及思维导图](language-design-decisions.md)和[完整生态路线图草案](ecosystem-roadmap.md)。
 > 草案梳理语义、运行时、项目工具、包与库、稳定发行的依赖和验收，尚未替代已采纳的工具链规格与工作包。
-> [AI 交互主线](ai-language-interaction.md)的 help/结构化查询已完成 ZIO-003/004 合同与首批实现；condition/restart、执行 harness 和解释器 MCP 仍按后续任务推进，状态与本次证据见[特性矩阵](feature-matrix.md)。
+> [AI 交互主线](ai-language-interaction.md)的 help/结构化查询已完成 ZIO-003/004 合同与首批实现；执行 harness 已有 ZIO-008 Slice 1/2 实验实现，解释器 MCP 以自定义 JSON-RPC 基础服务落地（ZIO-009）——均未达完成：mid-run cancel/进程组杀掉/内存预算（Slice 3）、标准 MCP 生命周期与 tools 包装、condition/restart 与远程恢复仍缺，状态与本次证据见[特性矩阵](feature-matrix.md)。
 
 > 2026-10-11 当前主线：语义独立的通用 Lisp、元循环/自举与运行时镜像，
 > 最终以全套开发发行和可裁剪应用产物交付。

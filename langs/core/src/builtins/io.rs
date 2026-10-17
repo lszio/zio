@@ -169,14 +169,16 @@ pub fn slurp(args: Vector<Value>, engine: &dyn EvalEngine) -> Result<Value, Eval
         Value::String(s) => s.clone(),
         other => return Err(EvalError::type_error("string", format!("{other}"))),
     };
-    engine
-        .io()
-        .read_file(&path)
-        .map(Value::String)
-        .map_err(|e| EvalError::custom(format!("slurp error: {e}")))
+    // A capability denial is a typed contract signal (harness contract
+    // §10/§12); other I/O errors get a call-site prefix.
+    match engine.io().read_file(&path) {
+        Ok(text) => Ok(Value::String(text)),
+        Err(err @ EvalError::CapabilityDenied { .. }) => Err(err),
+        Err(e) => Err(EvalError::custom(format!("slurp error: {e}"))),
+    }
 }
 
-/// (spit path content) → nil — write string to a file (via IoHost).
+/// (spit path content) → nil — write a string to a file (via IoHost).
 pub fn spit(args: Vector<Value>, engine: &dyn EvalEngine) -> Result<Value, EvalError> {
     if args.len() != 2 {
         return Err(EvalError::wrong_arg_count(2, args.len()));
@@ -189,11 +191,13 @@ pub fn spit(args: Vector<Value>, engine: &dyn EvalEngine) -> Result<Value, EvalE
         Value::String(s) => s.clone(),
         other => return Err(EvalError::type_error("string", format!("{other}"))),
     };
-    engine
-        .io()
-        .write_file(&path, &content)
-        .map_err(|e| EvalError::custom(format!("spit error: {e}")))?;
-    Ok(Value::Nil)
+    // Capability denials are typed contract signals (harness contract
+    // §10/§12); other I/O errors get a call-site prefix.
+    match engine.io().write_file(&path, &content) {
+        Ok(()) => Ok(Value::Nil),
+        Err(err @ EvalError::CapabilityDenied { .. }) => Err(err),
+        Err(e) => Err(EvalError::custom(format!("spit error: {e}"))),
+    }
 }
 
 pub fn register(env: &Arc<Env>) {
