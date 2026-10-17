@@ -59,6 +59,15 @@ The release lockfile also updates `rustls` from 0.23.44 to 0.23.45 for
 [GHSA-2mjx-qc3c-rqvc](https://github.com/advisories/GHSA-2mjx-qc3c-rqvc),
 the TLS 1.3 handshake encryption-level validation advisory.
 
+Post-publication archive metadata correction: the initial native manifests
+listed `manifest.json` as a component and therefore contained an impossible
+self-checksum. The two GitHub archives and outer checksum assets were replaced
+with manifests excluding that entry; all other 97 files in each archive are
+byte-identical. The v0.2.2 tag, executables, npm packages, crates and container
+are unchanged. The installer now excludes its output manifest, and
+`tools/smoke-toolchain-artifacts.sh` verifies every installed component size
+and hash. The archive's outer checksum authenticates the manifest itself.
+
 ## Complete distribution target (planned)
 
 The [language and toolchain design](superpowers/specs/2026-10-11-zio-language-toolchain-design.md)

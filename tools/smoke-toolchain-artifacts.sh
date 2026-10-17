@@ -116,4 +116,22 @@ case "$broken_out" in
   *) fail "damage was not named: $broken_out" ;;
 esac
 
+# A manifest cannot hash itself: the archive checksum covers that file.
+ZIO_PROFILE=debug bash "$root/tools/install.sh" "$work/dist"
+python3 - "$work/dist" <<'PY'
+import hashlib
+import json
+import pathlib
+import sys
+
+root = pathlib.Path(sys.argv[1])
+manifest = json.loads((root / "manifest.json").read_text())
+assert all(c["path"] != "manifest.json" for c in manifest["components"])
+for component in manifest["components"]:
+    data = (root / component["path"]).read_bytes()
+    assert len(data) == component["bytes"], component["path"]
+    assert hashlib.sha256(data).hexdigest() == component["sha256"], component["path"]
+print("PASS installed manifest component sizes and hashes")
+PY
+
 printf 'PASS toolchain artifacts: save/inspect/run, grants, canary, compile, bundled apps\n'

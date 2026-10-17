@@ -85,7 +85,7 @@ write_manifest() {
       size="$(wc -c < "$f" | tr -d ' ')"
       if [ "$first" = "1" ]; then first=0; else printf ',\n'; fi
       printf '    {"path": "%s", "bytes": %s, "sha256": "%s"}' "$rel" "$size" "$sum"
-    done < <(cd "$TARGET" && find . -type f | sed 's|^\./||' | LC_ALL=C sort | while IFS= read -r f; do printf '%s\n' "$TARGET/$f"; done)
+    done < <(cd "$TARGET" && find . -type f ! -path './manifest.json' | sed 's|^\./||' | LC_ALL=C sort | while IFS= read -r f; do printf '%s\n' "$TARGET/$f"; done)
     printf '\n  ]\n'
     printf '}\n'
   } > "$TARGET/manifest.json"
