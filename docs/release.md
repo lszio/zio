@@ -55,6 +55,10 @@ at the shared fuel checkpoint: a 20 ms unlimited-fuel run returns `TimedOut`
 and the same session subsequently returns 42. This does not add hard interruption
 of native calls or complete compile/image budgets.
 
+The release lockfile also updates `rustls` from 0.23.44 to 0.23.45 for
+[GHSA-2mjx-qc3c-rqvc](https://github.com/advisories/GHSA-2mjx-qc3c-rqvc),
+the TLS 1.3 handshake encryption-level validation advisory.
+
 ## Complete distribution target (planned)
 
 The [language and toolchain design](superpowers/specs/2026-10-11-zio-language-toolchain-design.md)
