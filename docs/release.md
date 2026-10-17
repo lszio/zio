@@ -68,6 +68,12 @@ are unchanged. The installer now excludes its output manifest, and
 `tools/smoke-toolchain-artifacts.sh` verifies every installed component size
 and hash. The archive's outer checksum authenticates the manifest itself.
 
+Public documentation on `main` can be newer than the tagged release.
+README and package-description corrections in source do not replace immutable
+npm/crates versions; registry metadata changes with the next publication.
+The site's footer identifies the actual documentation build independently
+from the alpha release linked by its installation guide.
+
 ## Complete distribution target (planned)
 
 The [language and toolchain design](superpowers/specs/2026-10-11-zio-language-toolchain-design.md)
@@ -258,10 +264,13 @@ that job fails while every other job stands.
 
 The site reads its language version from `[workspace.package].version` in
 `Cargo.toml`; there is no separately maintained page version. A build is
-labelled a release only when its commit has the matching `v<version>` tag
-and its working tree is clean. Untagged, modified or unverifiable builds
-are labelled development builds. The footer shows the documentation build's
-branch, commit link and whether it includes uncommitted changes.
+classified as a tagged release only when its commit has the matching
+`v<version>` tag and its working tree is clean. Within that category,
+0.2.2 and suffix-prerelease versions are labelled **预发布**, not **正式版**,
+matching the publication channel. Untagged, modified or unverifiable builds
+are labelled **开发版**. The footer shows the documentation build's branch,
+commit link and whether it includes uncommitted changes; a page naming the
+latest alpha does not turn a newer documentation build into that release.
 
 Local builds read Git metadata. Source archives and Docker builds without
 Git show unavailable provenance unless CI supplies these build variables:

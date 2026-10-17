@@ -1,8 +1,8 @@
 # Zio 的 AI 交互设计：查询、实验、恢复与 MCP
 
-日期：2026-10-16。状态：**§4 查询合同已定案（ZIO-003）；其余接口与实现方案仍为待评审草案**。
+更新：2026-10-17。本文保留 AI 交互的设计方向；当前交付范围以 [0.2.2 alpha 发布说明](release.md)与[特性矩阵](feature-matrix.md)为准，不将后续方案写成已实现。
 
-用户要求：Zio 面向 AI 时代，要让 Agent 能理解语言、查询函数、自由编译和探索特性；以 Common Lisp condition/restart 为恢复核心，并可由解释器提供 MCP 服务。本文把这些要求纳入语言与工具链主线，不将其限定为 Loom 或某个模型供应商功能。查询实现及实跑证据以[特性矩阵](feature-matrix.md)与 paca ZIO-004 为准；本文不把后续 harness/restart/MCP 草案写成已实现。
+查询合同已采纳并实现；[condition/restart 合同](superpowers/specs/2026-10-16-zio-condition-restart-contract.md)与[执行 harness 合同](superpowers/specs/2026-10-16-zio-execution-harness-contract.md)已形成，但本地 restart 和远程恢复尚未交付。语言执行 harness 有部分实现；`langs/mcp/` 只有自定义 stdio JSON-RPC 服务，**不是标准 MCP server**，尚缺 `initialize` 和 `tools/list`／`tools/call` 等协议表面。
 
 关联：[关键决策 D09/D19–D21](language-design-decisions.md) · [生态路线图](ecosystem-roadmap.md) · [编译器/VM/GC 入门](../blog/05-compiler-vm-gc.md) · [condition/restart 与 AI 博客](../blog/06-restarts-help-harness-mcp.md)。
 
@@ -22,8 +22,8 @@ Agent 应能完成这样的闭环：查询当前语言能力 → 找到函数与
 | 文档 | [`;; doc:` 约定](libdoc-convention.md)、静态库参考生成 | 按符号身份关联文档/签名/来源与目标能力的查询索引 |
 | 观察/预算 | `EvalRuntime::spend`、`Observation`、host 执行机制 | 限额统一、输出捕获、执行状态与取消/暂停生命周期 |
 | 条件/重启 | [ZOS 规格](zos-spec.md)有 condition/restart 方向；当前 try/catch 合同以字符串错误为主 | 未退栈 handler、动态 restart、参数检查、控制转移、清理规则 |
-| 现有 Loom harness | 模型调用、会话、工具、预算、取消与回放合同 | **语言执行 harness**；不把 provider 对话 harness 当作可恢复 VM |
-| MCP | 本轮检索未发现解释器 MCP server 实现 | 传输适配、工具/资源协议、显式会话与执行句柄、客户端验收 |
+| 模型与语言执行 harness | Loom 已有模型/工具/预算/取消适配；核心执行 harness 已有 compile/eval/image 入口与部分输出/预算合同 | 两者不等于可恢复 VM；执行中取消、不可取消调用隔离、完整 compile/image 预算与长会话回收尚未完成 |
+| MCP | `langs/mcp/` 已有自定义 stdio JSON-RPC；不是标准 MCP，也未装入原生发行归档 | MCP 生命周期、工具/资源包装、客户端端到端验收；不把 JSON-RPC 连通当作 MCP 兼容 |
 
 ## 2. 方案选择
 
@@ -49,7 +49,7 @@ CLI / REPL / 编辑器 / 外部 Agent（MCP client）
 IoHost / 引擎 / 隔离 worker / 宿主授权
 ```
 
-候选 CLI 入口是 `zio mcp --transport stdio`，**尚未实现**。它启动解释器服务模式，调用同一语言装配与编译入口；不为 MCP 另造语法、求值规则或隐藏 AST fallback。协议编解码属于 adapter，动态 condition/restart 属于语言/运行时，模型调用属于可选 Loom。使用外部 Agent 不要求 Zio 内置 LLM。
+候选 CLI 入口 `zio mcp --transport stdio` **尚未实现**；当前源码二进制 `zio-mcp` 是自定义 JSON-RPC 适配，不应作为此命令或标准 MCP server 的替代品。目标服务应复用同一语言装配与编译入口，不另造语法、求值规则或隐藏 AST fallback。协议属于 adapter，动态 condition/restart 属于语言/运行时，模型调用属于可选 Loom；外部 Agent 不要求语言内置 LLM。
 
 AST/元循环/compiled 能力应分别声明。首个 MCP 原型可提供已验证入口的 compile/run；需要远程恢复的执行面在可暂停后再公布该能力，不能宣称所有入口都已支持 resume。
 
@@ -154,6 +154,8 @@ condition 表达“发生了什么”，handler 决定“怎样应对”，resta
 ## 6. 语言执行 harness
 
 harness 是执行会话、试验、预算和观察的编排层。它不代替 VM、GC 或 condition 机制，也不负责选择哪个模型“更聪明”。
+
+**当前实现边界：** `langs/core/src/harness.rs` 的每次 eval 使用全新语言上下文，捕获有界输出，施加 fuel 与求值检查点上的耗时期限；会话 ID 不代表定义跨 eval 保留，也不代表 VM 可以暂停。原生不可取消调用、compile/image 全阶段预算、内存预算与执行中取消仍不完整。下面的持久会话与恢复模型是目标合同，不是该实现的现状。
 
 会话记录语言/runtime 版本、模块根、工作目录、已授予能力、metadata revision 与配额。Agent 在已授予的范围内可以多次编译、运行和查询，不要求每次实验重新授权；需要新增能力时明确返回缺少何种授权，由宿主现有策略决定。
 

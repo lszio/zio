@@ -1,7 +1,7 @@
 {
   "name": "@lszio/zio",
   "version": "0.2.2",
-  "description": "The Zio language: a general-purpose Lisp with a self-hosting compiler, an image runtime, and one CLI — REPL, script runner, compiler, formatter and language server",
+  "description": "Zio general-purpose Lisp toolchain for Linux: REPL, scripts, bytecode compiler, runtime images, formatter and language server",
   "license": "MIT",
   "repository": {
     "type": "git",

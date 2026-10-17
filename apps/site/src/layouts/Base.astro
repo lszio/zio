@@ -1,6 +1,7 @@
 ---
 import '../styles/global.css';
 const buildInfo = import.meta.env.ZIO_BUILD_INFO;
+const buildLabel = buildInfo.release ? (buildInfo.prerelease ? '预发布' : '正式版') : '开发版';
 
 interface Props {
   title: string;
@@ -50,7 +51,7 @@ const isActive = (href: string) => !href.includes('#') && current.startsWith(hre
     <div class="container nav-bar">
       <a href={`${base}/`} class="logo">
         <span class="logo-brackets">&lt;(</span>ZIO<span class="logo-brackets">)&gt;</span>
-        <span class="logo-tag">v{buildInfo.version} · {buildInfo.release ? '正式版' : '开发版'}</span>
+        <span class="logo-tag">v{buildInfo.version} · {buildLabel}</span>
       </a>
       <ul class="nav-links">
         {links.map((l) => (
@@ -88,7 +89,7 @@ const isActive = (href: string) => !href.includes('#') && current.startsWith(hre
       </div>
     </div>
     <div class="container build-provenance" aria-label="文档构建版本">
-      <span>文档对应此构建 · v{buildInfo.version} · {buildInfo.release ? '正式版' : '开发版'}</span>
+      <span>文档对应此构建 · v{buildInfo.version} · {buildLabel}</span>
       <span>分支：{buildInfo.branch ?? (buildInfo.commit ? 'detached HEAD' : '信息不可用')}</span>
       {buildInfo.commit
         ? <a href={`https://github.com/lszio/zio/commit/${buildInfo.commit}`}>commit {buildInfo.commit.slice(0, 8)}</a>

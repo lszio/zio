@@ -33,6 +33,16 @@ Status meanings:
 - **Planned**: represented only by a placeholder, example data, specification,
   or roadmap; it is not an implemented capability.
 
+The current published language/toolchain preview is [v0.2.2 alpha](https://github.com/lszio/zio/releases/tag/v0.2.2)
+(2026-10-17), tagged at `4277ae8b8897e430ced0be34efb63f1e4a4b97b2`.
+Both npm packages use `alpha=0.2.2`; stable `latest` remains `0.2.1`.
+The table's **Stable** label describes a covered capability contract, not a
+stable release channel or a promise that all APIs/formats are frozen.
+Release scope, actual artifact checks and the archive-manifest metadata
+correction (`c271900`) are recorded in [release.md](release.md).
+
+## Historical evidence baseline
+
 Evidence baseline recorded 2026-10-16 against HEAD
 `acdbd48cca70cac6301172442a101a61623b8134` (workspace 0.2.1), branch
 `feat/paca-m1-query`, with pre-existing uncommitted README/blog/design documents.
@@ -49,11 +59,13 @@ unmodified release checkout.
   **historically accepted** = the row anchors a dated work-package record;
   **partially implemented** = the row mixes delivered and target parts (e.g.
   A01, J00 with J01 pending); **undecided design** = a proposal not yet adopted
-  (the ZIO-00x design tasks below, and the [ecosystem review](language-ecosystem-review.md)
+  (the task requirements and [ecosystem review](language-ecosystem-review.md)
   recommendations).
 - **Outstanding rechecks are named below** — notably A01 real-browser application
   acceptance, A02's pinned wasmtime run, clean developer-install resource closure
   and long-session lifecycle. Current-run observations remain separately qualified.
+
+## Capability contracts
 
 | Area | Status | Evidence |
 | --- | --- | --- |
@@ -151,37 +163,9 @@ commands were exercised on 2026-10-16.
 
 ## Paca task alignment (ZIO-001..025)
 
-The following is the baseline snapshot before new task execution, not a second live task tracker. Current task statuses and evidence live only in paca (zio project `84831034-2dfc-4d7b-8983-a2e2027d6530`); [`zio-task-list.md`](zio-task-list.md) mirrors requirements and prerequisites.
+Task status and scheduling live only in paca (zio project `84831034-2dfc-4d7b-8983-a2e2027d6530`); [`zio-task-list.md`](zio-task-list.md) mirrors requirements and prerequisites, not live completion status. Capability rows above describe implementation and evidence; they do not assign paca completion states. Adopted contracts cover [query metadata](language-reference.md), [condition/restart](superpowers/specs/2026-10-16-zio-condition-restart-contract.md) and [execution harness](superpowers/specs/2026-10-16-zio-execution-harness-contract.md); a contract does not complete its implementation.
 
 Old-package continuation per [task-list §6](zio-task-list.md): J01→ZIO-015, D00→ZIO-016, A01/A02/D01→ZIO-017, R00/E00→ZIO-021. L00–L02, M00–M02, A00, A02 and J00 are historically accepted above and are not restarted; their remaining gaps (A01 real-browser acceptance, A02 pinned wasmtime run, per-app WASI compilation without local rustc) live in the continuation tasks.
-
-| Task | Scope | Status in this matrix |
-| --- | --- | --- |
-| ZIO-001 | Status/evidence baseline — this document | In progress (this edit; acceptance = traceability + recheck gap list) |
-| ZIO-002 | Semantics batch decisions (D01–D08, D12–D18) | Undecided design — recommendations in [ecosystem review](language-ecosystem-review.md) §4.1–4.3 not adopted |
-| ZIO-003 | Query metadata contract | Undecided design — no adopted spec |
-| ZIO-004 | Structured query + REPL display | Not implemented (design pending ZIO-003) |
-| ZIO-005 | condition/handler/restart/cleanup design | Undecided design (review §4.1 structured errors) |
-| ZIO-006 | Synchronous local restart + diagnostics | Not implemented (design pending ZIO-005) |
-| ZIO-007 | Execution harness design | Undecided design (anchors: L00 three execution surfaces, M02 CLI) |
-| ZIO-008 | Minimal harness implementation | Not implemented (design pending ZIO-007) |
-| ZIO-009 | Interpreter MCP service | Not implemented (pending ZIO-004 + ZIO-008) |
-| ZIO-010 | GC & resource lifecycle design | Undecided design (review §4.4; ADR-014/015 deferred to VM phase) |
-| ZIO-011 | Reclamation + long-session validation | Not implemented (design pending ZIO-010) |
-| ZIO-012 | Pause/resume + remote restart | Not implemented (pending ZIO-006/008/011; static M00–M02 images are not activity-stack snapshots) |
-| ZIO-013 | Project config, deps, lockfile | Undecided design (review §4.5) |
-| ZIO-014 | LSP/format/test/diagnostics integration | Not implemented (pending ZIO-003; reuse existing `fmt.rs`/LSP rows) |
-| ZIO-015 | JS native/browser + compiled parity | Not implemented (J01 continuation) |
-| ZIO-016 | Complete distribution (D00) | Not implemented |
-| ZIO-017 | Multi-target product + release regression (A01/A02/D01) | Not implemented; A01 real-browser DOM acceptance outstanding |
-| ZIO-018 | Stdlib contracts + installable library template | Undecided design (review §4.5) |
-| ZIO-019 | Debug/trace/perf baseline | Not implemented (partial anchors: `observer.rs`, `fmt.rs`, self-hosted build) |
-| ZIO-020 | Version binding & stable release policy | Undecided design |
-| ZIO-021 | Trusted Rust engine + `inline` (R00/E00) | Not implemented (design pending) |
-| ZIO-022 | Task/message/persistence min slice | Not implemented (P2 queue) |
-| ZIO-023 | Compute/model/tool backend adapters | Not implemented (P2 queue; Numa/Loom rows are starting points) |
-| ZIO-024 | AI usage + external-app acceptance samples | Not implemented (P2 queue) |
-| ZIO-025 | Measurement-driven advanced optimization | Not implemented (P2 queue; JIT/AOT/MOP rows stay Planned) |
 
 ## Current-run evidence — 2026-10-16
 

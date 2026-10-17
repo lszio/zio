@@ -12,7 +12,7 @@ order: 10
 
 ## 获取源码并运行 CLI
 
-准备 Git、stable Rust 工具链与 Cargo。站点开发另需 Bun；完整产品测试还需要 Python 与 CPU worker 环境。
+准备 Git、stable Rust 工具链与 Cargo；构建 CLI 还需 clang 与 libclang——`zio-js` 通过 rquickjs 的 bindgen 特性绑定 QuickJS，缺失会导致依赖构建脚本失败。站点开发另需 Bun。
 
 ```sh
 git clone https://github.com/lszio/zio.git
@@ -93,18 +93,19 @@ RUST_MIN_STACK=134217728 cargo test --workspace
 
 ## 设计背景与开发档案
 
-最新方向见[语言与工具链设计](/docs/superpowers/specs/2026-10-11-zio-language-toolchain-design/)与[执行计划](/docs/superpowers/plans/2026-10-11-zio-language-toolchain/)。Zio 是语义独立的通用 Lisp，Rust 是引导与机制层；保留 `langs/`、`libs/`、`contribs/`、`apps/` 四层目录。两条主线分别是元循环求值器/自举编译器，以及运行时镜像与应用 bin/WASM 导出。L01/L02 已验收显式元循环与三代便携编译器固定点；可运行 `cargo run -p zio-cli -- self-build --verify`。复用已有 VM、LSP 与 tree-sitter 资源，但不把首轮自举泛化为镜像或完整发行。
+最新方向见[语言与工具链设计](/docs/superpowers/specs/2026-10-11-zio-language-toolchain-design/)与[执行计划](/docs/superpowers/plans/2026-10-11-zio-language-toolchain/)。Zio 是语义独立的通用 Lisp，Rust 是引导与机制层；保留 `langs/`、`libs/`、`contribs/`、`apps/` 四层目录。两条主线分别是元循环求值器/自举编译器，以及运行时镜像与应用 bin/WASM 导出。L01/L02 已验收显式元循环与三代便携编译器固定点；可运行 `cargo run -p zio-cli -- self-build --verify`。复用已有 VM、LSP 与 tree-sitter 资源，但不把首轮自举泛化为镜像或完整发行。设计中的若干 CLI 已落地为可用命令（`zio image save/inspect/run`、`zio compile`、`zio build`、`zio self-build`、`zio fmt`、`zio lsp`），其余才是提案。
 
-外部解释型与编译型语言通过引擎库接入是规划；`inline` 不等于必然 `eval`，任意 Rust 源码直接求值与外部引擎全套已捆绑均不是现状。镜像必须保留对象共享、循环与闭包，外部资源需显式重建否则拒绝保存，权限在恢复后重新授予。现有 JS bridge 为 WASM-only，JS 点号名称解析为 interpreter-only，原生 CLI 无 JS。
+外部解释型与编译型语言通过引擎库接入是规划；`inline` 不等于必然 `eval`，任意 Rust 源码直接求值与外部引擎全套已捆绑均不是现状。镜像必须保留对象共享、循环与闭包，外部资源需显式重建否则拒绝保存，权限在恢复后重新授予。原生 CLI 已内嵌 QuickJS，以 `js/*` 提供 JS 能力；浏览器端 `js/…` 点号解析仍仅支持解释执行，跨宿主编译执行面一致性待完成。
 
 完整开发发行包目标包括解释器、编译器、LSP、语法资源、WASM 与文档；现有原生发行树与浏览器引擎仍分别构建。应用 bin/WASM 是最小应用产物，不包含 LSP，动态能力按实际依赖保留；bin 首轮为 bytecode + runtime，而非机器码 AOT，浏览器 WASM 与 WASI 分开验收。
 
-这些规格中的未来 CLI/API 都是提案，不应放进现有用法或可运行示例。上文保留的是现有开发命令；发行方式见[发布说明](/docs/release/)，实现成熟度以[特性矩阵](/docs/feature-matrix/)为准。
+这些规格中尚未落地的 CLI/API 仍是提案，不应放进现有用法或可运行示例；上文保留的是现有开发命令。发行方式见[发布说明](/docs/release/)（含 v0.2.2 alpha 预览与 `npm install -g @lszio/zio@alpha`），实现成熟度以[特性矩阵](/docs/feature-matrix/)为准。
 
 - [实现手册](/book/)：从 reader、求值循环到宏与对象系统的深入阅读。
 - [架构决策记录](/docs/adrs/)：理解重要设计选择及其约束。
 - [系统架构](/docs/zio-architecture/)与[求值管线](/docs/eval-pipeline/)：定位组件和执行路径。
 - [路线图](/docs/roadmap/)与[批准的目录计划](/docs/superpowers/plans/2026-10-07-language-first-layout/)：了解方向；计划不是现有能力的保证。
+- [Zio 任务清单](https://github.com/lszio/zio/blob/main/docs/zio-task-list.md)：任务优先级、依赖与验收；与 paca 的 Zio 项目互为镜像，状态和证据以 paca 为准，仓库文档不另建排期台账。
 - [设计与计划目录](https://github.com/lszio/zio/tree/main/docs/superpowers)：浏览其他规格和工作计划。
 - [开发札记](/blog/)与[全部文档源文件](https://github.com/lszio/zio/tree/main/docs)：查找历史讨论和档案。
 - [当前能力说明](/docs/feature-matrix/)：提交文档与示例前核对可用能力，避免把设计目标写成实现承诺。

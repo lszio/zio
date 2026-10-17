@@ -67,14 +67,38 @@ Zio 属于 Lisp 家族，是一门语义独立的通用编程语言；Rust 提�
 
 **只执行你信任的代码。** WASM 中的 `js/eval` 与 DOM 原语可以访问当前页面。Playground 不提供超时、进程隔离或任意代码的安全保证；它不是运行不可信代码的沙箱。`future-call` 当前同步求值并包装结果，`chan / send! / recv!` 是同步队列，不能据此推断并发调度、阻塞或取消能力。
 
-## 从语言到完整工具链（规划）
+## 从语言到完整工具链
 
-两条目标主线是：用 Zio 编写元循环求值器与自举编译器；保存、恢复运行时镜像并导出应用 bin/WASM。L01 元循环与 L02 首轮便携编译器自举已验收：完整 Zio 前端在 fresh context 编译自身，Stage 1/2/3 制品字节相同，Rust 引导与 VM 保留。镜像和独立应用导出仍为规划；镜像须保留共享对象、循环与闭包，外部资源需显式重建，否则拒绝保存，恢复后权限重新授予。
+两条目标主线是：用 Zio 编写元循环求值器与自举编译器；保存、恢复运行时镜像并导出应用 bin/WASM。已交付与规划分开看待：
 
-外部解释型与编译型语言计划通过引擎库接入；`inline` 是外语代码入口，不等于必然 `eval`，也不是任意 Rust 源码直接求值。现有 JS bridge 仅在 WASM 提供，JS 点号名称解析仅支持解释执行，原生 CLI 无 JS；外部引擎并未全套捆绑。
+**已交付（实验面，命令可直接试用）**
 
-完整开发包目标是一次配齐解释器、编译器、LSP、语法资源、WASM 与文档；当前原生包与浏览器引擎仍分开构建。应用 bin/WASM 不带 LSP，动态能力按真实依赖保留；bin 首轮是 bytecode + runtime 而非机器码 AOT，浏览器与 WASI 分别验收。
+- **自举编译器**：完整 Zio 前端在全新上下文编译自身，Stage 1/2/3 制品逐字节相同，Rust 引导与 VM 保留。`zio self-build --verify` 可复现。
+- **运行时镜像**：保存／检查静态对象图，在新进程恢复环境与闭包，恢复后权限重新授予；不是暂停中的执行栈。入口为 `zio image save/inspect/run`。
+- **独立应用导出**：`zio build INPUT --target native|browser|wasm-wasi -o APP` 支持三个目标；原生产物带 runtime 与 payload，浏览器 HTML 仍需同版本 JS/WASM 资源，不是离线自包含页面。
+- **原生内嵌 JS**：`zio-js` 绑定 QuickJS，CLI 会话内以 `js/*` 提供。
+- 其他已发行命令：`zio compile`、`zio fmt`、`zio lsp`。
 
-以上为规划，不是新增可用命令。详见[语言与工具链设计](/docs/superpowers/specs/2026-10-11-zio-language-toolchain-design/)与[执行计划](/docs/superpowers/plans/2026-10-11-zio-language-toolchain/)；现有能力以[特性矩阵](/docs/feature-matrix/)为准。
+**保留目标（规划）**
+
+- `inline`／raw 块、Rust 引擎与 JIT。
+- 跨宿主编译执行面一致性：浏览器端 `js/…` 点号解析仍仅支持解释执行；编译路径、数值／错误与权限合同仍需逐项对照。
+- 单一安装、一次配齐解释器／编译器／LSP／语法资源／WASM／文档的完整开发发行包；当前原生包与浏览器引擎分开构建，浏览器 WASM 与 WASI 分别验收。
+
+镜像须保留共享对象、循环与闭包，外部资源需显式重建否则拒绝保存；应用 bin 首轮是 bytecode + runtime 而非机器码 AOT，且不携带 LSP。外部解释型与编译型语言计划通过引擎库接入；`inline` 是外语代码入口，不等于必然 `eval`，也不是任意 Rust 源码直接求值。原生发行仅覆盖 Linux x86_64 与 aarch64。
+
+以上是现状与目标边界，不代表所有规划均已落地；现有能力以[特性矩阵](/docs/feature-matrix/)为准，详见[语言与工具链设计](/docs/superpowers/specs/2026-10-11-zio-language-toolchain-design/)与[执行计划](/docs/superpowers/plans/2026-10-11-zio-language-toolchain/)。
+
+## 安装 0.2.2 alpha 预览
+
+0.2.2 是语言与工具链的 alpha 预览：GitHub Release 为 prerelease，npm 以 `alpha` 标签发布，稳定的 `latest` 标签不受影响。原生发行仅 Linux x86_64 与 aarch64。
+
+```bash
+npm install -g @lszio/zio@alpha
+zio           # 首次运行按版本下载匹配的平台归档
+zio app.zio   # 运行脚本
+```
+
+也可以直接下载 [GitHub Release v0.2.2](https://github.com/lszio/zio/releases/tag/v0.2.2) 的 Linux 归档，或使用精确版本镜像 `ghcr.io/lszio/zio:0.2.2`。
 
 下一步：按[学习路线](/docs/)继续，去 [Playground](/playground/)实践；需要本地环境或希望参与开发时，阅读[贡献指南](/contribute/)。
