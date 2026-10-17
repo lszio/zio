@@ -194,14 +194,26 @@ fn max_duration_triggers_timed_out() {
         "burn",
         "(defn loop-forever () (loop-forever)) (loop-forever)",
     );
-    // The wall-clock check happens at the run boundary. The eval may
-    // already have returned a fuel-style error (acceptable) or a
-    // TimedOut (also acceptable). The contract is that some error is
-    // reported and the session is not poisoned.
-    assert!(result.error.is_some(), "short budget should error");
+    // With fuel unbounded, only the mid-run deadline can stop the
+    // recursion, and the run boundary converts that abort into the
+    // typed TimedOut error. Any other error shape here means the
+    // deadline never fired — exactly the release-blocking regression.
+    match &result.error {
+        Some(EvalError::TimedOut { .. }) => {}
+        other => panic!("expected TimedOut for over-budget run, got {:?}", other),
+    }
     assert!(!s.is_poisoned(), "max_duration must not poison");
+    // The deadline is per-run: the next eval gets a fresh context with
+    // no armed deadline, so the session keeps running. Bootstrap runs
+    // outside the clock, so a fast eval cannot false-positive against
+    // the same 10ms budget.
     let ok = s.eval("after-duration", "1");
-    assert!(ok.error.is_none(), "session must keep running");
+    assert!(
+        ok.error.is_none(),
+        "session must keep running: {:?}",
+        ok.error
+    );
+    assert_eq!(ok.value, Some(Value::Integer(1)));
 }
 
 #[test]

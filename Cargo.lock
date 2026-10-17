@@ -758,7 +758,7 @@ checksum = "f9f8bd3e56ce4dfc153cf470fffbfa98c7620958b312ca5c3a4b8d5181fd13c6"
 
 [[package]]
 name = "loom"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "parking_lot",
  "serde",
@@ -1770,7 +1770,7 @@ dependencies = [
 
 [[package]]
 name = "zio-cli"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "im",
  "zio-core",
@@ -1780,7 +1780,7 @@ dependencies = [
 
 [[package]]
 name = "zio-core"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "criterion",
  "im",
@@ -1796,7 +1796,7 @@ dependencies = [
 
 [[package]]
 name = "zio-host"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "libc",
  "parking_lot",
@@ -1811,7 +1811,7 @@ dependencies = [
 
 [[package]]
 name = "zio-js"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "rquickjs",
  "zio-core",
@@ -1819,7 +1819,7 @@ dependencies = [
 
 [[package]]
 name = "zio-lsp"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "serde_json",
  "zio-core",
@@ -1827,7 +1827,7 @@ dependencies = [
 
 [[package]]
 name = "zio-mcp"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "parking_lot",
  "serde",
@@ -1837,7 +1837,7 @@ dependencies = [
 
 [[package]]
 name = "zio-wasi"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "zio-core",
 ]

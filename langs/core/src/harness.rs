@@ -207,12 +207,16 @@ impl Session {
     /// value (contract §6). `print`/`println` are captured into
     /// `RunResult::output` and capped at `max_output_bytes` (contract
     /// §7); exceeding the cap surfaces an `OutputTruncated` event, never
-    /// a run failure. The fuel ceiling and wall-clock limit are checked
-    /// at this run's boundary (contract §8; mid-run interrupt wiring is
-    /// a Slice 3 item).
+    /// a run failure. The fuel ceiling is armed on the run's context,
+    /// and a `max_duration` is armed as a mid-run deadline on the same
+    /// fuel checkpoint — a non-terminating program is interrupted while
+    /// it runs instead of after `eval_source` returns, and the run
+    /// boundary converts the abort into the typed `TimedOut` error
+    /// (contract §8). Both clocks ignore context bootstrap. A native
+    /// call that never re-enters the evaluator cannot be preempted;
+    /// process-group isolation for those is a Slice 3 item.
     pub fn eval(&self, name: &str, source: &str) -> RunResult {
         let run_id = RunId::new();
-        let start = Instant::now();
         // Consume a pending cancel at the boundary: a run that has not
         // started is cancelled cleanly (contract §9, matrix row 1).
         if self.cancel_flag.swap(false, Ordering::SeqCst) {
@@ -228,7 +232,7 @@ impl Session {
         let gated = CapabilityEnforcingIoHost::new(Arc::new(budgeted), self.capabilities.clone());
         let io: Arc<dyn IoHost> = Arc::new(gated);
 
-        let ctx = match crate::bootstrap::language_context_with_io(
+        let mut ctx = match crate::bootstrap::language_context_with_io(
             crate::bootstrap::ModuleRoots::empty(),
             io,
         ) {
@@ -237,6 +241,17 @@ impl Session {
         };
         if let Some(fuel) = self.defaults.fuel {
             ctx.set_step_ceiling(fuel);
+        }
+        // The wall-clock clock starts at the run, not at setup: the
+        // context bootstrap above runs trusted builtin code only, and a
+        // budget that is eaten by setup would flake on slow machines.
+        let start = Instant::now();
+        if let Some(limit) = self.defaults.max_duration {
+            // Arm the deadline on the fuel checkpoint right after the
+            // clock starts, so `deadline.0 >= start`: when the
+            // checkpoint refuses work the boundary check below is
+            // guaranteed fired too.
+            ctx.observation.set_deadline(limit);
         }
 
         let result = crate::bootstrap::eval_source(&ctx, name, source);
