@@ -1,8 +1,8 @@
 # Zio 系统架构
 
-> Version 0.9 — 语义独立工具链与镜像双主线（2026-10-11）
+> 更新：2026-10-17 · 0.2.2 alpha 的架构与能力边界。
 >
-> 本页区分可检查源码、L00–L02 语义与首轮自举验收及规划目标；当前程序写法见[语言参考](language-reference.md)，实跑证据见主计划 L00–L02。
+> 本页区分语言职责、已交付的实验性工具链与规划目标；当前写法见[语言参考](language-reference.md)，发布范围与实跑证据见[发布说明](release.md)和[特性矩阵](feature-matrix.md)。
 > 权威目标见[语言与工具链规格](superpowers/specs/2026-10-11-zio-language-toolchain-design.md)，
 > 实施依赖见[主计划](superpowers/plans/2026-10-11-zio-language-toolchain.md)。
 > 历史实跑与数量分别见[特性矩阵](feature-matrix.md)和[项目状态](status.md)；
@@ -14,14 +14,15 @@ Zio 是语义独立的通用 Lisp。ZOS 仍属于语言核心；库和应用不�
 Rust 是引导与机制层，承载 Reader、值/内存、执行后端、可信宿主及必要原语；
 语言语义的权威合同不永久绑定 Rust trait。reader、求值器、展开器、分析器与
 编译器目标由 Zio 表达；当前 Rust Reader 是引导基础。领域组合、策略与库也
-优先用 Zio，当前源码存在不等于完整自举已验收。
+优先用 Zio；首阶段便携编译器已完成三代固定点验证，但 Rust 引导与 VM 仍然保留。
 
 | 层 | 当前物理位置 | 职责与状态 |
 |---|---|---|
 | 语言 | `langs/core/`、`langs/cli/`、`langs/core/assets/compiler/` | Reader、AST evaluator、宏、Experimental ZOS、字节码运行时、Zio 编译器与普通 CLI；直接平铺，不设 `langs/zio` |
-| 标准库 | `libs/std/` | Zio `core.zio`、persistent、entity、protocol、pipeline、datalog；状态分别以特性矩阵为准 |
-| 领域库 | `libs/numa/`、`libs/loom/`、`libs/learning/` | Zio vector、agent/proposer、learn/memory 与学习子模块；不因目录迁移而新增功能或发布包 |
-| 基础设施 | `contribs/native/loom/` | 已有通用 Rust 模型/工具合同、预算、传输与教师适配；Rust crate 名仍为 `loom`，不是 `libs/loom/` 的 Zio 库 |
+| 标准库 | `langs/core/assets/std/core.zio`、`libs/std/` | 内嵌启动库与 persistent、entity、protocol、pipeline、datalog 等 Zio 模块；成熟度分别见特性矩阵 |
+| 领域库 | `libs/numa/`、`libs/rill/`、`libs/loom/`、`libs/learning/` | 数值、CLI 解析、模型会话、学习与记忆组合；不是已独立发行的 Rust 业务库 |
+| 宿主与模型适配 | `contribs/native/{host,js,loom}/` | 平台能力、原生 QuickJS 与模型/工具/预算/传输适配；`loom` crate 与 Zio `libs/loom/` 分属不同层 |
+| 语言执行入口 | `langs/core/src/harness.rs`、`langs/mcp/` | 部分执行预算/结果封装及自定义 stdio JSON-RPC；不是标准 MCP，也不承诺完整取消或长会话可靠性 |
 | 语言工具适配 | `contribs/language-server/`、`contribs/tree-sitter-zio/`、`contribs/editors/` | 已有 LSP、grammar/queries/parser 与编辑器资源；存在事实不代表完整协议/发行验收 |
 | 语言站点 | `apps/site/` | 语言介绍、文档与 WASM playground |
 
@@ -40,17 +41,17 @@ flowchart TD
 > 可信宿主与传输适配器留在 `contribs/`；站点内嵌由 `langs/core` 构建的 WASM 引擎，
 > 独立承载语言文档与 playground。
 
-核心不反向依赖应用业务或通用 harness。普通 `zio-cli` 只装配语言环境，
-不提供 `--llm-replay`；模型与 replay 合同仍由 `contribs/native/loom/`
-及明确装配它的应用/宿主管理。
+语言核心不依赖应用业务或模型供应商；其中的执行 harness 只编排语言运行，
+不等于 Loom 的模型/工具会话 harness。普通 CLI 不提供 `--llm-replay`；
+模型调用与 replay 由 `contribs/native/loom/` 及明确装配它的宿主管理。
 
-## 2 已完成的结构切换与未完成的业务迁移
+## 2 结构切换与历史验收
 
 2026-10-07 首轮切换移动了源树、库文件与消费路径，取消旧根目录入口，
 没有兼容别名、symlink 或空占位目录。它不改变下面的能力验收口径：
 
 - Rust 引导实现仍在 `langs/core/`；当前已有 bytecode 运行时和 `langs/core/assets/compiler/compiler.zio`，
-  `langs/core/assets/interpreter/` 提供 Zio reader／元循环 evaluator／expand；L02 已验收完整 Zio 前端三代便携字节码固定点，镜像及优化 ZIR/JIT 仍属规划。
+  `langs/core/assets/interpreter/` 提供 Zio reader／元循环 evaluator／expand；首阶段自举、运行时镜像和应用导出已实验性交付，优化 ZIR/JIT 仍属规划。
 - `.zio` 库已归入 `libs/`；Datalog 已有合取查询子集，规则、聚合等完整能力仍按特性矩阵区分，不能用目录迁移替代功能验收。
 - `contribs/native/loom/` 保留可复用 native transport/host adapter，
   不把其整个 Rust 实现当成未来 Zio Loom 库的目标本体。
@@ -74,12 +75,13 @@ flowchart TD
 ### 3.1 原生 workspace 与 Zio 库
 
 ```text
-langs/cli/ (zio-cli：REPL、脚本、模块根配置)
-└── langs/core/ (zio-core：Reader、AST eval/apply、bytecode、ZOS、WASM 入口)
-langs/core/assets/compiler/compiler.zio (Zio 编译器，消费运行时机制)
+langs/core/ (Reader、AST eval/apply、bytecode、ZOS、WASM、执行 harness)
+langs/cli/ (zio-cli：REPL、脚本、编译、镜像、导出、格式化与 LSP 入口)
+langs/{wasi,mcp}/ (WASI 应用运行时、自定义 JSON-RPC 服务适配)
+langs/core/assets/{compiler,interpreter}/ (Zio 前端与元循环实现)
 contribs/{language-server,tree-sitter-zio,editors}/ (语言工具与编辑器适配)
-contribs/native/loom/ (loom：通用 native harness/transport)
-libs/{std,numa,loom,learning}/ (Zio 源文件，不是 Rust workspace crate)
+contribs/native/{host,js,loom}/ (可信宿主、QuickJS、模型/会话适配)
+libs/{std,numa,rill,loom,learning}/ (Zio 模块，不是 Rust workspace crate)
 ```
 
 具体 Cargo feature 与依赖以实际 manifest 为准，不在文档复制固定 crate/测试数量。
@@ -104,9 +106,11 @@ Groiz 是独立项目（[lszio/groiz](https://github.com/lszio/groiz)），不�
 | 字节码执行与模块制品 | `langs/core/src/bytecode.rs` | 有 opcode、闭包、模块与序列化机制；模块制品不等于运行时镜像 |
 | Zio 编译器 | `langs/core/assets/compiler/{analyze,compiler}.zio` | Zio 表达绑定/捕获/global 选择、尾位置、展开与代码生成；Rust 保留 VM/wire/值与投影机制 |
 | 自举对照测试与 CLI | `langs/core/tests/self_hosting.rs`、`tools/smoke-self-build.sh` | L02：fresh context 安装整个前端，Stage 1/2/3 文件字节相同，编译执行 sum=10、closure=15；缺失 helper 不回退 Stage0 |
-| LSP 与语法资源 | `contribs/language-server/`、`contribs/tree-sitter-zio/`、`contribs/editors/` | 已有代码/资源；完整功能、安装与发行仍需验收 |
+| LSP 与语法资源 | `contribs/language-server/`、`contribs/tree-sitter-zio/`、`contribs/editors/` | Linux 发行树携带同版本 LSP 与语法资源；真实 LSP 会话已验收，不等于完整编辑器协议覆盖 |
 | 元循环求值器 | `langs/core/assets/interpreter/`、`langs/core/src/interpreter.rs` | 显式第三执行面：Zio reader/eval/apply/expand；同一实现纳入 L02 编译前端，Rust 引导与宿主机制保留 |
-| 运行时镜像、bin/WASM 导出、完整开发发行 | 新规格与主计划 | M00/M01 已验收图格式与静止镜像保存/恢复；镜像 CLI（M02）、导出与发行仍属规划 |
+| 运行时镜像 | `langs/core/src/image/`、CLI `image save/inspect/run` | 已有图格式、共享/循环/闭包保存恢复与重新授权；不是活动执行栈暂停/恢复 |
+| 应用导出 | CLI `build --target native\|browser\|wasm-wasi` | 实验性 runtime + source/bytecode/image payload；不是机器码 AOT，各宿主能力分别声明 |
+| 开发发行 | `tools/install.sh`、发布工作流 | 0.2.2 alpha 提供 Linux 双架构归档、同版本工具/库/文档；浏览器 WASM 单独发布，完整一站式与全目标验收仍未完成 |
 
 第一条主线以现有 AST、bytecode、Zio 编译器为引导基础，固定语言语义与
 源码位置合同，补齐 Zio 元循环求值器和编译前端，验收编译器产物运行并编译自身、
@@ -125,9 +129,9 @@ native/browser/WASI 恢复；平台资源仅在匹配 profile 与恢复器下恢
 
 以源码为输入，四类产物为完整开发发行版、编译模块（便携字节码）、
 运行时镜像与应用产物。native bin、WASM-browser、WASM-WASI 是应用产物子类型。
-首轮 bin 封装 bytecode/初始镜像 + runtime，不是机器码 AOT；浏览器 WASM 与
-WASI 分别列宿主能力和验收，当前浏览器入口不证明 WASI 已交付。
-完整开发发行同时交付解释器、编译器、LSP、语法/编辑器资源、WASM 与文档；
+native bin 封装 source/bytecode/初始镜像 + runtime，不是机器码 AOT；浏览器
+WASM 与 WASI 已有不同运行时及导出入口，权限、资源闭包和实际验收须分别声明。
+完整开发发行目标是统一交付解释器、编译器、LSP、语法/编辑器资源、WASM 与文档；
 最小应用产物只带运行所需机制、库和引擎，可裁剪开发工具。独立应用（如 Groiz）
 是独立消费者，不进入语言发行必要组成。
 
@@ -138,9 +142,9 @@ WASI 分别列宿主能力和验收，当前浏览器入口不证明 WASI 已交
 生成制品由引擎合同决定，值转换、错误、资源生命周期与授权必须显式。
 这些通用 API 是规划，不在本轮宣称实现。
 
-当前 JS bridge 仅在 WASM；`js` dotted resolver 仅在解释器路径，
-native CLI 没有 JS 引擎。外部 JS 生态接入目标不能被这两个特定入口替代，
-也不意味着已有 bytecode 自动支持 JS inline。
+原生 CLI 已装配 QuickJS，以显式 `js/*` 操作访问独立引擎；浏览器 bridge
+通过页面对象解析 `js/…` 点号名称，仍限解释执行。两者不是同一个 JS 宿主，
+也不意味着已实现跨执行面一致性或通用 `inline`；Rust 引擎仍为规划。
 
 ## 4 规划性能目标
 

@@ -23,6 +23,7 @@ export function getBuildInfo(root, env = process.env) {
     ? status === 'true' ? true : status === 'false' ? false : null
     : status === null ? null : status !== '';
   const release = !!commit && dirty === false && !!tag?.split('\n').includes(`v${version}`);
-  return { version, commit, branch, tag, dirty, release };
+  const prerelease = release && (version === '0.2.2' || version.includes('-'));
+  return { version, commit, branch, tag, dirty, release, prerelease };
 }
 

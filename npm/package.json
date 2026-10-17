@@ -1,7 +1,7 @@
 {
   "name": "@lszio/zio-core",
   "version": "0.2.2",
-  "description": "Zio language engine compiled to WebAssembly — the same core the native CLI and self-hosting compiler run on",
+  "description": "Zio general-purpose Lisp engine for browsers and Node.js, with persistent WASM sessions, macros and bytecode tooling",
   "license": "MIT",
   "repository": {
     "type": "git",

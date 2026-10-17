@@ -42,3 +42,17 @@ test('archives expose missing provenance; CI metadata restores it without Git', 
   assert.equal(ci.branch, 'release/0.2');
   assert.equal(getBuildInfo(root, { ZIO_BUILD_COMMIT: 'not-a-commit', ZIO_BUILD_TAG: 'v0.2.0', ZIO_BUILD_DIRTY: 'false' }).release, false);
 });
+
+test('alpha builds are not presented as stable releases', (t) => {
+  const root = fixture(t);
+  for (const [version, prerelease] of [['0.2.2', true], ['0.2.3', false], ['0.3.0-alpha.1', true]]) {
+    writeFileSync(join(root, 'Cargo.toml'), `[workspace.package]\nversion = "${version}"\n`);
+    const env = { ZIO_BUILD_COMMIT: 'a'.repeat(40), ZIO_BUILD_TAG: `v${version}`, ZIO_BUILD_DIRTY: 'false' };
+    const tagged = getBuildInfo(root, env);
+    assert.equal(tagged.release, true);
+    assert.equal(tagged.prerelease, prerelease);
+    const dirty = getBuildInfo(root, { ...env, ZIO_BUILD_DIRTY: 'true' });
+    assert.equal(dirty.release, false);
+    assert.equal(dirty.prerelease, false);
+  }
+});

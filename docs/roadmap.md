@@ -1,11 +1,13 @@
 # Zio 路线图 — v0.2 → v1.0
 
+当前发布为 [0.2.2 alpha](release.md)：语言与开发工具预览，不是下述全部里程碑的完成声明。能力与发布验收见[特性矩阵](feature-matrix.md)，任务状态与排期以 paca 为准。
+
 > 2026-10-16 聚焦 Zio 的后续工作见[任务清单](zio-task-list.md)：优先打通查询、编译执行与 restart，补齐长会话可靠性，再推进工具、库与发行。该清单汇总优先级和验收；已采纳工具链工作包继续维护实现细项及历史证据。
 
 > 2026-10-15 新增[语言与生态评审](language-ecosystem-review.md)、
 > [关键设计决策及思维导图](language-design-decisions.md)和[完整生态路线图草案](ecosystem-roadmap.md)。
 > 草案梳理语义、运行时、项目工具、包与库、稳定发行的依赖和验收，尚未替代已采纳的工具链规格与工作包。
-> [AI 交互主线](ai-language-interaction.md)的 help/结构化查询已完成 ZIO-003/004 合同与首批实现；执行 harness 已有 ZIO-008 Slice 1/2 实验实现，解释器 MCP 以自定义 JSON-RPC 基础服务落地（ZIO-009）——均未达完成：mid-run cancel/进程组杀掉/内存预算（Slice 3）、标准 MCP 生命周期与 tools 包装、condition/restart 与远程恢复仍缺，状态与本次证据见[特性矩阵](feature-matrix.md)。
+> [AI 交互主线](ai-language-interaction.md)的查询已实验性交付；语言执行 harness 有部分输出／fuel／deadline 实现，`langs/mcp/` 是源码侧自定义 JSON-RPC，**不是标准 MCP 服务**。condition/restart 已有合同但尚无本地恢复实现；执行中取消、不可取消调用隔离、内存预算、MCP 生命周期与远程恢复仍未完成。现状与证据见[特性矩阵](feature-matrix.md)。
 
 > 2026-10-11 当前主线：语义独立的通用 Lisp、元循环/自举与运行时镜像，
 > 最终以全套开发发行和可裁剪应用产物交付。

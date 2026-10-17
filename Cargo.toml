@@ -9,7 +9,7 @@ license = "MIT"
 repository = "https://github.com/lszio/zio"
 homepage = "https://github.com/lszio/zio"
 authors = ["lszio"]
-description = "Zio — a general-purpose language with ZOS, a self-hosting compiler, and libraries and applications built on it"
+description = "A general-purpose Lisp with macros, a first-stage self-hosted compiler, and native/WebAssembly tooling"
 keywords = ["language", "compiler", "lisp", "self-hosting", "interpreter"]
 categories = ["compilers", "development-tools"]
 
